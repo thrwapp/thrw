@@ -1,0 +1,88 @@
+name: agent-eval
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: agent-eval-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write # required for GCP Workload Identity Federation
+
+jobs:
+  evaluate:
+    # Only fresh-context-grade PRs opened by the agent itself.
+    if: github.event.pull_request.user.login == 'thrw-agent[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20 # not specified in the original plan; a safety net sized to --max-turns 25 below
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need main's history to compare test counts
+
+      # Will fail until WIF_PROVIDER / GCP_PROJECT_AI secrets exist - expected
+      # at this stage. Reuses the same agent-pipeline service account as
+      # agent-triage.yml / agent-code.yml.
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: agent-pipeline@${{ secrets.GCP_PROJECT_AI }}.iam.gserviceaccount.com
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run evaluator
+        id: eval
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_vertex: "true"
+          prompt: |
+            You are grading pull request #${{ github.event.pull_request.number }},
+            opened by the agent, against the acceptance criteria in its
+            linked issue.
+
+            Treat every acceptance criterion as FAIL by default. You may
+            only mark one PASS if you cite concrete file+line evidence
+            from this PR's diff for it - never take the PR description's
+            own claims at face value.
+
+            Run the tests yourself (read-only: `pnpm test`/`pnpm turbo
+            test` variants only) and confirm the total test count did not
+            decrease versus main.
+
+            Output your result as JSON matching the provided schema.
+          claude_args: |
+            --model claude-sonnet-5@latest
+            --max-turns 25
+            --allowedTools "Read,Bash(pnpm test *),Bash(git diff *),Bash(gh pr *)"
+            --json-schema .github/schemas/agent-eval-result.schema.json
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT_AI }}
+          CLOUD_ML_REGION: ${{ vars.GCP_VERTEX_REGION }}
+
+      - name: Act on evaluation result
+        if: always() && steps.eval.outputs.structured_output != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          RESULT: ${{ steps.eval.outputs.structured_output }}
+        run: |
+          echo "$RESULT" | jq .
+          overall_pass=$(echo "$RESULT" | jq -r '.overall_pass')
+
+          if [ "$overall_pass" != "true" ]; then
+            echo "$RESULT" | jq -r '"## Evaluator result\n\n" + (.criteria | map("- [" + (if .pass then "x" else " " end) + "] " + .criterion + " - " + .evidence) | join("\n")) + "\n\n" + .notes' \
+              > /tmp/eval-review-body.md
+            gh pr review "$PR_URL" --request-changes --body-file /tmp/eval-review-body.md
+            gh issue edit "$PR_URL" --add-label needs-human
+          fi
