@@ -1,0 +1,72 @@
+# AGENTS.md
+
+This is the contract every agent (Claude Code, or anyone else automating
+changes in this repo) works under. It applies alongside — never instead of
+— `docs/spec/architecture.md` and `docs/adr/`. If this file and an ADR ever
+disagree, the ADR wins for architecture; this file wins for process.
+
+## Scope
+
+- **`packages/**`** is open, agent-owned. A PR here can auto-merge once CI
+  is green and the evaluator (`agent-eval.yml`) passes — no human review
+  required by default.
+- **`services/**`** is FSL-licensed (see ADR 0003). Agents may propose
+  changes here, but every PR requires human merge via CODEOWNERS,
+  regardless of who authored it.
+- **`.github/**`**, any file whose path contains `pricing`, and
+  **`docs/adr/**`** are always human-merge, no exceptions, regardless of
+  which top-level directory they otherwise sit under.
+
+## Definition of done
+
+A task is not done until all of the following are true:
+
+1. Tests pass via `pnpm turbo test --filter=<pkg>` for every package touched.
+2. Every acceptance criterion in the linked issue is addressed, cited with
+   file+line evidence in the PR description (not just asserted).
+3. A `HANDOFF.md` is written in the branch describing what was done and
+   what's uncertain — see Honesty requirement below.
+4. The commit message follows Conventional Commits format.
+
+## Stop conditions
+
+- After 5 failed test-fix cycles on the same issue, stop. Comment on the
+  issue explaining exactly what's blocking, add the `needs-human` label,
+  and stop — do not keep retrying.
+- If the issue is ambiguous, ask a clarifying comment on the issue rather
+  than guessing at intent.
+- Never delete or skip a test to make a suite pass.
+
+## Conventions
+
+- Use pnpm, never npm or yarn.
+- TypeScript: strict mode.
+- Swift: use Swift 6 concurrency features where applicable.
+- Android: use Kotlin coroutines for async code.
+- No new dependency without justification in the PR description.
+
+## Protocol invariants
+
+The MQTT topic structure and the node interface in `packages/protocol`
+(see `docs/spec/architecture.md` and ADR 0001) are frozen contracts. Any
+change to them requires a new ADR in `docs/adr/` and human review — never
+a routine agent PR, even if it's inside `packages/**`.
+
+## Build-time configuration, not hardcoded endpoints
+
+Per ADR 0005, every adapter must read its relay URL and licensing
+endpoint from build-time configuration (a config file per adapter), never
+hardcoded inline in source. This is a standing rule, not a code-review
+nice-to-have — self-hosting depends on it.
+
+## Honesty requirement
+
+Report what actually happened, including partial completion, skipped
+steps, or uncertainty. Never imply something works when it wasn't
+actually verified — "tests pass" means you ran them and saw them pass,
+not that they should pass.
+
+## Naming
+
+The GitHub org is `thrwapp`, but the published package scope is `@thrw/*`
+(e.g. `@thrw/protocol`), not `@thrwapp/*`.
