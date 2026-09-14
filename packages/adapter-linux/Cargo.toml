@@ -1,0 +1,9 @@
+[package]
+name = "adapter-linux"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "adapter_linux"
+path = "src/lib.rs"

@@ -1,0 +1,23 @@
+node_modules/
+dist/
+build/
+.turbo/
+.DS_Store
+*.log
+
+# TypeScript
+*.tsbuildinfo
+
+# Gradle / Android
+packages/adapter-android/.gradle/
+packages/adapter-android/**/build/
+packages/adapter-android/local.properties
+
+# Swift
+packages/adapter-mac/.build/
+packages/adapter-mac/.swiftpm/
+packages/adapter-ipad/.build/
+packages/adapter-ipad/.swiftpm/
+
+# Rust
+packages/adapter-linux/target/

@@ -1,0 +1,9 @@
+{
+  "name": "@thrw/adapter-android",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "./gradlew build",
+    "test": "./gradlew test"
+  }
+}
