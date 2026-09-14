@@ -21,13 +21,15 @@ requirement, which Android 16 QPR3 and Android 17 fixed for basic
 control (battery, ear detection, ANC) on Pixel and some OEMs. Root is
 an explicit deal-breaker for the target user base. Sequential handoff
 achieves the core goal — headphones follow you to the device that needs
-them — without requiring root anywhere, at the cost of roughly 1-2
-seconds of switching latency instead of near-instant.
+them — without requiring root anywhere, at the cost of a real few
+seconds of switching latency instead of near-instant (see
+docs/spec/architecture.md's Latency section for where that time
+actually goes).
 
 ## Consequences
-Switching is not instantaneous; user-facing copy and the 2.5s latency
-SLO (ADR 0006) are calibrated around this ~1.5s target, not true
-zero-latency multipoint. If Android's root requirements loosen further
+Switching is not instantaneous; user-facing copy and the 3.5-4s p95
+latency SLO (ADR 0007) are calibrated around a ~2-4s realistic target,
+not true zero-latency multipoint. If Android's root requirements loosen further
 across all OEMs (not just Pixel), dual-connection could become viable
 as an opt-in "fast mode" in a future version — revisit this ADR if that
 happens.
