@@ -1,0 +1,89 @@
+name: agent-code
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: agent-code-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write # required for GCP Workload Identity Federation
+
+jobs:
+  build:
+    if: github.event.label.name == 'agent-ready'
+    runs-on: ubuntu-latest
+    # claude-code-action / Claude Code CLI has no native per-run USD cap
+    # (confirmed - no such flag exists as of this writing). The
+    # max-budget-usd figures from the original plan (8 for Sonnet, 20 for
+    # Opus) are approximated via the two real levers below: --max-turns
+    # and this job's timeout-minutes, plus model choice itself. If you
+    # want a real dollar-denominated backstop, set an org-level spend
+    # limit in the Anthropic Console - there is no per-run equivalent.
+    timeout-minutes: ${{ contains(github.event.issue.labels.*.name, 'model:opus') && 60 || 45 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate thrw-agent App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_KEY }}
+
+      # Will fail until WIF_PROVIDER / GCP_PROJECT_AI secrets exist - expected
+      # at this stage. Assumes a service account named
+      # agent-pipeline@<project>.iam.gserviceaccount.com; adjust to match
+      # whatever name you actually create during GCP setup.
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: agent-pipeline@${{ secrets.GCP_PROJECT_AI }}.iam.gserviceaccount.com
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.app-token.outputs.token }}
+          use_vertex: "true"
+          prompt: |
+            Follow CLAUDE.md and AGENTS.md in this repository.
+
+            Implement the linked issue: #${{ github.event.issue.number }}
+
+            ${{ github.event.issue.body }}
+
+            Steps:
+            1. Read the issue's acceptance criteria and the package/service
+               path it targets.
+            2. Implement the change.
+            3. Run the exact test command the issue specifies (or
+               `pnpm turbo test --filter=<pkg>` for the target package) and
+               confirm it passes.
+            4. Write HANDOFF.md in the branch describing what was done and
+               what's uncertain, per AGENTS.md's definition of done.
+            5. Open a pull request with `gh pr create`, citing file+line
+               evidence for every acceptance criterion in the PR body.
+
+            If you hit AGENTS.md's stop conditions (5 failed test-fix
+            cycles, or genuine ambiguity), stop, comment on the issue, and
+            add the needs-human label instead of continuing.
+          claude_args: |
+            --model ${{ contains(github.event.issue.labels.*.name, 'model:opus') && 'claude-opus-5@latest' || 'claude-sonnet-5@latest' }}
+            --max-turns ${{ contains(github.event.issue.labels.*.name, 'model:opus') && 80 || 60 }}
+            --allowedTools "Read,Edit,Write,Bash(pnpm *),Bash(git *),Bash(gh *)"
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT_AI }}
+          CLOUD_ML_REGION: ${{ vars.GCP_VERTEX_REGION }}
