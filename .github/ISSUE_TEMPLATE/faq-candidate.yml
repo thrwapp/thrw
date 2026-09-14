@@ -1,0 +1,29 @@
+name: FAQ candidate
+description: A user question worth turning into an FAQ or wiki entry.
+title: "[faq] "
+labels: []
+body:
+  - type: textarea
+    id: original-question
+    attributes:
+      label: Original user question (verbatim)
+      description: Paste the user's question exactly as they asked it, unedited.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Any surrounding context that helps answer it well (platform, version, what they'd already tried, where they asked).
+    validations:
+      required: false
+
+  - type: input
+    id: related-wiki-page
+    attributes:
+      label: Related wiki page
+      description: Optional link to an existing wiki page this should update, if one exists.
+      placeholder: https://github.com/thrwapp/thrw/wiki/...
+    validations:
+      required: false

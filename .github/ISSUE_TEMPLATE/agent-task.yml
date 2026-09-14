@@ -1,0 +1,43 @@
+name: Agent task
+description: A task for an agent to implement, following AGENTS.md.
+title: "[agent] "
+labels: []
+body:
+  - type: input
+    id: target-path
+    attributes:
+      label: Package/service path
+      description: The package or service this task is scoped to, e.g. packages/protocol or services/licensing.
+      placeholder: packages/relay-core
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: A numbered list of acceptance criteria. The evaluator will grade every item as FAIL unless the PR cites file+line evidence for it.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: test-command
+    attributes:
+      label: Test command
+      description: The exact command to run to verify this task (e.g. pnpm turbo test --filter=@thrw/relay-core).
+      placeholder: pnpm turbo test --filter=@thrw/relay-core
+    validations:
+      required: true
+
+  - type: textarea
+    id: do-not-touch
+    attributes:
+      label: Paths the agent must not touch
+      description: Beyond the repo-default protected paths (.github/**, docs/adr/**, anything with "pricing" in its path), list any additional paths that are off-limits for this task. Leave blank if none.
+      placeholder: e.g. packages/protocol/src/topics.ts (frozen contract, do not touch without an ADR)
+    validations:
+      required: false
