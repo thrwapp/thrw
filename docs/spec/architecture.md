@@ -44,11 +44,43 @@ been fixed for basic AirPods control, but VendorID spoofing specifically
 still needs root regardless.
 
 Sequential handoff avoids this entirely: no VendorID spoofing, no root,
-works on stock Pixel + Android 17 today. The cost is switching takes
-roughly 1-2 seconds rather than being instant, since it's a real
-disconnect-then-reconnect rather than an instantaneous audio route change.
-That's an acceptable tradeoff for the addressable market size increase
-(everyone, not just rooted users).
+works on stock Pixel + Android 17 today. The cost is switching takes a
+real few seconds rather than being instant, since it's a genuine
+disconnect-then-reconnect rather than an instantaneous audio route
+change — see Latency below for where that time actually goes. That's an
+acceptable tradeoff for the addressable market size increase (everyone,
+not just rooted users).
+
+## Latency
+
+Sequential handoff's mechanical cost breaks down roughly as follows:
+
+- Trigger detection: 50-200ms
+- MQTT relay round-trip: 100-400ms (worse on 3G)
+- OS-level BT disconnect: 200-500ms
+- Winning device BT connect + audio profile (HFP) negotiation:
+  1-3 seconds — this is the dominant, physics-bound cost, not something
+  the relay architecture can improve
+
+Realistic end-to-end: **2-4 seconds typical**, not the earlier ~1.5s
+figure.
+
+The latency SLO referenced from ADR 0007 is revised accordingly: the
+alert threshold moves from 2.5s to **3.5-4s p95**, and the marketed
+target is "under 3s typical" rather than 1.5s. Flag: these revised
+numbers still need validation against real hardware timing (the Day 6-9
+AirPods test) before being treated as fact anywhere else, including
+marketing copy.
+
+## Positioning
+
+thrw should not be marketed as faster than Apple's native switching —
+Apple's own switching does a comparable real BT reconnect under the
+hood, just masked by tighter OS integration and an animation. thrw's
+honest advantage is working reliably across ecosystems where Apple's
+doesn't apply, plus the pre-claim mechanism (ADR 0011), which can make
+it *feel* faster in the specific case of phone calls even though raw
+mechanical latency is similar or worse.
 
 ## Why Sony/Nothing headphones are architecturally simpler than AirPods
 
@@ -88,6 +120,19 @@ to them at all.
   from licensing via a webhook bridge — Stripe subscription lifecycle
   events (created/updated/deleted) trigger Keygen API calls
   (create license / update policy / revoke).
+
+## Connection state machine
+
+Every adapter's node interface must support the same states for a
+managed headset:
+
+    idle -> pre-claim (speculative) -> claim (confirmed) -> active
+
+with a path from pre-claim back to release if the predicted trigger
+doesn't materialize (e.g. a ringing call is declined). See ADR 0010
+(conflict detection and cooldown) and ADR 0011 (predictive pre-claim)
+for the full rationale — this state machine, once implemented, is a
+frozen contract in the same way the MQTT topic structure is (AGENTS.md).
 
 ## MQTT topic design
 

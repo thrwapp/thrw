@@ -52,6 +52,11 @@ The MQTT topic structure and the node interface in `packages/protocol`
 change to them requires a new ADR in `docs/adr/` and human review — never
 a routine agent PR, even if it's inside `packages/**`.
 
+The node interface's connection state machine (idle / pre-claim / claim
+/ active / cooldown) defined in ADR 0010 and ADR 0011 is a frozen
+contract in the same way. Changes require an ADR and human review, not
+a routine agent PR.
+
 ## Build-time configuration, not hardcoded endpoints
 
 Per ADR 0005, every adapter must read its relay URL and licensing

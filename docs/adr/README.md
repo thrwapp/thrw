@@ -11,3 +11,6 @@
 | [0007](./0007-latency-slo-not-multi-region-by-default.md) | Single region at launch, with a measured trigger for adding a second | Accepted |
 | [0008](./0008-model-routing-via-vertex.md) | All LLM calls via Vertex AI, routed by task difficulty | Accepted |
 | [0009](./0009-stripe-keygen-decoupled-licensing.md) | Stripe for billing, self-hosted Keygen for device licensing — decoupled | Accepted |
+| [0010](./0010-conflict-detection-and-cooldown.md) | Conflict detection and cooldown for BT connection management | Accepted |
+| [0011](./0011-predictive-preclaim.md) | Predictive pre-claim using early trigger signals | Accepted |
+| [0012](./0012-proactive-conflict-resolution.md) | Proactively detect and help resolve competing connection managers | Accepted |
