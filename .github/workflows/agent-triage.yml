@@ -1,0 +1,77 @@
+name: agent-triage
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write # required for GCP Workload Identity Federation
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Will fail until WIF_PROVIDER / GCP_PROJECT_AI secrets exist - expected
+      # at this stage (see Prompt 3 prerequisites). Assumes a service account
+      # named agent-pipeline@<project>.iam.gserviceaccount.com; adjust to
+      # match whatever name you actually create during GCP setup.
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: agent-pipeline@${{ secrets.GCP_PROJECT_AI }}.iam.gserviceaccount.com
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Score issue completeness
+        id: triage
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          GCP_PROJECT_AI: ${{ secrets.GCP_PROJECT_AI }}
+        run: python3 scripts/triage.py
+
+      - name: Check for platform-API acceptance criteria
+        id: platform-check
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          target_path=$(printf '%s' "$ISSUE_BODY" | sed -n '/### Package\/service path/,/###/p')
+          is_native_adapter=false
+          if printf '%s' "$target_path" | grep -qE 'adapter-(mac|android)'; then
+            is_native_adapter=true
+          fi
+
+          mentions_platform_api=false
+          if printf '%s' "$ISSUE_BODY" | grep -qiE 'bluetooth|corebluetooth|telephonymanager'; then
+            mentions_platform_api=true
+          fi
+
+          if [ "$is_native_adapter" = true ] && [ "$mentions_platform_api" = true ]; then
+            echo "needs_opus=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_opus=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          SCORE: ${{ steps.triage.outputs.score }}
+          MISSING: ${{ steps.triage.outputs.missing }}
+          NEEDS_OPUS: ${{ steps.platform-check.outputs.needs_opus }}
+        run: |
+          if awk "BEGIN {exit !($SCORE >= 0.8)}"; then
+            gh issue edit "$ISSUE_URL" --add-label agent-ready
+            if [ "$NEEDS_OPUS" = "true" ]; then
+              gh issue edit "$ISSUE_URL" --add-label model:opus
+            fi
+          else
+            gh issue edit "$ISSUE_URL" --add-label needs-spec
+            gh issue comment "$ISSUE_URL" --body "This issue isn't ready for an agent yet - missing or empty: ${MISSING}. Please fill in the agent-task template's required sections."
+          fi
