@@ -1,0 +1,86 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # required to upload release assets
+  id-token: write # required for GCP Workload Identity Federation (announce job)
+
+jobs:
+  mac:
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+
+      # No Fastlane project exists yet (no Gemfile/Fastfile) - this is a
+      # placeholder in place of a real `fastlane mac release` lane.
+      # TODO(release): add a Gemfile + Fastfile with a real mac lane
+      # (signing, notarization, upload) and replace this step with
+      # `bundle exec fastlane mac release`.
+      - name: Placeholder Fastlane mac lane
+        run: |
+          echo "TODO: fastlane mac release lane not yet implemented."
+          mkdir -p dist
+          echo "placeholder mac build for ${{ github.ref_name }}" > dist/thrw-mac-${{ github.ref_name }}.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/thrw-mac-${{ github.ref_name }}.txt
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # TODO(release): add a Gemfile + Fastfile with a real android lane
+      # (signing, Play Store upload) and replace this step with
+      # `bundle exec fastlane android release`.
+      - name: Placeholder Fastlane android lane
+        run: |
+          echo "TODO: fastlane android release lane not yet implemented."
+          mkdir -p dist
+          echo "placeholder android build for ${{ github.ref_name }}" > dist/thrw-android-${{ github.ref_name }}.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/thrw-android-${{ github.ref_name }}.txt
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo build --release
+        working-directory: packages/adapter-linux
+        run: cargo build --release
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: packages/adapter-linux/target/release/libadapter_linux.*
+
+  announce:
+    needs: [mac, android, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Will fail until WIF_PROVIDER / GCP_PROJECT_AI secrets exist -
+      # expected at this stage. Reuses the agent-pipeline service account
+      # (social drafting is a Gemini Flash / Vertex AI task per ADR 0008).
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: agent-pipeline@${{ secrets.GCP_PROJECT_AI }}.iam.gserviceaccount.com
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Announce release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/social-post.py
