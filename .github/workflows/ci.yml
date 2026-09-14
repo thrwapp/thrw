@@ -1,0 +1,82 @@
+name: ci
+
+on:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Turborepo no-ops remote caching when TURBO_TOKEN is unset, so this is
+  # safe to leave wired even before a remote cache token secret exists.
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+jobs:
+  # Job id intentionally "lint" - Prompt 4's branch protection checklist
+  # requires the status check named "ci / lint".
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    services:
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        volumes:
+          - ${{ github.workspace }}/.github/mosquitto-ci.conf:/mosquitto/config/mosquitto.conf
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Android, Mac and iPad run in their own jobs below, on runners that
+      # actually have their toolchains - exclude them here rather than fail.
+      - name: Lint, typecheck, and test (TypeScript + Rust ecosystems)
+        run: >
+          pnpm turbo lint typecheck test
+          --filter=!@thrw/adapter-android
+          --filter=!@thrw/adapter-mac
+          --filter=!@thrw/adapter-ipad
+        env:
+          MQTT_BROKER_URL: mqtt://localhost:1883
+
+  android:
+    name: android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: gradlew test
+        working-directory: packages/adapter-android
+        run: ./gradlew test
+
+  mac-ipad:
+    name: mac-ipad
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: swift test (adapter-mac)
+        working-directory: packages/adapter-mac
+        run: swift test
+
+      - name: swift test (adapter-ipad)
+        working-directory: packages/adapter-ipad
+        run: swift test
