@@ -1,0 +1,61 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/relay-core/**"
+      - "services/relay-hosted/**"
+      - "services/licensing/**"
+
+concurrency:
+  group: deploy-relay
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # required for GCP Workload Identity Federation
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Will fail until WIF_PROVIDER / GCP_PROJECT_PROD secrets exist -
+      # expected at this stage. Assumes a service account named
+      # deploy@<project>.iam.gserviceaccount.com; adjust to match whatever
+      # name you actually create during GCP setup.
+      - name: Authenticate to GCP
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: deploy@${{ secrets.GCP_PROJECT_PROD }}.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # NOTE: this assumes a Dockerfile at services/relay-hosted/Dockerfile.
+      # None exists yet in this scaffold - this step will fail on "no such
+      # file" until one is added, separately from the GCP-secrets gap above.
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev" --quiet
+
+      - name: Build and push relay image
+        env:
+          IMAGE: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_PROD }}/thrw/relay
+        run: |
+          docker build -t "${IMAGE}:${{ github.sha }}" -t "${IMAGE}:latest" services/relay-hosted
+          docker push "${IMAGE}:${{ github.sha }}"
+          docker push "${IMAGE}:latest"
+
+      - name: Roll the relay VM
+        env:
+          IMAGE: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_PROD }}/thrw/relay
+        run: |
+          gcloud compute instances update-container "${{ vars.GCP_RELAY_VM_NAME || 'thrw-relay' }}" \
+            --zone="${{ vars.GCP_RELAY_ZONE || 'us-central1-a' }}" \
+            --container-image="${IMAGE}:${{ github.sha }}"
+
+      - name: Health check
+        run: ./scripts/health-check-or-rollback.sh "${{ vars.RELAY_HEALTH_URL }}"
