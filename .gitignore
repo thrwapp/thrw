@@ -21,3 +21,7 @@ packages/adapter-ipad/.swiftpm/
 
 # Rust
 packages/adapter-linux/target/
+
+# Python
+__pycache__/
+*.pyc
