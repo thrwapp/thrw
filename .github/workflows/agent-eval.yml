@@ -3,9 +3,14 @@ name: agent-eval
 on:
   pull_request:
     types: [opened, synchronize]
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
-  group: agent-eval-${{ github.event.pull_request.number }}
+  # pull_request.number is undefined under merge_group - fall back to the
+  # merge group's own head sha so concurrent PRs/queue entries don't
+  # collide on an empty group key and cancel each other.
+  group: agent-eval-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
   cancel-in-progress: true
 
 permissions:
@@ -27,12 +32,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20 # not specified in the original plan; a safety net sized to --max-turns 25 below
     steps:
-      - name: Skip - not an agent PR
-        if: github.event.pull_request.user.login != 'thrw-agent[bot]'
-        run: echo "PR author is not thrw-agent[bot]; nothing to evaluate."
+      # merge_group runs carry no `pull_request` object at all (a different
+      # event shape, not just a missing field) - checking event_name first
+      # rather than relying on an implicit null comparison under it.
+      - name: Skip - not a pull_request run from the agent
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.user.login != 'thrw-agent[bot]'
+        run: echo "Not a pull_request event from thrw-agent[bot]; nothing to evaluate."
 
       - uses: actions/checkout@v4
-        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
         with:
           fetch-depth: 0 # need main's history to compare test counts
 
@@ -40,25 +50,25 @@ jobs:
       # at this stage. Reuses the same agent-pipeline service account as
       # agent-triage.yml / agent-code.yml.
       - name: Authenticate to GCP
-        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: agent-pipeline@${{ secrets.GCP_PROJECT_AI }}.iam.gserviceaccount.com
 
       - uses: pnpm/action-setup@v4
-        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
       - uses: actions/setup-node@v4
-        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
 
       - name: Run evaluator
         id: eval
-        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
         uses: anthropics/claude-code-action@v1
         with:
           use_vertex: "true"

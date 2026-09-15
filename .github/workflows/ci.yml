@@ -2,9 +2,14 @@ name: ci
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  # pull_request.number is undefined under merge_group - fall back to the
+  # merge group's own head sha so concurrent PRs/queue entries don't
+  # collide on an empty group key and cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
   cancel-in-progress: true
 
 permissions:
