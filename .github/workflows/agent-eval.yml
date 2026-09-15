@@ -112,6 +112,13 @@ jobs:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          # Temporary: the --json-schema file-path fix (see above) got
+          # past the JSON-parse error, but the very next real run
+          # failed differently - "--json-schema was provided but
+          # Claude did not return structured_output" (1 turn, $0
+          # cost, is_error:true, instant). Need to see what Claude
+          # actually output before guessing why. Revert once diagnosed.
+          show_full_output: "true"
           prompt: |
             You are grading pull request #${{ github.event.pull_request.number }},
             opened by the agent, against the acceptance criteria in its
