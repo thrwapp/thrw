@@ -162,35 +162,57 @@ gh secret set GCP_PROJECT_AI --repo "$GH_REPO" --body "$GCP_PROJECT_AI"
 gh secret set GCP_PROJECT_PROD --repo "$GH_REPO" --body "$GCP_PROJECT_PROD"
 
 # GCP_VERTEX_REGION is NOT the same as GCP_REGION above - see the
-# "Claude on Vertex AI has its own region list" note below. Every other
-# variable here can safely share $GCP_REGION.
-gh variable set GCP_VERTEX_REGION --repo "$GH_REPO" --body "us-east5"
+# "Claude on Vertex AI: use the global endpoint" note below. Every
+# other variable here can safely share $GCP_REGION.
+gh variable set GCP_VERTEX_REGION --repo "$GH_REPO" --body "global"
 gh variable set GCP_ARTIFACT_REGISTRY_REGION --repo "$GH_REPO" --body "$GCP_REGION"
 gh variable set GCP_RELAY_ZONE --repo "$GH_REPO" --body "${GCP_REGION}-a"
 gh variable set GCP_RELAY_VM_NAME --repo "$GH_REPO" --body "thrw-relay"   # confirm this matches the real VM name
 gh variable set RELAY_HEALTH_URL --repo "$GH_REPO" --body "REPLACE_ME"   # real health endpoint, once known
 ```
 
-**Claude on Vertex AI has its own region list - confirmed live, don't
-reuse `$GCP_REGION` for it.** The original draft of this runbook set
+**Claude on Vertex AI: use the global endpoint, and drop the `@latest`
+suffix - confirmed live across three rounds of debugging, don't reuse
+`$GCP_REGION` for it.** The original draft of this runbook set
 `GCP_VERTEX_REGION` to the same value as every other region variable
 (`us-central1`), an unverified placeholder assumption. The day-2 smoke
-test hit this directly: `agent-code.yml` failed every real run with
-`api_error_status 404` / `"The model claude-sonnet-5@latest is not
-available on your vertex deployment"` - and switching to the
-model the error itself suggested (`claude-sonnet-4-6`) failed
-identically. Enabling the model in Model Garden changed nothing,
-because the actual problem wasn't the model at all: Anthropic's
-Claude models on Vertex AI are only deployed to a specific region
-list - confirmed as `us-east5`, `europe-west1`, `asia-southeast1`,
-plus an EU multi-region via `europe-west3` - and `us-central1` isn't
-on it. A `publishers/anthropic/models/<id>:rawPredict` call against
-any model name in an unsupported region 404s identically regardless
-of what's enabled, which is what made this look like a model-access
-problem instead of a region problem. Use `us-east5` (or another region
-from that list) for `GCP_VERTEX_REGION` specifically; leave
+test hit this directly, in stages:
+
+1. `agent-code.yml` failed every real run with `api_error_status 404`
+   / `"The model claude-sonnet-5@latest is not available on your
+   vertex deployment"` - and switching to the model the error itself
+   suggested (`claude-sonnet-4-6`) failed identically. Enabling the
+   model in Model Garden changed nothing.
+2. Tested a real Claude region (`us-east5`) directly - still the exact
+   same 404, unchanged. Region alone wasn't the fix either.
+3. A working example from Google/Anthropic's own docs used
+   `locations/global` (host `aiplatform.googleapis.com`, no regional
+   prefix) with the bare model id `claude-sonnet-5` - no `@latest`.
+   Tested directly: this combination routed correctly and hit a
+   **429 quota exceeded** instead of a 404 - proof the model id and
+   endpoint were finally right, and the only remaining blocker is a
+   real Vertex AI quota (see below).
+
+So two separate things were wrong at once, which is what made this so
+slow to pin down: `GCP_VERTEX_REGION` needs to be the literal string
+`global`, not a specific region (specific regions like `us-east5` do
+also host Claude per Google's own docs, but this repo's setup - via
+`claude-code-action`'s Vertex client - only worked against `global`
+in testing); and every `--model` flag in `agent-code.yml` /
+`agent-eval.yml` needs the bare model id (`claude-sonnet-5`,
+`claude-opus-5`), not an `@latest`-suffixed one. Leave
 `GCP_ARTIFACT_REGISTRY_REGION` and `GCP_RELAY_ZONE` on whatever region
-actually hosts those unrelated resources.
+actually hosts those unrelated resources - this only applies to Claude
+calls specifically.
+
+**Vertex AI quota**: a fresh project's quota for
+`aiplatform.googleapis.com/global_online_prediction_requests_per_base_model`
+(base model `anthropic-claude-sonnet`) may start at 0. If a real,
+correctly-addressed request 429s with `RESOURCE_EXHAUSTED` naming that
+quota, request an increase via the Vertex AI quotas page in the GCP
+Console for the `thrw-ai` project (console-only, not scriptable via
+`gcloud`) - see
+https://cloud.google.com/vertex-ai/docs/generative-ai/quotas-genai.
 
 ### A8. Also confirm before moving on
 
