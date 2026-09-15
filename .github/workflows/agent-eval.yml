@@ -15,13 +15,24 @@ permissions:
   id-token: write # required for GCP Workload Identity Federation
 
 jobs:
+  # No job-level `if` here on purpose: "agent-eval / evaluate" is a required
+  # status check (Prompt 4's branch ruleset). A job skipped via a job-level
+  # `if` never posts a status at all, which leaves a required check stuck
+  # "expected" forever and blocks every non-agent PR from merging - this bit
+  # us on the very first real PR after the ruleset went live. Instead the
+  # job always runs; only the real work is step-conditional, so the job
+  # trivially succeeds (and the check reports green) on PRs the evaluator
+  # doesn't apply to.
   evaluate:
-    # Only fresh-context-grade PRs opened by the agent itself.
-    if: github.event.pull_request.user.login == 'thrw-agent[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20 # not specified in the original plan; a safety net sized to --max-turns 25 below
     steps:
+      - name: Skip - not an agent PR
+        if: github.event.pull_request.user.login != 'thrw-agent[bot]'
+        run: echo "PR author is not thrw-agent[bot]; nothing to evaluate."
+
       - uses: actions/checkout@v4
+        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
         with:
           fetch-depth: 0 # need main's history to compare test counts
 
@@ -29,20 +40,25 @@ jobs:
       # at this stage. Reuses the same agent-pipeline service account as
       # agent-triage.yml / agent-code.yml.
       - name: Authenticate to GCP
+        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: agent-pipeline@${{ secrets.GCP_PROJECT_AI }}.iam.gserviceaccount.com
 
       - uses: pnpm/action-setup@v4
+        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
       - uses: actions/setup-node@v4
+        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
 
       - name: Run evaluator
         id: eval
+        if: github.event.pull_request.user.login == 'thrw-agent[bot]'
         uses: anthropics/claude-code-action@v1
         with:
           use_vertex: "true"
