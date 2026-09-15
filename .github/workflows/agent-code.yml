@@ -82,6 +82,13 @@ jobs:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          # Temporary (3rd occurrence this pipeline): federation itself
+          # authenticated correctly ("Workload identity federation
+          # configured (rule: fdrl_...)") but the run still failed
+          # instantly (1 turn, ~750ms, $0 cost, is_error:true) with the
+          # real error hidden by this input's own default. Need to see
+          # it before guessing. Revert once a run actually succeeds.
+          show_full_output: "true"
           prompt: |
             Follow CLAUDE.md and AGENTS.md in this repository.
 
