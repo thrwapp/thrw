@@ -46,6 +46,20 @@ jobs:
         with:
           fetch-depth: 0 # need main's history to compare test counts
 
+      # Labels applied with the default GITHUB_TOKEN don't trigger other
+      # workflow runs (a deliberate GitHub Actions anti-recursion guard -
+      # confirmed live in agent-triage.yml, see its comment). Nothing
+      # currently listens for needs-human being added, but use the same
+      # App token as agent-triage.yml/agent-code.yml for consistency and
+      # so it's not a landmine for whatever eventually does.
+      - name: Generate thrw-agent App token
+        id: app-token
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_KEY }}
+
       # Will fail until WIF_PROVIDER / GCP_PROJECT_AI secrets exist - expected
       # at this stage. Reuses the same agent-pipeline service account as
       # agent-triage.yml / agent-code.yml.
@@ -99,7 +113,7 @@ jobs:
       - name: Act on evaluation result
         if: always() && steps.eval.outputs.structured_output != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           RESULT: ${{ steps.eval.outputs.structured_output }}
         run: |

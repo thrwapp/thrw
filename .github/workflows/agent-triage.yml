@@ -15,6 +15,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Labels applied with the default GITHUB_TOKEN don't trigger other
+      # workflow runs - a deliberate GitHub Actions anti-recursion guard,
+      # confirmed live: agent-triage successfully applied agent-ready to
+      # issue #5 using github.token, and agent-code.yml's `issues:
+      # types: [labeled]` trigger never fired at all (zero runs). App
+      # installation tokens aren't subject to that restriction, so use
+      # the same thrw-agent App token agent-code.yml/agent-eval.yml
+      # already authenticate with.
+      - name: Generate thrw-agent App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGENT_APP_ID }}
+          private-key: ${{ secrets.AGENT_APP_KEY }}
+
       # Will fail until WIF_PROVIDER / GCP_PROJECT_AI secrets exist - expected
       # at this stage (see Prompt 3 prerequisites). Assumes a service account
       # named agent-pipeline@<project>.iam.gserviceaccount.com; adjust to
@@ -60,7 +75,7 @@ jobs:
 
       - name: Apply labels
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ISSUE_URL: ${{ github.event.issue.html_url }}
           SCORE: ${{ steps.triage.outputs.score }}
           MISSING: ${{ steps.triage.outputs.missing }}
