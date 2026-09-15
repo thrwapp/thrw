@@ -80,6 +80,18 @@ jobs:
       - run: pnpm install --frozen-lockfile
         if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
 
+      # --json-schema needs the schema content itself, not a file path -
+      # confirmed live: passing the path directly failed with "--json-schema
+      # is not valid JSON: JSON Parse error: Unexpected token '.'" (the SDK
+      # layer claude-code-action uses parses the value as literal JSON
+      # immediately, unlike the bare `claude` CLI's own file-path support).
+      # Reading it into a step output here keeps the schema file itself as
+      # the single source of truth instead of duplicating it inline.
+      - name: Load agent-eval JSON schema
+        id: schema
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
+        run: echo "json=$(jq -c . .github/schemas/agent-eval-result.schema.json)" >> "$GITHUB_OUTPUT"
+
       - name: Run evaluator
         id: eval
         if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
@@ -119,7 +131,7 @@ jobs:
             --model claude-sonnet-5
             --max-turns 25
             --allowedTools "Read,Bash(pnpm test *),Bash(git diff *),Bash(gh pr *)"
-            --json-schema .github/schemas/agent-eval-result.schema.json
+            --json-schema '${{ steps.schema.outputs.json }}'
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT_AI }}
           CLOUD_ML_REGION: ${{ vars.GCP_VERTEX_REGION }}
