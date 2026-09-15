@@ -78,6 +78,14 @@ jobs:
 
   mac-ipad:
     name: mac-ipad
+    # No self-hosted macOS runner is registered yet. Scheduling this job
+    # unconditionally left it permanently "queued" (no runner will ever
+    # pick it up), which blocked auto-merge/the merge queue entirely -
+    # GitHub waits for every check suite on the PR to reach a terminal
+    # state, not just the required ones, and "queued forever" never
+    # does. Skip outright until a runner exists; flip this repo variable
+    # to "true" once one is registered.
+    if: vars.HAS_MACOS_RUNNER == 'true'
     runs-on: [self-hosted, macOS]
     steps:
       - uses: actions/checkout@v4
