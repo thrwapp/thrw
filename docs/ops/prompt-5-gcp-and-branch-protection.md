@@ -161,12 +161,36 @@ gh secret set WIF_PROVIDER --repo "$GH_REPO" --body "$WIF_PROVIDER"
 gh secret set GCP_PROJECT_AI --repo "$GH_REPO" --body "$GCP_PROJECT_AI"
 gh secret set GCP_PROJECT_PROD --repo "$GH_REPO" --body "$GCP_PROJECT_PROD"
 
-gh variable set GCP_VERTEX_REGION --repo "$GH_REPO" --body "$GCP_REGION"
+# GCP_VERTEX_REGION is NOT the same as GCP_REGION above - see the
+# "Claude on Vertex AI has its own region list" note below. Every other
+# variable here can safely share $GCP_REGION.
+gh variable set GCP_VERTEX_REGION --repo "$GH_REPO" --body "us-east5"
 gh variable set GCP_ARTIFACT_REGISTRY_REGION --repo "$GH_REPO" --body "$GCP_REGION"
 gh variable set GCP_RELAY_ZONE --repo "$GH_REPO" --body "${GCP_REGION}-a"
 gh variable set GCP_RELAY_VM_NAME --repo "$GH_REPO" --body "thrw-relay"   # confirm this matches the real VM name
 gh variable set RELAY_HEALTH_URL --repo "$GH_REPO" --body "REPLACE_ME"   # real health endpoint, once known
 ```
+
+**Claude on Vertex AI has its own region list - confirmed live, don't
+reuse `$GCP_REGION` for it.** The original draft of this runbook set
+`GCP_VERTEX_REGION` to the same value as every other region variable
+(`us-central1`), an unverified placeholder assumption. The day-2 smoke
+test hit this directly: `agent-code.yml` failed every real run with
+`api_error_status 404` / `"The model claude-sonnet-5@latest is not
+available on your vertex deployment"` - and switching to the
+model the error itself suggested (`claude-sonnet-4-6`) failed
+identically. Enabling the model in Model Garden changed nothing,
+because the actual problem wasn't the model at all: Anthropic's
+Claude models on Vertex AI are only deployed to a specific region
+list - confirmed as `us-east5`, `europe-west1`, `asia-southeast1`,
+plus an EU multi-region via `europe-west3` - and `us-central1` isn't
+on it. A `publishers/anthropic/models/<id>:rawPredict` call against
+any model name in an unsupported region 404s identically regardless
+of what's enabled, which is what made this look like a model-access
+problem instead of a region problem. Use `us-east5` (or another region
+from that list) for `GCP_VERTEX_REGION` specifically; leave
+`GCP_ARTIFACT_REGISTRY_REGION` and `GCP_RELAY_ZONE` on whatever region
+actually hosts those unrelated resources.
 
 ### A8. Also confirm before moving on
 
