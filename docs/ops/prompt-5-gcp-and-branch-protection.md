@@ -551,10 +551,36 @@ queuing forever, rather than discovering this the way we did.
 
 ---
 
+## Step B.5 — bootstrap the pipeline's labels (found missing on first real run)
+
+`agent-triage.yml`, `agent-code.yml`, and `agent-eval.yml` all assume
+`agent-ready`, `needs-spec`, `needs-human`, and `model:opus` already exist
+as labels on the repo - none of the scaffolding prompts ever created them.
+The first real smoke-test issue (#4) proved this the hard way: triage ran
+end-to-end correctly (GCP WIF auth succeeded, `scripts/triage.py` scored
+it 1.00, decided to apply `agent-ready`) and then the whole job failed
+with `failed to update ...: 'agent-ready' not found`, so the issue was
+never labeled and the rest of the chain (agent-code, agent-eval) never
+triggered. Run this once, before opening any smoke-test issue:
+
+```bash
+gh label create agent-ready   --repo "$GH_REPO" --color 0E8A16 --description "Passed agent-triage; agent-code will pick it up"
+gh label create needs-spec    --repo "$GH_REPO" --color D93F0B --description "Issue is missing required agent-task sections"
+gh label create needs-human   --repo "$GH_REPO" --color B60205 --description "Agent hit a stop condition or failed evaluation; needs human attention"
+gh label create model:opus    --repo "$GH_REPO" --color 5319E7 --description "Route this issue to Opus instead of Sonnet"
+```
+
 ## Step C — Day-2 smoke test
 
-Once Parts A and B are done: open a trivial issue using the
+Once Parts A and B (and B.5) are done: open a trivial issue using the
 `agent-task.yml` template, and watch it flow triage → `agent-ready` label
 → agent-code run → PR → agent-eval → merge (or `needs-human` if something
 fails). Report back what actually happened at each stage, including
 partial completion - per AGENTS.md's honesty requirement.
+
+Note: issue events only fire `agent-triage.yml` on `types: [opened]` -
+closing/reopening an issue does not refire it, and neither does adding a
+label by hand skip validating triage itself. If a smoke-test issue's
+triage run fails for a fixable reason (like the missing labels above),
+fix the root cause and open a *new* issue rather than trying to re-trigger
+triage on the same one.
