@@ -67,6 +67,13 @@ jobs:
           # first real run after the App-token labeling fix.
           allowed_bots: "thrw-agent[bot]"
           use_vertex: "true"
+          # Temporary: the next real run failed instantly (1 turn, ~1s,
+          # $0 cost, is_error:true) with the actual error hidden by this
+          # input's own default (false). Need one real run's error text
+          # to diagnose - almost certainly a Vertex AI model-access/name
+          # issue for claude-sonnet-5@latest, but not confirmed yet.
+          # Revert once the underlying cause is fixed.
+          show_full_output: "true"
           prompt: |
             Follow CLAUDE.md and AGENTS.md in this repository.
 
