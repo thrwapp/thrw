@@ -304,12 +304,28 @@ calls, `docs/ops/budget-killswitch/main.py` instead disables just
 everything else in the project alone, and is trivially reversible
 (`gcloud services enable aiplatform.googleapis.com`).
 
-### A3.1 Look up the billing account
+### A3.1 Look up the billing account and its currency
 
 ```bash
 gcloud billing accounts list
 export BILLING_ACCOUNT_ID="XXXXXX-XXXXXX-XXXXXX"   # from the list above
+
+# Check existing budgets to confirm the account's currency before
+# picking an amount below - `gcloud billing budgets create` rejects a
+# specifiedAmount in a currency that doesn't match the billing
+# account's own currency, with a generic INVALID_ARGUMENT that names
+# no field. Confirmed against thrwapp's real account: GBP, not USD -
+# the commands below use GBP accordingly; adjust for yours.
+gcloud billing budgets list --billing-account="$BILLING_ACCOUNT_ID" --billing-project="$GCP_PROJECT_AI"
 ```
+
+Also note **`--billing-project`**: every `gcloud billing budgets ...`
+command below needs it, set to a project where `billingbudgets.googleapis.com`
+is actually enabled (A3.2 enables it on `$GCP_PROJECT_AI`). Without it,
+gcloud checks API enablement against your ambient default `gcloud
+config` project instead - not `$GCP_PROJECT_AI` - which fails with the
+same generic error and no indication that project selection is the
+actual problem.
 
 ### A3.2 Budget + kill switch on GCP_PROJECT_AI
 
@@ -337,24 +353,30 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT_AI" \
 # Topic the budget will publish to
 gcloud pubsub topics create budget-alerts-ai --project="$GCP_PROJECT_AI"
 
-# Deploy the function - source lives in this repo at docs/ops/budget-killswitch/
+# Deploy the function - use an ABSOLUTE path for --source. A relative
+# path only resolves if this command runs from the exact directory
+# docs/ops/budget-killswitch was created under; "$(pwd)/..." avoids
+# depending on that.
 gcloud functions deploy stop-vertex-spend \
   --gen2 \
   --project="$GCP_PROJECT_AI" \
   --region="$GCP_REGION" \
   --runtime=python312 \
-  --source=docs/ops/budget-killswitch \
+  --source="$(pwd)/docs/ops/budget-killswitch" \
   --entry-point=stop_vertex_spend \
   --trigger-topic=budget-alerts-ai \
   --service-account="budget-killswitch@${GCP_PROJECT_AI}.iam.gserviceaccount.com" \
   --set-env-vars="PROJECT_ID=${GCP_PROJECT_AI},PROJECT_NUMBER=${AI_PROJECT_NUMBER}" \
   --no-allow-unauthenticated
 
-# The budget itself: alerts at 50/90/100%, and the 100% one also fires the function
+# The budget itself: alerts at 50/90/100%, and the 100% one also fires the function.
+# Currency must match the billing account's own currency (A3.1) - GBP
+# for thrwapp's real account, not USD as originally drafted.
 gcloud billing budgets create \
+  --billing-project="$GCP_PROJECT_AI" \
   --billing-account="$BILLING_ACCOUNT_ID" \
   --display-name="thrw-ai-monthly" \
-  --budget-amount=50USD \
+  --budget-amount=50GBP \
   --filter-projects="projects/${AI_PROJECT_NUMBER}" \
   --threshold-rule=percent=0.5 \
   --threshold-rule=percent=0.9 \
@@ -368,9 +390,10 @@ gcloud billing budgets create \
 export PROD_PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT_PROD" --format='value(projectNumber)')
 
 gcloud billing budgets create \
+  --billing-project="$GCP_PROJECT_PROD" \
   --billing-account="$BILLING_ACCOUNT_ID" \
   --display-name="thrw-prod-monthly" \
-  --budget-amount=30USD \
+  --budget-amount=30GBP \
   --filter-projects="projects/${PROD_PROJECT_NUMBER}" \
   --threshold-rule=percent=0.5 \
   --threshold-rule=percent=0.9 \
@@ -468,13 +491,63 @@ explicit `bypass_actors` entry for the `thrw-agent` App would be needed,
 and that specific setting is web-UI-only (Settings → Rules → Rulesets →
 the ruleset → Bypass list).
 
-**Verified working** (updated after first real run): the `pull_request`
-rule initially 422'd with just `require_code_owner_review` and
-`required_approving_review_count` - GitHub's schema requires the full
-five-field parameter set shown above, not a partial one. The
-`merge_queue` and `required_status_checks` rules validated on the first
-try. This ruleset has now been created successfully against
-thrwapp/thrw.
+**Verified working, `pull_request` rule**: initially 422'd with just
+`require_code_owner_review` and `required_approving_review_count` -
+GitHub's schema requires the full five-field parameter set shown
+above, not a partial one. The `merge_queue` and `required_status_checks`
+rules were both *accepted* by the API on the first try - but accepted
+is not the same as correct, see below.
+
+**`required_status_checks` has a real first-PR bootstrapping trap -
+read this before requiring any check by name.** On thrwapp/thrw's very
+first PR after this ruleset went live, both `ci / lint` and
+`agent-eval / evaluate` passed repeatedly and unambiguously on the
+PR's own head commit, and the PR still sat forever on "Expected -
+Waiting for status to be reported" for those exact two required-check
+slots, blocking the merge queue indefinitely. What did **not** fix it:
+adding `merge_group:` triggers to the workflows (necessary, real fix
+for a different problem, but not this one); renaming the required
+checks to literally include `(pull_request)` (that suffix is a
+GitHub UI decoration showing which event triggered a check, never
+literal context text - don't type it into a required-check name).
+What we could not get to work at all via the API-constructed ruleset:
+free-text/hand-written `context` strings for checks that had never
+been reported anywhere in the repo before. The GitHub UI's own
+required-check picker (Settings → Rules → Rulesets → the ruleset →
+"Require status checks to pass" → the search box) showed **zero
+suggestions** for these exact same check names, at the same time they
+were visibly succeeding on the open PR - strong evidence GitHub's
+required-status-check matching needs something beyond a bare context
+string (most likely a specific GitHub App binding) that a hand-built
+API payload doesn't easily supply, and that the UI's picker only
+offers once it has independently seen a check reported somewhere it
+recognizes.
+
+The unblock that actually worked: remove the `required_status_checks`
+rule entirely, let the PR merge through the queue (`merge_queue` +
+`pull_request` rules alone are enough to require review + queue
+ordering), and only *after* that real merge exists, re-add the
+required checks - at that point the repo has enough history for
+whatever the UI picker needs, and picking them from its dropdown
+(never typing the context by hand) is the way to add them. If you're
+setting this up fresh and hit the same empty-dropdown symptom on your
+first PR, don't fight it: drop `required_status_checks` from the
+initial ruleset, get one PR through, then add it back via the UI.
+
+One more real mechanic worth knowing: on a merge-queue-required repo,
+GitHub's "auto-merge" toggle and the PR page's "Merge when ready"
+button fire the *identical* underlying event - they are not two
+different mechanisms. What actually got PR #1 enqueued was disabling
+auto-merge and then clicking "Merge when ready" directly, which
+produced the same webhook event as every earlier attempt - so the fix
+that worked was removing the blocking rule, not switching mechanisms.
+Also: a job that's scheduled but can never complete (no matching
+runner, e.g. `mac-ipad` needing self-hosted macOS) blocks auto-merge/
+the queue even when it isn't in the required-checks list - GitHub
+waits for every check suite on a PR to reach a terminal state, not
+just the required ones. Gate such jobs behind a repo variable
+(`if: vars.HAS_MACOS_RUNNER == 'true'`) so they skip cleanly instead of
+queuing forever, rather than discovering this the way we did.
 
 ---
 
