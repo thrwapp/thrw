@@ -85,7 +85,21 @@ jobs:
         if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
         uses: anthropics/claude-code-action@v1
         with:
-          use_vertex: "true"
+          # This step only ever runs for a PR opened by thrw-agent[bot]
+          # (see the `if` above), so the triggering actor is always
+          # that bot - the same non-human-actor rejection agent-code.yml
+          # hit applies here too, just never exercised yet since no
+          # agent-code run has ever succeeded in opening a real PR.
+          # Added proactively rather than waiting to discover it live.
+          allowed_bots: "thrw-agent[bot]"
+          # TEMPORARY: see agent-code.yml's matching comment - bypassing
+          # Vertex via Anthropic's own workload identity federation
+          # while a Vertex quota increase for thrw-ai is pending.
+          use_vertex: "false"
+          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
           prompt: |
             You are grading pull request #${{ github.event.pull_request.number }},
             opened by the agent, against the acceptance criteria in its

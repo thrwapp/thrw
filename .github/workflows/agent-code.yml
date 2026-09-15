@@ -66,16 +66,22 @@ jobs:
           # initiated by non-human actor: thrw-agent (type: Bot)" on the
           # first real run after the App-token labeling fix.
           allowed_bots: "thrw-agent[bot]"
-          use_vertex: "true"
-          # Temporary (2nd time): after enabling Claude Sonnet 5 in the
-          # thrw-ai project's Vertex AI Model Garden, the next real run
-          # still failed with the exact same fingerprint as the earlier
-          # 404 (1 turn, ~1s, $0 cost, is_error:true) - but the error
-          # text is hidden again since #12 reverted this flag. Could be
-          # Model Garden access propagation delay, a region mismatch, or
-          # something else; re-enabling to confirm rather than guessing
-          # twice. Revert once a run actually succeeds.
-          show_full_output: "true"
+          # TEMPORARY: bypassing Vertex entirely via Anthropic's own
+          # workload identity federation (no static API key - the same
+          # GitHub OIDC token this job already requests via id-token:
+          # write, just exchanged with Anthropic instead of GCP).
+          # Needed because both claude-sonnet-5 and claude-opus-5 are
+          # confirmed 429 RESOURCE_EXHAUSTED on thrw-ai's Vertex quota
+          # (a real quota increase is pending). Revert to use_vertex:
+          # "true" (and drop the four anthropic_* lines below) once
+          # that quota is approved - the "Authenticate to GCP" step
+          # above is left in place, unused, to make that revert a
+          # one-line change.
+          use_vertex: "false"
+          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
           prompt: |
             Follow CLAUDE.md and AGENTS.md in this repository.
 
