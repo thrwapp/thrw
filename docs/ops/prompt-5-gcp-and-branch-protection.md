@@ -278,6 +278,129 @@ on a public IP even for a few minutes.
 
 ---
 
+## Part A3 — billing budgets, and a scoped kill switch on GCP_PROJECT_AI
+
+ADR 0008 called for "each [project] with its own budget alert" so a
+runaway agent loop's spend is billing-isolated - this was never actually
+implemented until now. Two different postures for the two projects:
+
+- **GCP_PROJECT_AI** (Vertex AI spend, driven by `agent-triage`,
+  `agent-code`, `agent-eval`, and `release.yml`'s announce job): alert
+  *and* an automated hard stop. A runaway agent loop is the realistic
+  failure mode here, and it's automatable.
+- **GCP_PROJECT_PROD** (the relay VM, ADR 0006 estimates $0-$20/month):
+  alert only. An automated hard stop here risks taking down the live
+  relay - worse than the overspend it would prevent. A human should
+  always be in the loop for this project.
+
+**On the hard stop's design**: the common reference pattern for this
+(Google's own documented example) works by fully detaching the billing
+account from the project - its own README warns this "will shut down
+all existing resources and it's unlikely you will be able to recover
+them." That's real risk to the WIF pool and service accounts from Part
+A. Since the actual cost driver here is specifically Vertex AI API
+calls, `docs/ops/budget-killswitch/main.py` instead disables just
+`aiplatform.googleapis.com` on threshold - it stops the spend, leaves
+everything else in the project alone, and is trivially reversible
+(`gcloud services enable aiplatform.googleapis.com`).
+
+### A3.1 Look up the billing account
+
+```bash
+gcloud billing accounts list
+export BILLING_ACCOUNT_ID="XXXXXX-XXXXXX-XXXXXX"   # from the list above
+```
+
+### A3.2 Budget + kill switch on GCP_PROJECT_AI
+
+```bash
+# APIs needed to build and run the Cloud Function
+gcloud services enable \
+  cloudfunctions.googleapis.com \
+  run.googleapis.com \
+  eventarc.googleapis.com \
+  pubsub.googleapis.com \
+  cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
+  billingbudgets.googleapis.com \
+  --project="$GCP_PROJECT_AI"
+
+# Service account for the function, scoped to exactly one permission
+gcloud iam service-accounts create budget-killswitch \
+  --project="$GCP_PROJECT_AI" \
+  --display-name="Budget kill switch (disables Vertex AI on overspend)"
+
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_AI" \
+  --member="serviceAccount:budget-killswitch@${GCP_PROJECT_AI}.iam.gserviceaccount.com" \
+  --role="roles/serviceusage.serviceUsageAdmin"
+
+# Topic the budget will publish to
+gcloud pubsub topics create budget-alerts-ai --project="$GCP_PROJECT_AI"
+
+# Deploy the function - source lives in this repo at docs/ops/budget-killswitch/
+gcloud functions deploy stop-vertex-spend \
+  --gen2 \
+  --project="$GCP_PROJECT_AI" \
+  --region="$GCP_REGION" \
+  --runtime=python312 \
+  --source=docs/ops/budget-killswitch \
+  --entry-point=stop_vertex_spend \
+  --trigger-topic=budget-alerts-ai \
+  --service-account="budget-killswitch@${GCP_PROJECT_AI}.iam.gserviceaccount.com" \
+  --set-env-vars="PROJECT_ID=${GCP_PROJECT_AI},PROJECT_NUMBER=${AI_PROJECT_NUMBER}" \
+  --no-allow-unauthenticated
+
+# The budget itself: alerts at 50/90/100%, and the 100% one also fires the function
+gcloud billing budgets create \
+  --billing-account="$BILLING_ACCOUNT_ID" \
+  --display-name="thrw-ai-monthly" \
+  --budget-amount=50USD \
+  --filter-projects="projects/${AI_PROJECT_NUMBER}" \
+  --threshold-rule=percent=0.5 \
+  --threshold-rule=percent=0.9 \
+  --threshold-rule=percent=1.0 \
+  --notifications-rule-pubsub-topic="projects/${GCP_PROJECT_AI}/topics/budget-alerts-ai"
+```
+
+### A3.3 Budget on GCP_PROJECT_PROD (alert only, no kill switch)
+
+```bash
+export PROD_PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT_PROD" --format='value(projectNumber)')
+
+gcloud billing budgets create \
+  --billing-account="$BILLING_ACCOUNT_ID" \
+  --display-name="thrw-prod-monthly" \
+  --budget-amount=30USD \
+  --filter-projects="projects/${PROD_PROJECT_NUMBER}" \
+  --threshold-rule=percent=0.5 \
+  --threshold-rule=percent=0.9 \
+  --threshold-rule=percent=1.0
+```
+
+No `--notifications-rule-pubsub-topic` here - default behavior is an
+email to billing account admins at each threshold, nothing automated.
+
+### A3.4 Verify, and recover if it ever fires
+
+```bash
+gcloud billing budgets list --billing-account="$BILLING_ACCOUNT_ID"
+
+# If the AI project's Vertex API ever does get disabled by the kill switch:
+gcloud services enable aiplatform.googleapis.com --project="$GCP_PROJECT_AI"
+```
+
+**Honesty check on this section, same as everywhere else in this
+runbook:** the `gcloud billing budgets create` flags and the Service
+Usage API disable call were verified against current documentation and
+a real reference implementation before being written here, but the
+Cloud Function itself has not been deployed and triggered end-to-end -
+there's no way to safely generate real Vertex spend just to test it.
+Consider triggering it manually once with a synthetic Pub/Sub message
+(`{"costAmount": 999, "budgetAmount": 50}` base64-encoded in the
+`message.data` field) before trusting it in anger.
+
+---
+
 ## Part B — branch protection on `main`
 
 ```bash
