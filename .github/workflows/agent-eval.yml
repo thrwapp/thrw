@@ -102,7 +102,7 @@ jobs:
 
             Output your result as JSON matching the provided schema.
           claude_args: |
-            --model claude-sonnet-5@latest
+            --model claude-sonnet-5
             --max-turns 25
             --allowedTools "Read,Bash(pnpm test *),Bash(git diff *),Bash(gh pr *)"
             --json-schema .github/schemas/agent-eval-result.schema.json

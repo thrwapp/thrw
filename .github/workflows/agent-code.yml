@@ -109,7 +109,7 @@ jobs:
             cycles, or genuine ambiguity), stop, comment on the issue, and
             add the needs-human label instead of continuing.
           claude_args: |
-            --model ${{ contains(github.event.issue.labels.*.name, 'model:opus') && 'claude-opus-5@latest' || 'claude-sonnet-5@latest' }}
+            --model ${{ contains(github.event.issue.labels.*.name, 'model:opus') && 'claude-opus-5' || 'claude-sonnet-5' }}
             --max-turns ${{ contains(github.event.issue.labels.*.name, 'model:opus') && 80 || 60 }}
             --allowedTools "Read,Edit,Write,Bash(pnpm *),Bash(git *),Bash(gh *)"
         env:
