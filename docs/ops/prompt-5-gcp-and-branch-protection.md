@@ -182,6 +182,102 @@ gh variable set RELAY_HEALTH_URL --repo "$GH_REPO" --body "REPLACE_ME"   # real 
 
 ---
 
+## Part A2 — create the relay VM (EMQX only; Keygen CE deferred)
+
+ADR 0006 reads as if this VM already exists ("Accepted," past tense) but
+it may not — check with `gcloud compute instances list
+--project="$GCP_PROJECT_PROD"` before running this. This section is
+scoped deliberately narrow: it stands up the VM and EMQX (the actual
+MQTT relay), not Keygen CE. Keygen's self-host setup needs its own
+Postgres + Redis + generated signing keys + bootstrap - a meaningfully
+bigger task than a docker run, and not required before EMQX exists for
+protocol/adapter development to start against. Do that as separate,
+later work once billing/licensing is actually being built - don't
+block on it now.
+
+**Region constraint:** the Always Free e2-micro tier only applies in
+`us-west1`, `us-central1`, or `us-east1`. Outside those three, this VM
+is a real, billed resource. `$GCP_REGION` from Part A should already be
+one of these three - confirm before proceeding.
+
+```bash
+export RELAY_VM_NAME="thrw-relay"   # must match GCP_RELAY_VM_NAME pushed in A7
+export RELAY_ZONE="${GCP_REGION}-a"
+
+cat > /tmp/relay-startup.sh <<'STARTUP'
+#!/bin/bash
+set -euo pipefail
+apt-get update
+apt-get install -y docker.io
+systemctl enable --now docker
+docker run -d --name emqx --restart unless-stopped \
+  -p 8083:8083 \
+  -p 18083:18083 \
+  emqx/emqx:5
+STARTUP
+
+gcloud compute instances create "$RELAY_VM_NAME" \
+  --project="$GCP_PROJECT_PROD" \
+  --zone="$RELAY_ZONE" \
+  --machine-type=e2-micro \
+  --image-family=debian-12 \
+  --image-project=debian-cloud \
+  --tags=thrw-relay \
+  --metadata-from-file=startup-script=/tmp/relay-startup.sh
+
+# Open only what ADR 0001 actually calls for: MQTT-over-WebSocket (8083,
+# unencrypted for now - TLS/8084 needs a domain + cert, separate work)
+# and EMQX's dashboard/status API (18083, used for the health check).
+# Deliberately NOT opening 1883 (raw MQTT) - ADR 0001 chose WebSocket
+# transport specifically, not raw TCP MQTT.
+gcloud compute firewall-rules create thrw-relay-emqx \
+  --project="$GCP_PROJECT_PROD" \
+  --network=default \
+  --direction=INGRESS \
+  --action=ALLOW \
+  --rules=tcp:8083,tcp:18083 \
+  --target-tags=thrw-relay \
+  --source-ranges=0.0.0.0/0
+```
+
+Get the external IP and verify EMQX is actually up (the startup script
+needs a minute or two to run docker.io install + pull the image on
+first boot):
+
+```bash
+export RELAY_IP=$(gcloud compute instances describe "$RELAY_VM_NAME" \
+  --project="$GCP_PROJECT_PROD" \
+  --zone="$RELAY_ZONE" \
+  --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+
+echo "$RELAY_IP"
+curl -i "http://${RELAY_IP}:18083/api/v5/status"
+```
+
+A healthy response is `HTTP 200` with a body like `Node 'emqx@...' is
+started`. Once confirmed, set the real health-check URL:
+
+```bash
+gh variable set RELAY_HEALTH_URL --repo "$GH_REPO" --body "http://${RELAY_IP}:18083/api/v5/status"
+```
+
+**Security note, do this immediately:** EMQX 5's dashboard ships with a
+default `admin` / `public` login, reachable at
+`http://${RELAY_IP}:18083` over the open internet the moment this VM is
+up. Log in and change it right away - don't leave the default sitting
+on a public IP even for a few minutes.
+
+**Still deferred, not covered here:**
+- TLS (`wss://`, port 8084) - needs a domain name pointed at
+  `$RELAY_IP` and a cert (e.g. via Caddy or certbot in front of EMQX).
+  ADR 0001's actual decision is WebSocket **over TLS**; the setup above
+  is a plaintext bring-up step, not the final state.
+- Keygen CE (ADR 0009) - separate task once licensing work starts.
+- `services/relay-hosted`'s own application code and Dockerfile
+  (referenced by `deploy.yml`) - still doesn't exist.
+
+---
+
 ## Part B — branch protection on `main`
 
 ```bash
@@ -225,8 +321,11 @@ gh api "repos/${GH_REPO}/rulesets" --method POST --input - <<'EOF'
     {
       "type": "pull_request",
       "parameters": {
+        "dismiss_stale_reviews_on_push": false,
         "require_code_owner_review": true,
-        "required_approving_review_count": 0
+        "require_last_push_approval": false,
+        "required_approving_review_count": 0,
+        "required_review_thread_resolution": false
       }
     }
   ]
@@ -246,12 +345,13 @@ explicit `bypass_actors` entry for the `thrw-agent` App would be needed,
 and that specific setting is web-UI-only (Settings → Rules → Rulesets →
 the ruleset → Bypass list).
 
-**Caveat carried over from when this was first drafted:** the ruleset
-JSON above hasn't been executed against a live repo - it's a best-effort
-reading of the current GitHub Rulesets API schema, not a verified one.
-It's safe to try (a rejected field just errors, nothing destructive) but
-check https://docs.github.com/en/rest/repos/rules if anything is
-rejected, rather than assuming the JSON is exactly right.
+**Verified working** (updated after first real run): the `pull_request`
+rule initially 422'd with just `require_code_owner_review` and
+`required_approving_review_count` - GitHub's schema requires the full
+five-field parameter set shown above, not a partial one. The
+`merge_queue` and `required_status_checks` rules validated on the first
+try. This ruleset has now been created successfully against
+thrwapp/thrw.
 
 ---
 
