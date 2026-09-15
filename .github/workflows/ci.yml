@@ -2,9 +2,14 @@ name: ci
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  # pull_request.number is undefined under merge_group - fall back to the
+  # merge group's own head sha so concurrent PRs/queue entries don't
+  # collide on an empty group key and cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
   cancel-in-progress: true
 
 permissions:
@@ -22,15 +27,19 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
-    services:
-      mosquitto:
-        image: eclipse-mosquitto:2
-        ports:
-          - 1883:1883
-        volumes:
-          - ${{ github.workspace }}/.github/mosquitto-ci.conf:/mosquitto/config/mosquitto.conf
     steps:
       - uses: actions/checkout@v4
+
+      # Not a `services:` container: those start before checkout, so a
+      # volume mount referencing a repo file (.github/mosquitto-ci.conf)
+      # fails with the file not found - confirmed by a real CI run.
+      # Running it as a step after checkout sidesteps that entirely.
+      - name: Start Mosquitto (MQTT broker for contract tests)
+        run: |
+          docker run -d --name mosquitto \
+            -p 1883:1883 \
+            -v ${{ github.workspace }}/.github/mosquitto-ci.conf:/mosquitto/config/mosquitto.conf \
+            eclipse-mosquitto:2
 
       - uses: pnpm/action-setup@v4
 
@@ -69,6 +78,14 @@ jobs:
 
   mac-ipad:
     name: mac-ipad
+    # No self-hosted macOS runner is registered yet. Scheduling this job
+    # unconditionally left it permanently "queued" (no runner will ever
+    # pick it up), which blocked auto-merge/the merge queue entirely -
+    # GitHub waits for every check suite on the PR to reach a terminal
+    # state, not just the required ones, and "queued forever" never
+    # does. Skip outright until a runner exists; flip this repo variable
+    # to "true" once one is registered.
+    if: vars.HAS_MACOS_RUNNER == 'true'
     runs-on: [self-hosted, macOS]
     steps:
       - uses: actions/checkout@v4

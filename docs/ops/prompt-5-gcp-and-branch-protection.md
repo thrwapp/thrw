@@ -182,6 +182,225 @@ gh variable set RELAY_HEALTH_URL --repo "$GH_REPO" --body "REPLACE_ME"   # real 
 
 ---
 
+## Part A2 — create the relay VM (EMQX only; Keygen CE deferred)
+
+ADR 0006 reads as if this VM already exists ("Accepted," past tense) but
+it may not — check with `gcloud compute instances list
+--project="$GCP_PROJECT_PROD"` before running this. This section is
+scoped deliberately narrow: it stands up the VM and EMQX (the actual
+MQTT relay), not Keygen CE. Keygen's self-host setup needs its own
+Postgres + Redis + generated signing keys + bootstrap - a meaningfully
+bigger task than a docker run, and not required before EMQX exists for
+protocol/adapter development to start against. Do that as separate,
+later work once billing/licensing is actually being built - don't
+block on it now.
+
+**Region constraint:** the Always Free e2-micro tier only applies in
+`us-west1`, `us-central1`, or `us-east1`. Outside those three, this VM
+is a real, billed resource. `$GCP_REGION` from Part A should already be
+one of these three - confirm before proceeding.
+
+```bash
+export RELAY_VM_NAME="thrw-relay"   # must match GCP_RELAY_VM_NAME pushed in A7
+export RELAY_ZONE="${GCP_REGION}-a"
+
+cat > /tmp/relay-startup.sh <<'STARTUP'
+#!/bin/bash
+set -euo pipefail
+apt-get update
+apt-get install -y docker.io
+systemctl enable --now docker
+docker run -d --name emqx --restart unless-stopped \
+  -p 8083:8083 \
+  -p 18083:18083 \
+  emqx/emqx:5
+STARTUP
+
+gcloud compute instances create "$RELAY_VM_NAME" \
+  --project="$GCP_PROJECT_PROD" \
+  --zone="$RELAY_ZONE" \
+  --machine-type=e2-micro \
+  --image-family=debian-12 \
+  --image-project=debian-cloud \
+  --tags=thrw-relay \
+  --metadata-from-file=startup-script=/tmp/relay-startup.sh
+
+# Open only what ADR 0001 actually calls for: MQTT-over-WebSocket (8083,
+# unencrypted for now - TLS/8084 needs a domain + cert, separate work)
+# and EMQX's dashboard/status API (18083, used for the health check).
+# Deliberately NOT opening 1883 (raw MQTT) - ADR 0001 chose WebSocket
+# transport specifically, not raw TCP MQTT.
+gcloud compute firewall-rules create thrw-relay-emqx \
+  --project="$GCP_PROJECT_PROD" \
+  --network=default \
+  --direction=INGRESS \
+  --action=ALLOW \
+  --rules=tcp:8083,tcp:18083 \
+  --target-tags=thrw-relay \
+  --source-ranges=0.0.0.0/0
+```
+
+Get the external IP and verify EMQX is actually up (the startup script
+needs a minute or two to run docker.io install + pull the image on
+first boot):
+
+```bash
+export RELAY_IP=$(gcloud compute instances describe "$RELAY_VM_NAME" \
+  --project="$GCP_PROJECT_PROD" \
+  --zone="$RELAY_ZONE" \
+  --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+
+echo "$RELAY_IP"
+curl -i "http://${RELAY_IP}:18083/api/v5/status"
+```
+
+A healthy response is `HTTP 200` with a body like `Node 'emqx@...' is
+started`. Once confirmed, set the real health-check URL:
+
+```bash
+gh variable set RELAY_HEALTH_URL --repo "$GH_REPO" --body "http://${RELAY_IP}:18083/api/v5/status"
+```
+
+**Security note, do this immediately:** EMQX 5's dashboard ships with a
+default `admin` / `public` login, reachable at
+`http://${RELAY_IP}:18083` over the open internet the moment this VM is
+up. Log in and change it right away - don't leave the default sitting
+on a public IP even for a few minutes.
+
+**Still deferred, not covered here:**
+- TLS (`wss://`, port 8084) - needs a domain name pointed at
+  `$RELAY_IP` and a cert (e.g. via Caddy or certbot in front of EMQX).
+  ADR 0001's actual decision is WebSocket **over TLS**; the setup above
+  is a plaintext bring-up step, not the final state.
+- Keygen CE (ADR 0009) - separate task once licensing work starts.
+- `services/relay-hosted`'s own application code and Dockerfile
+  (referenced by `deploy.yml`) - still doesn't exist.
+
+---
+
+## Part A3 — billing budgets, and a scoped kill switch on GCP_PROJECT_AI
+
+ADR 0008 called for "each [project] with its own budget alert" so a
+runaway agent loop's spend is billing-isolated - this was never actually
+implemented until now. Two different postures for the two projects:
+
+- **GCP_PROJECT_AI** (Vertex AI spend, driven by `agent-triage`,
+  `agent-code`, `agent-eval`, and `release.yml`'s announce job): alert
+  *and* an automated hard stop. A runaway agent loop is the realistic
+  failure mode here, and it's automatable.
+- **GCP_PROJECT_PROD** (the relay VM, ADR 0006 estimates $0-$20/month):
+  alert only. An automated hard stop here risks taking down the live
+  relay - worse than the overspend it would prevent. A human should
+  always be in the loop for this project.
+
+**On the hard stop's design**: the common reference pattern for this
+(Google's own documented example) works by fully detaching the billing
+account from the project - its own README warns this "will shut down
+all existing resources and it's unlikely you will be able to recover
+them." That's real risk to the WIF pool and service accounts from Part
+A. Since the actual cost driver here is specifically Vertex AI API
+calls, `docs/ops/budget-killswitch/main.py` instead disables just
+`aiplatform.googleapis.com` on threshold - it stops the spend, leaves
+everything else in the project alone, and is trivially reversible
+(`gcloud services enable aiplatform.googleapis.com`).
+
+### A3.1 Look up the billing account
+
+```bash
+gcloud billing accounts list
+export BILLING_ACCOUNT_ID="XXXXXX-XXXXXX-XXXXXX"   # from the list above
+```
+
+### A3.2 Budget + kill switch on GCP_PROJECT_AI
+
+```bash
+# APIs needed to build and run the Cloud Function
+gcloud services enable \
+  cloudfunctions.googleapis.com \
+  run.googleapis.com \
+  eventarc.googleapis.com \
+  pubsub.googleapis.com \
+  cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
+  billingbudgets.googleapis.com \
+  --project="$GCP_PROJECT_AI"
+
+# Service account for the function, scoped to exactly one permission
+gcloud iam service-accounts create budget-killswitch \
+  --project="$GCP_PROJECT_AI" \
+  --display-name="Budget kill switch (disables Vertex AI on overspend)"
+
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_AI" \
+  --member="serviceAccount:budget-killswitch@${GCP_PROJECT_AI}.iam.gserviceaccount.com" \
+  --role="roles/serviceusage.serviceUsageAdmin"
+
+# Topic the budget will publish to
+gcloud pubsub topics create budget-alerts-ai --project="$GCP_PROJECT_AI"
+
+# Deploy the function - source lives in this repo at docs/ops/budget-killswitch/
+gcloud functions deploy stop-vertex-spend \
+  --gen2 \
+  --project="$GCP_PROJECT_AI" \
+  --region="$GCP_REGION" \
+  --runtime=python312 \
+  --source=docs/ops/budget-killswitch \
+  --entry-point=stop_vertex_spend \
+  --trigger-topic=budget-alerts-ai \
+  --service-account="budget-killswitch@${GCP_PROJECT_AI}.iam.gserviceaccount.com" \
+  --set-env-vars="PROJECT_ID=${GCP_PROJECT_AI},PROJECT_NUMBER=${AI_PROJECT_NUMBER}" \
+  --no-allow-unauthenticated
+
+# The budget itself: alerts at 50/90/100%, and the 100% one also fires the function
+gcloud billing budgets create \
+  --billing-account="$BILLING_ACCOUNT_ID" \
+  --display-name="thrw-ai-monthly" \
+  --budget-amount=50USD \
+  --filter-projects="projects/${AI_PROJECT_NUMBER}" \
+  --threshold-rule=percent=0.5 \
+  --threshold-rule=percent=0.9 \
+  --threshold-rule=percent=1.0 \
+  --notifications-rule-pubsub-topic="projects/${GCP_PROJECT_AI}/topics/budget-alerts-ai"
+```
+
+### A3.3 Budget on GCP_PROJECT_PROD (alert only, no kill switch)
+
+```bash
+export PROD_PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT_PROD" --format='value(projectNumber)')
+
+gcloud billing budgets create \
+  --billing-account="$BILLING_ACCOUNT_ID" \
+  --display-name="thrw-prod-monthly" \
+  --budget-amount=30USD \
+  --filter-projects="projects/${PROD_PROJECT_NUMBER}" \
+  --threshold-rule=percent=0.5 \
+  --threshold-rule=percent=0.9 \
+  --threshold-rule=percent=1.0
+```
+
+No `--notifications-rule-pubsub-topic` here - default behavior is an
+email to billing account admins at each threshold, nothing automated.
+
+### A3.4 Verify, and recover if it ever fires
+
+```bash
+gcloud billing budgets list --billing-account="$BILLING_ACCOUNT_ID"
+
+# If the AI project's Vertex API ever does get disabled by the kill switch:
+gcloud services enable aiplatform.googleapis.com --project="$GCP_PROJECT_AI"
+```
+
+**Honesty check on this section, same as everywhere else in this
+runbook:** the `gcloud billing budgets create` flags and the Service
+Usage API disable call were verified against current documentation and
+a real reference implementation before being written here, but the
+Cloud Function itself has not been deployed and triggered end-to-end -
+there's no way to safely generate real Vertex spend just to test it.
+Consider triggering it manually once with a synthetic Pub/Sub message
+(`{"costAmount": 999, "budgetAmount": 50}` base64-encoded in the
+`message.data` field) before trusting it in anger.
+
+---
+
 ## Part B — branch protection on `main`
 
 ```bash
@@ -225,8 +444,11 @@ gh api "repos/${GH_REPO}/rulesets" --method POST --input - <<'EOF'
     {
       "type": "pull_request",
       "parameters": {
+        "dismiss_stale_reviews_on_push": false,
         "require_code_owner_review": true,
-        "required_approving_review_count": 0
+        "require_last_push_approval": false,
+        "required_approving_review_count": 0,
+        "required_review_thread_resolution": false
       }
     }
   ]
@@ -246,12 +468,13 @@ explicit `bypass_actors` entry for the `thrw-agent` App would be needed,
 and that specific setting is web-UI-only (Settings → Rules → Rulesets →
 the ruleset → Bypass list).
 
-**Caveat carried over from when this was first drafted:** the ruleset
-JSON above hasn't been executed against a live repo - it's a best-effort
-reading of the current GitHub Rulesets API schema, not a verified one.
-It's safe to try (a rejected field just errors, nothing destructive) but
-check https://docs.github.com/en/rest/repos/rules if anything is
-rejected, rather than assuming the JSON is exactly right.
+**Verified working** (updated after first real run): the `pull_request`
+rule initially 422'd with just `require_code_owner_review` and
+`required_approving_review_count` - GitHub's schema requires the full
+five-field parameter set shown above, not a partial one. The
+`merge_queue` and `required_status_checks` rules validated on the first
+try. This ruleset has now been created successfully against
+thrwapp/thrw.
 
 ---
 
