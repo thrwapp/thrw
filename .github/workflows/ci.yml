@@ -22,15 +22,19 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
-    services:
-      mosquitto:
-        image: eclipse-mosquitto:2
-        ports:
-          - 1883:1883
-        volumes:
-          - ${{ github.workspace }}/.github/mosquitto-ci.conf:/mosquitto/config/mosquitto.conf
     steps:
       - uses: actions/checkout@v4
+
+      # Not a `services:` container: those start before checkout, so a
+      # volume mount referencing a repo file (.github/mosquitto-ci.conf)
+      # fails with the file not found - confirmed by a real CI run.
+      # Running it as a step after checkout sidesteps that entirely.
+      - name: Start Mosquitto (MQTT broker for contract tests)
+        run: |
+          docker run -d --name mosquitto \
+            -p 1883:1883 \
+            -v ${{ github.workspace }}/.github/mosquitto-ci.conf:/mosquitto/config/mosquitto.conf \
+            eclipse-mosquitto:2
 
       - uses: pnpm/action-setup@v4
 
