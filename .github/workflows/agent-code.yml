@@ -76,6 +76,16 @@ jobs:
                what's uncertain, per AGENTS.md's definition of done.
             5. Open a pull request with `gh pr create`, citing file+line
                evidence for every acceptance criterion in the PR body.
+            6. Immediately run `gh pr merge --auto --squash` on the PR you
+               just opened. This is required, not optional: packages/**
+               is meant to auto-merge on green CI + a passing evaluator
+               with no human clicking anything (AGENTS.md's scope
+               section) - skipping this step leaves the PR sitting idle
+               until a human manually enables auto-merge, defeating the
+               point. For services/** PRs this is still safe to run: the
+               branch ruleset's CODEOWNERS requirement holds the actual
+               merge until a human reviews it regardless of auto-merge
+               being enabled.
 
             If you hit AGENTS.md's stop conditions (5 failed test-fix
             cycles, or genuine ambiguity), stop, comment on the issue, and
