@@ -112,22 +112,24 @@ jobs:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          # Temporary: the --json-schema file-path fix (see above) got
-          # past the JSON-parse error, but the very next real run
-          # failed differently - "--json-schema was provided but
-          # Claude did not return structured_output" (1 turn, $0
-          # cost, is_error:true, instant). Need to see what Claude
-          # actually output before guessing why. Revert once diagnosed.
-          show_full_output: "true"
           prompt: |
             You are grading pull request #${{ github.event.pull_request.number }},
-            opened by the agent, against the acceptance criteria in its
-            linked issue.
+            opened by the agent.
+
+            The PR's own description already lists every acceptance
+            criterion under "Acceptance criteria evidence", each with the
+            agent's claimed file+line citation - use `gh pr view
+            ${{ github.event.pull_request.number }} --json body` to read
+            it. Do not try to fetch a separate linked issue: `gh issue *`
+            isn't in your allowed tools, and every other workaround
+            (`curl`, `git log --all`, `gh repo view`) is also blocked -
+            confirmed live, this burned all 25 turns on issue #24/PR #25's
+            first real evaluation without ever reaching the tests.
 
             Treat every acceptance criterion as FAIL by default. You may
-            only mark one PASS if you cite concrete file+line evidence
-            from this PR's diff for it - never take the PR description's
-            own claims at face value.
+            only mark one PASS if you independently verify the cited
+            file+line evidence against this PR's actual diff - never take
+            the PR description's own claims at face value.
 
             Run the tests yourself (read-only: `pnpm test`/`pnpm turbo
             test` variants only) and confirm the total test count did not
