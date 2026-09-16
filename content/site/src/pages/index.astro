@@ -18,6 +18,7 @@ const title = "thrw — One headset. Every device you actually use.";
   </head>
   <body>
     <main>
+      <p class="wordmark">thrw</p>
       <h1>One headset. Every device you actually use.</h1>
       <p>Apple's own device-switching only works between Apple devices signed into the same Apple ID — and even then, it's inconsistently reliable. Add an Android phone, a Windows laptop, or Linux to the mix and you get no automatic handoff at all. thrw runs a small adapter on each of your devices and switches your headset to whichever one needs it — a call, a meeting starting, playback beginning — across ecosystems, without you touching a settings menu.</p>
       <p>Switching is a real disconnect-and-reconnect, not an instant swap — so it takes a few real seconds, not zero. We're not going to pretend otherwise, or promise a number until we've measured it against real hardware.</p>
@@ -27,10 +28,46 @@ const title = "thrw — One headset. Every device you actually use.";
     <style>
       :root {
         color-scheme: light dark;
+
+        --color-bg: #f7f6f3;
+        --color-text: #16181d;
+        --color-text-muted: #4a4e57;
+        --color-accent: #e0522a;
+        --color-accent-contrast: #fffaf6;
+        --color-focus-ring: #e0522a;
+
+        --space-1: 0.25rem;
+        --space-2: 0.5rem;
+        --space-3: 0.75rem;
+        --space-4: 1rem;
+        --space-6: 1.5rem;
+        --space-8: 2rem;
+        --space-12: 3rem;
+        --space-16: 4rem;
+
+        --font-size-wordmark: 1rem;
+        --font-size-body: clamp(1rem, 0.95rem + 0.2vw, 1.125rem);
+        --font-size-cta: 1rem;
+        --font-size-h1: clamp(2rem, 1.6rem + 2.5vw, 3rem);
+
+        --measure: 38rem;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --color-bg: #14161a;
+          --color-text: #f1efe9;
+          --color-text-muted: #a9adb6;
+          --color-accent: #ff7d54;
+          --color-accent-contrast: #1a0d08;
+          --color-focus-ring: #ff7d54;
+        }
       }
 
       body {
         margin: 0;
+        background: var(--color-bg);
+        color: var(--color-text);
         font-family:
           system-ui,
           -apple-system,
@@ -40,31 +77,67 @@ const title = "thrw — One headset. Every device you actually use.";
       }
 
       main {
-        max-width: 42rem;
+        max-width: var(--measure);
         margin: 0 auto;
-        padding: 4rem 1.5rem;
+        padding: var(--space-16) var(--space-6);
+      }
+
+      .wordmark {
+        margin: 0 0 var(--space-8);
+        font-size: var(--font-size-wordmark);
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: var(--color-accent);
       }
 
       h1 {
-        font-size: clamp(2rem, 6vw, 3rem);
+        font-size: var(--font-size-h1);
         line-height: 1.1;
         letter-spacing: -0.02em;
-        margin: 0 0 1.5rem;
+        margin: 0 0 var(--space-6);
       }
 
       p {
-        margin: 0 0 1.25rem;
+        max-width: var(--measure);
+        margin: 0 0 var(--space-4);
+        font-size: var(--font-size-body);
+        color: var(--color-text-muted);
       }
 
       .cta {
         display: inline-block;
-        margin-top: 1rem;
-        padding: 0.75rem 1.5rem;
-        border: 1px solid currentColor;
+        margin-top: var(--space-6);
+        padding: var(--space-3) var(--space-6);
+        border: 1px solid var(--color-accent);
         border-radius: 0.5rem;
+        background: var(--color-accent);
+        color: var(--color-accent-contrast);
+        font-size: var(--font-size-cta);
         font-weight: 600;
         text-decoration: none;
-        color: inherit;
+        transition:
+          background-color 0.15s ease,
+          transform 0.05s ease;
+      }
+
+      .cta:hover {
+        background: color-mix(in srgb, var(--color-accent) 85%, black);
+      }
+
+      .cta:focus-visible {
+        outline: 2px solid var(--color-focus-ring);
+        outline-offset: 3px;
+      }
+
+      .cta:active {
+        transform: translateY(1px);
+      }
+
+      @media (max-width: 375px) {
+        main {
+          padding: var(--space-12) var(--space-4);
+        }
       }
     </style>
   </body>
