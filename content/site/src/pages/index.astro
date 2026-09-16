@@ -61,6 +61,54 @@ const title = "thrw — One headset. Every device you actually use.";
           </g>
         </svg>
       </section>
+
+      <section class="how-it-works">
+        <h2>How it works</h2>
+        <ol class="steps">
+          <li>
+            <span class="step-index">1</span>
+            <p>Each of your devices — phone, laptop, tablet — runs a small adapter.</p>
+          </li>
+          <li>
+            <span class="step-index">2</span>
+            <p>The adapter watches for real triggers: a call starting, a meeting beginning, playback starting.</p>
+          </li>
+          <li>
+            <span class="step-index">3</span>
+            <p>Your headset follows the trigger to whichever device needs it — a real disconnect-and-reconnect, not an instant swap.</p>
+          </li>
+          <li>
+            <span class="step-index">4</span>
+            <p>It works across ecosystems — Android, Mac, iPad, and Linux — not locked to one vendor's devices.</p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="faq">
+        <h2>Frequently asked questions</h2>
+        <div class="faq-list">
+          <details>
+            <summary>Is switching instant?</summary>
+            <p>No. Switching is a real disconnect-and-reconnect, not an instant swap, so it takes a few real seconds rather than zero. We'd rather say that plainly than promise a number we haven't measured against real hardware.</p>
+          </details>
+          <details>
+            <summary>What devices does it support?</summary>
+            <p>Adapters for Android, Mac, iPad, and Linux, so your headset can follow you across ecosystems instead of staying locked to one vendor's devices.</p>
+          </details>
+          <details>
+            <summary>Do I need root or a jailbreak?</summary>
+            <p>No. thrw uses sequential handoff — disconnect from the losing device, reconnect to the winning one — specifically so it works without root or a jailbreak on any of your devices.</p>
+          </details>
+          <details>
+            <summary>Does this replace Apple's own device switching?</summary>
+            <p>It's for the gaps Apple's switching doesn't cover — outside a single Apple ID, or once an Android, Windows, or Linux device is in the mix. thrw's advantage is working reliably across ecosystems, not being faster than Apple's own switching.</p>
+          </details>
+          <details>
+            <summary>How does thrw decide which device gets the headset?</summary>
+            <p>An incoming or outgoing call always wins, then a manual claim, then a VoIP session (Zoom, Meet, Teams, WhatsApp), then media playback, then whichever device claimed it last.</p>
+          </details>
+        </div>
+      </section>
     </main>
 
     <footer class="site-footer">
@@ -95,6 +143,7 @@ const title = "thrw — One headset. Every device you actually use.";
         --font-size-body: clamp(1rem, 0.95rem + 0.2vw, 1.125rem);
         --font-size-cta: 1.0625rem;
         --font-size-h1: clamp(2.25rem, 1.7rem + 2.75vw, 3.5rem);
+        --font-size-h2: clamp(1.5rem, 1.35rem + 0.75vw, 1.875rem);
 
         --measure: 38rem;
       }
@@ -238,6 +287,82 @@ const title = "thrw — One headset. Every device you actually use.";
 
       .diagram-node--accent {
         color: var(--color-accent);
+      }
+
+      .how-it-works,
+      .faq {
+        margin-top: var(--space-20);
+      }
+
+      .how-it-works h2,
+      .faq h2 {
+        margin: 0 0 var(--space-8);
+        font-size: var(--font-size-h2);
+        letter-spacing: -0.01em;
+        text-align: center;
+      }
+
+      .steps {
+        display: grid;
+        gap: var(--space-6);
+        max-width: var(--measure);
+        margin: 0 auto;
+        padding: 0;
+        list-style: none;
+      }
+
+      .steps li {
+        display: flex;
+        gap: var(--space-4);
+        align-items: baseline;
+      }
+
+      .step-index {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        border-radius: 999px;
+        border: 1px solid var(--color-border);
+        background: var(--color-surface);
+        color: var(--color-accent);
+        font-weight: 700;
+        font-size: 0.9375rem;
+      }
+
+      .steps p {
+        margin: 0;
+        color: var(--color-text-muted);
+      }
+
+      .faq-list {
+        display: grid;
+        gap: var(--space-4);
+        max-width: var(--measure);
+        margin: 0 auto;
+      }
+
+      .faq-list details {
+        border: 1px solid var(--color-border);
+        border-radius: var(--space-3);
+        background: var(--color-surface);
+        padding: var(--space-4) var(--space-6);
+      }
+
+      .faq-list summary {
+        cursor: pointer;
+        font-weight: 600;
+      }
+
+      .faq-list summary::marker {
+        color: var(--color-accent);
+      }
+
+      .faq-list p {
+        margin: var(--space-4) 0 0;
+        color: var(--color-text-muted);
       }
 
       .site-footer {

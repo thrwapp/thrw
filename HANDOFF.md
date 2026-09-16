@@ -1,99 +1,55 @@
-# HANDOFF: #61 packages/relay-core MQTT client wrapper
+# HANDOFF: issue #69 — "How it works" + FAQ sections
 
 ## What was done
 
-Added an MQTT transport-layer wrapper to `packages/relay-core`, split out
-of #40 per this issue. No connection state machine, no device registry —
-transport only, as instructed.
+Added two new sections to `content/site/src/pages/index.astro`, placed
+inside `<main>` after the existing device-switching diagram and before
+the closing `</main>` tag (footer untouched):
 
-- `packages/relay-core/src/mqtt-client.ts`: `RelayMqttClient` class wrapping
-  the `mqtt` npm package (v5.16.0). Exposes:
-  - `RelayMqttClient.connect(url?, options?)` — static factory, resolves once
-    the underlying client emits `connect`.
-  - `publishEvent(account, node, payload: EventPayload)` — publishes to
-    `eventsTopic(account, node)` at `TopicQos.events.qos` (1).
-  - `publishCommand(account, node, payload: CommandPayload)` — publishes to
-    `commandsTopic(account, node)` at `TopicQos.commands.qos` (1).
-  - `publishState(account, payload: StatePayload)` — publishes to
-    `stateTopic(account)` with `retain: TopicQos.state.retained` (true).
-  - `subscribeHeartbeat(account, node, onMessage)` — subscribes to
-    `heartbeatTopic(account, node)` at `TopicQos.heartbeat.qos` (0), resolves
-    with the broker's granted subscription so callers/tests can confirm the
-    QoS actually acknowledged.
-  - `defaultMqttBrokerUrl()` — reads `MQTT_BROKER_URL`, falls back to
-    `mqtt://localhost:1883` (same address CI's Mosquitto container listens
-    on) for local dev.
-- All topic strings and QoS/retain values come from `@thrw/protocol`
-  (`eventsTopic`, `commandsTopic`, `stateTopic`, `heartbeatTopic`,
-  `TopicQos`) — none are hardcoded in `relay-core`. `packages/protocol` was
-  not modified.
-- Payload shapes are defined per the issue's acceptance criteria 3, as new
-  design decisions (not frozen contracts): `EventPayload { type: EventKind;
-  priority: Priority }`, `CommandPayload { type: "claim" | "release" }`,
-  `StatePayload { holder: string | null }`.
-- Re-exported from `packages/relay-core/src/index.ts` alongside the
-  existing `PriorityEngine`/`ConnectionState`-adjacent exports already in
-  that file (untouched).
-- Tests: `packages/relay-core/test/mqtt-client.test.ts`, four integration
-  tests against a **real broker**, no mock MQTT library. Each test uses a
-  raw `mqtt` client as an independent verifier (subscribing/publishing
-  outside the wrapper) so the assertions don't just check that
-  `RelayMqttClient` calls itself consistently:
-  - events published at QoS 1 (asserted via the verifier's received
-    `packet.qos`).
-  - commands published at QoS 1 (same approach).
-  - state published retained — proven by subscribing a *new* client after
-    the publish and confirming it still receives the message immediately
-    with `packet.retain === true`, not just checking the live packet flag.
-  - heartbeat subscribed at QoS 0 — asserted on the `granted` subscription
-    array `subscribeHeartbeat` resolves with, then confirms a heartbeat
-    payload published by the verifier is delivered to the wrapper's
-    callback.
-  - Tests read `MQTT_BROKER_URL` (via `defaultMqttBrokerUrl()`), matching
-    what CI sets.
+- **"How it works"** (lines 65-85): a 4-step `<ol>` — each device runs
+  a small adapter, the adapter watches for real triggers (call
+  starting, meeting beginning, playback starting), the headset follows
+  the trigger to whichever device needs it, and it works across
+  Android/Mac/iPad/Linux. Wording is grounded in
+  `docs/spec/architecture.md`'s "What thrw is" and "System components"
+  sections and explicitly avoids any instant/zero-latency claim (the
+  existing hero copy already disclaims that).
+- **FAQ** (lines 87-111): 5 question/answer pairs using native
+  `<details>/<summary>` (no JS needed, no new dependency):
+  - "Is switching instant?" → no, matches the hero's own disclaimer.
+  - "What devices does it support?" → Android, Mac, iPad, Linux, per
+    architecture.md's adapter list.
+  - "Do I need root or a jailbreak?" → no, per ADR 0002 (sequential
+    handoff was chosen specifically to avoid a root requirement).
+  - "Does this replace Apple's own device switching?" → grounded in
+    architecture.md's "Positioning" section (not marketed as faster
+    than Apple, advantage is cross-ecosystem reliability).
+  - "How does thrw decide which device gets the headset?" → the
+    priority order from architecture.md's "Priority rules" section
+    (call > manual claim > VoIP > media > last-claimed).
 
-## Dependency justification (AGENTS.md: no new dependency without justification)
+Styling (lines 292-361ish) reuses the existing design tokens defined
+in the `<style>` block's `:root` (`--space-*`, `--color-*`,
+`--measure`), plus one new token, `--font-size-h2`, added next to the
+existing `--font-size-h1` since no section-heading size token existed
+yet. No new colors, spacing scale, or font stack was introduced.
 
-- `mqtt` (`^5.16.0`, installed via `pnpm add mqtt` in
-  `packages/relay-core`): the standard/most widely used Node.js MQTT client,
-  explicitly named in the issue's acceptance criteria. It ships its own
-  TypeScript type definitions (`build/index.d.ts`, verified in the installed
-  package's `package.json`), so no separate `@types/mqtt` package was
-  needed or added. No other packages were added — `pnpm-lock.yaml`'s diff
-  is `mqtt` plus its own transitive dependency tree only.
+## Verification
 
-## Verification actually performed
+Ran the exact command from the issue:
 
-- `pnpm turbo test --filter=@thrw/relay-core` (the exact command in the
-  issue) — ran and passed: 16 tests (12 pre-existing `PriorityEngine`
-  tests, unchanged, + 4 new MQTT integration tests), against a real MQTT
-  broker (`aedes-cli`, run locally via `pnpm dlx aedes-cli start --port
-  1883`, standing in for the Mosquitto container CI starts — same MQTT
-  protocol, same test code path, no mocking library involved either way).
-- `pnpm turbo build typecheck --filter=@thrw/relay-core` — both pass with
-  no errors, `strict` mode.
-- Did **not** run the full monorepo test suite (`pnpm turbo test` with no
-  filter) — out of scope for this change and `packages/protocol` (the only
-  other package touched indirectly, via its build output) was not
-  modified.
+    pnpm turbo build test --filter=@thrw/site
 
-## Uncertain / worth a second look
+All 4 existing tests in `content/site/test/index.test.ts` pass
+unmodified (hero headline, CTA text, CTA link, both body paragraphs).
+Also ran `pnpm turbo typecheck --filter=@thrw/site` — 0 errors/warnings.
 
-- Local verification used `aedes-cli` (a real, spec-compliant MQTT broker,
-  just not Mosquitto) because Docker is unavailable in this sandbox — CI's
-  actual Mosquitto container was not exercised by me directly. The code
-  only depends on standard MQTT semantics (QoS levels, retain flag,
-  SUBACK-granted QoS), which both brokers implement, so I expect CI's
-  Mosquitto run to pass identically, but that's an expectation, not a
-  claim of having observed it.
-- `subscribeHeartbeat`'s `onMessage` callback delivers `unknown` (best-effort
-  `JSON.parse`, falling back to the raw `Buffer` if parsing fails) rather
-  than a typed heartbeat payload — the issue's acceptance criteria define
-  payload shapes for event/command/state but not heartbeat, and
-  architecture.md doesn't specify one either, so I didn't invent one.
-- `RelayMqttClient`'s `message` listener in `subscribeHeartbeat` is
-  currently registered once per call and filters by topic; calling it
-  multiple times on the same client attaches multiple listeners. Not an
-  issue for this PR's scope (a single heartbeat subscription per client is
-  the only case exercised), flagging in case a future caller subscribes to
-  multiple heartbeat topics on one client.
+## Uncertain / not verified
+
+- No visual/browser check was done (no running browser available in
+  this environment) — only build output and automated test assertions
+  were checked. The `<details>` accordion styling and step-index
+  circles haven't been eyeballed in a real browser, light or dark
+  mode.
+- Did not touch `content/site/src/pages/pricing*` (doesn't exist yet)
+  or anything under `.github/**` — out of scope per the issue.
