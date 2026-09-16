@@ -58,7 +58,40 @@ variables (as distinct from build-time variables), use that one.
 
 ## Test results
 
-Ran the exact command from the issue:
+1. Bluetooth Classic connect/disconnect for a single paired headset,
+   no root/VendorID spoofing/"act as Apple device" anywhere in the
+   diff: `BluetoothConnectionManager.kt` and `BluetoothClassicGateway.kt`
+   contain no such code — see "Uncertain / judgment calls" below for the
+   one real caveat on this criterion (the gateway is an interface, not
+   yet an `android.bluetooth`-backed implementation).
+2. `BluetoothConnectionManager` class with `connect(deviceAddress: String)`,
+   `disconnect(deviceAddress: String)`, and a query method:
+   `BluetoothConnectionManager.kt:29`, `:54`, `:74`.
+3. No relay/MQTT, no `NodeInterface`: grepped the full diff for
+   `register`, `emitEvent`, `onClaim`, `onRelease`, and `mqtt` (case
+   insensitive) — no matches outside this sentence in `HANDOFF.md`
+   itself.
+4. Tests fake the `BluetoothClassicGateway` boundary
+   (`BluetoothConnectionManagerTest.kt:14-35`, `FakeBluetoothClassicGateway`)
+   rather than mocking `android.bluetooth` internals, and cover: connect
+   while already connected is a no-op (`:59-69`), disconnect of an
+   unknown device is a no-op that never calls the gateway (`:105-114`),
+   disconnect of an already-disconnected device doesn't call the gateway
+   again (`:116-126`), a failed connect reverts state and rethrows
+   (`:71-79`), retry after a failed connect (`:81-91`), a failed
+   disconnect still leaves state `DISCONNECTED` (`:128-137`), and
+   per-address independence (`:139-148`).
+5. Coroutines: all three `BluetoothConnectionManager` methods are
+   `suspend fun` (`BluetoothConnectionManager.kt:29,54,74`), backed by
+   `kotlinx.coroutines.sync.Mutex`/`withLock` for state-transition safety
+   under concurrent calls (`:19`, `:30`, `:43`, `:45`, `:55`, `:63`,
+   `:69`, `:75`).
+6. New dependency: `kotlinx-coroutines-core`/`kotlinx-coroutines-test`
+   (`app/build.gradle.kts`). Justified — AGENTS.md's conventions section
+   says "use Kotlin coroutines for async code," and that's not usable
+   for real dispatch/testing without the coroutines library itself; this
+   is the standard, minimal library that provides it, not an extra
+   convenience dependency.
 
 ```
 pnpm turbo build test --filter=@thrw/site
@@ -67,7 +100,7 @@ pnpm turbo build test --filter=@thrw/site
 Both the `build` and `test` tasks passed (4/4 tests green), including the
 updated CTA assertion. Output confirmed locally, not just assumed.
 
-## Uncertain / not verified
+## Uncertain / judgment calls
 
 - **Not tested against the live Buttondown API** — no API key is
   available in this environment, so the actual `POST
