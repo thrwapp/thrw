@@ -17,24 +17,69 @@ const title = "thrw — One headset. Every device you actually use.";
     <title>{title}</title>
   </head>
   <body>
-    <main>
+    <div class="glow" aria-hidden="true"></div>
+
+    <header class="site-header">
       <p class="wordmark">thrw</p>
-      <h1>One headset. Every device you actually use.</h1>
-      <p>Apple's own device-switching only works between Apple devices signed into the same Apple ID — and even then, it's inconsistently reliable. Add an Android phone, a Windows laptop, or Linux to the mix and you get no automatic handoff at all. thrw runs a small adapter on each of your devices and switches your headset to whichever one needs it — a call, a meeting starting, playback beginning — across ecosystems, without you touching a settings menu.</p>
-      <p>Switching is a real disconnect-and-reconnect, not an instant swap — so it takes a few real seconds, not zero. We're not going to pretend otherwise, or promise a number until we've measured it against real hardware.</p>
-      <a class="cta" href="#">Join the waitlist</a>
+    </header>
+
+    <main>
+      <section class="hero">
+        <h1>One headset. Every device you actually use.</h1>
+        <p>Apple's own device-switching only works between Apple devices signed into the same Apple ID — and even then, it's inconsistently reliable. Add an Android phone, a Windows laptop, or Linux to the mix and you get no automatic handoff at all. thrw runs a small adapter on each of your devices and switches your headset to whichever one needs it — a call, a meeting starting, playback beginning — across ecosystems, without you touching a settings menu.</p>
+        <p>Switching is a real disconnect-and-reconnect, not an instant swap — so it takes a few real seconds, not zero. We're not going to pretend otherwise, or promise a number until we've measured it against real hardware.</p>
+        <a class="cta" href="#">Join the waitlist</a>
+      </section>
+
+      <section class="diagram" aria-hidden="true">
+        <svg viewBox="0 0 640 220" role="img" aria-label="Phone, laptop, and tablet each connecting to one shared headset">
+          <g class="diagram-links" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 6">
+            <path d="M 120 70 C 220 70, 260 110, 320 110" />
+            <path d="M 320 110 C 260 150, 220 168, 120 168" />
+            <path d="M 520 110 C 400 110, 380 110, 320 110" />
+          </g>
+          <!-- phone -->
+          <g transform="translate(72, 40)" class="diagram-node">
+            <rect x="0" y="0" width="48" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="2" />
+            <line x1="18" y1="50" x2="30" y2="50" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </g>
+          <!-- laptop -->
+          <g transform="translate(64, 138)" class="diagram-node">
+            <rect x="0" y="0" width="64" height="40" rx="4" fill="none" stroke="currentColor" stroke-width="2" />
+            <path d="M -8 44 H 72 L 64 54 H 0 Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+          </g>
+          <!-- tablet -->
+          <g transform="translate(486, 78)" class="diagram-node">
+            <rect x="0" y="0" width="64" height="64" rx="8" fill="none" stroke="currentColor" stroke-width="2" />
+            <circle cx="32" cy="53" r="2.5" fill="currentColor" />
+          </g>
+          <!-- headset (shared focal point) -->
+          <g transform="translate(296, 84)" class="diagram-node diagram-node--accent">
+            <path d="M 4 28 C 4 8, 20 -4, 40 -4 C 60 -4, 76 8, 76 28" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+            <rect x="-4" y="24" width="16" height="24" rx="6" fill="currentColor" />
+            <rect x="68" y="24" width="16" height="24" rx="6" fill="currentColor" />
+          </g>
+        </svg>
+      </section>
     </main>
+
+    <footer class="site-footer">
+      <p>thrw — built for the devices you actually own, not the ones in one company's lineup.</p>
+    </footer>
 
     <style>
       :root {
         color-scheme: light dark;
 
         --color-bg: #f7f6f3;
+        --color-surface: #ffffff;
         --color-text: #16181d;
         --color-text-muted: #4a4e57;
+        --color-border: #e6e3dc;
         --color-accent: #e0522a;
         --color-accent-contrast: #fffaf6;
         --color-focus-ring: #e0522a;
+        --color-glow: rgb(224 82 42 / 16%);
 
         --space-1: 0.25rem;
         --space-2: 0.5rem;
@@ -44,11 +89,12 @@ const title = "thrw — One headset. Every device you actually use.";
         --space-8: 2rem;
         --space-12: 3rem;
         --space-16: 4rem;
+        --space-20: 5rem;
 
-        --font-size-wordmark: 1rem;
+        --font-size-wordmark: 0.9375rem;
         --font-size-body: clamp(1rem, 0.95rem + 0.2vw, 1.125rem);
-        --font-size-cta: 1rem;
-        --font-size-h1: clamp(2rem, 1.6rem + 2.5vw, 3rem);
+        --font-size-cta: 1.0625rem;
+        --font-size-h1: clamp(2.25rem, 1.7rem + 2.75vw, 3.5rem);
 
         --measure: 38rem;
       }
@@ -56,16 +102,25 @@ const title = "thrw — One headset. Every device you actually use.";
       @media (prefers-color-scheme: dark) {
         :root {
           --color-bg: #14161a;
+          --color-surface: #1c1f24;
           --color-text: #f1efe9;
           --color-text-muted: #a9adb6;
+          --color-border: #2a2d33;
           --color-accent: #ff7d54;
           --color-accent-contrast: #1a0d08;
           --color-focus-ring: #ff7d54;
+          --color-glow: rgb(255 125 84 / 14%);
         }
       }
 
+      * {
+        box-sizing: border-box;
+      }
+
       body {
+        position: relative;
         margin: 0;
+        min-height: 100dvh;
         background: var(--color-bg);
         color: var(--color-text);
         font-family:
@@ -74,48 +129,84 @@ const title = "thrw — One headset. Every device you actually use.";
           "Segoe UI",
           sans-serif;
         line-height: 1.6;
+        overflow-x: hidden;
       }
 
-      main {
-        max-width: var(--measure);
-        margin: 0 auto;
-        padding: var(--space-16) var(--space-6);
+      .glow {
+        position: absolute;
+        top: -12rem;
+        left: 50%;
+        width: 60rem;
+        height: 34rem;
+        transform: translateX(-50%);
+        background: radial-gradient(closest-side, var(--color-glow), transparent);
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      .site-header,
+      main,
+      .site-footer {
+        position: relative;
+        z-index: 1;
+      }
+
+      .site-header {
+        display: flex;
+        justify-content: center;
+        padding: var(--space-8) var(--space-6) 0;
       }
 
       .wordmark {
-        margin: 0 0 var(--space-8);
+        margin: 0;
         font-size: var(--font-size-wordmark);
         font-weight: 800;
-        letter-spacing: 0.02em;
+        letter-spacing: 0.08em;
         text-transform: uppercase;
         color: var(--color-accent);
       }
 
-      h1 {
-        font-size: var(--font-size-h1);
-        line-height: 1.1;
-        letter-spacing: -0.02em;
-        margin: 0 0 var(--space-6);
+      main {
+        max-width: 48rem;
+        margin: 0 auto;
+        padding: var(--space-12) var(--space-6) var(--space-8);
       }
 
-      p {
+      .hero {
+        text-align: center;
+      }
+
+      h1 {
+        max-width: 34rem;
+        margin: 0 auto var(--space-6);
+        font-size: var(--font-size-h1);
+        line-height: 1.08;
+        letter-spacing: -0.03em;
+      }
+
+      .hero p {
         max-width: var(--measure);
-        margin: 0 0 var(--space-4);
+        margin: 0 auto var(--space-4);
         font-size: var(--font-size-body);
         color: var(--color-text-muted);
+        text-align: left;
+      }
+
+      .hero p + p {
+        margin-bottom: var(--space-8);
       }
 
       .cta {
         display: inline-block;
-        margin-top: var(--space-6);
-        padding: var(--space-3) var(--space-6);
+        padding: var(--space-4) var(--space-8);
         border: 1px solid var(--color-accent);
-        border-radius: 0.5rem;
+        border-radius: 999px;
         background: var(--color-accent);
         color: var(--color-accent-contrast);
         font-size: var(--font-size-cta);
         font-weight: 600;
         text-decoration: none;
+        box-shadow: 0 8px 24px -8px var(--color-glow);
         transition:
           background-color 0.15s ease,
           transform 0.05s ease;
@@ -134,9 +225,44 @@ const title = "thrw — One headset. Every device you actually use.";
         transform: translateY(1px);
       }
 
+      .diagram {
+        margin-top: var(--space-20);
+        color: var(--color-text-muted);
+      }
+
+      .diagram svg {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .diagram-node--accent {
+        color: var(--color-accent);
+      }
+
+      .site-footer {
+        border-top: 1px solid var(--color-border);
+        padding: var(--space-8) var(--space-6) var(--space-12);
+        text-align: center;
+      }
+
+      .site-footer p {
+        margin: 0;
+        font-size: 0.875rem;
+        color: var(--color-text-muted);
+      }
+
       @media (max-width: 375px) {
         main {
-          padding: var(--space-12) var(--space-4);
+          padding: var(--space-8) var(--space-4) var(--space-6);
+        }
+
+        .hero p {
+          text-align: left;
+        }
+
+        .diagram {
+          margin-top: var(--space-12);
         }
       }
     </style>
