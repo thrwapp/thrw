@@ -173,6 +173,17 @@ jobs:
           if [ "$overall_pass" != "true" ]; then
             echo "$RESULT" | jq -r '"## Evaluator result\n\n" + (.criteria | map("- [" + (if .pass then "x" else " " end) + "] " + .criterion + " - " + .evidence) | join("\n")) + "\n\n" + .notes' \
               > /tmp/eval-review-body.md
-            gh pr review "$PR_URL" --request-changes --body-file /tmp/eval-review-body.md
+            # `gh pr review --request-changes` fails outright when the
+            # reviewer identity matches the PR author - GitHub hard-blocks
+            # self-review-changes-requests. Every agent PR is authored by
+            # this same thrw-agent[bot] identity, so that call always
+            # failed here - confirmed live on PR #45 (the first real
+            # overall_pass:false result; every prior eval passed on its
+            # first real run so this path was never exercised). Worse,
+            # under this step's default `bash -e`, that failure aborted
+            # the script before the needs-human label line ever ran.
+            # A plain PR comment doesn't have GitHub's self-review
+            # restriction, so use that instead.
+            gh pr comment "$PR_URL" --body-file /tmp/eval-review-body.md
             gh issue edit "$PR_URL" --add-label needs-human
           fi
