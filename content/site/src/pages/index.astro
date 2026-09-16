@@ -371,12 +371,24 @@ const title = "thrw — One headset. Every device you actually use.";
         font-size: 0.9375rem;
       }
 
+      .waitlist-message--success,
+      .waitlist-message--error {
+        display: inline-block;
+        padding: var(--space-2) var(--space-4);
+        border-radius: 0.5rem;
+        border: 1px solid;
+      }
+
       .waitlist-message--success {
         color: var(--color-text);
+        background: var(--color-surface);
+        border-color: var(--color-border);
       }
 
       .waitlist-message--error {
         color: var(--color-accent);
+        background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+        border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
       }
 
       .diagram {

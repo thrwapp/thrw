@@ -47,11 +47,24 @@ jobs:
       # default GITHUB_TOKEN got a 403 "Resource not accessible by
       # integration" (response header named the missing scope explicitly:
       # x-accepted-github-permissions: deployments=write). Added above.
+      # `directory` was `content/site/dist` with no `workingDirectory`, so
+      # this ran Wrangler from the repo root. Wrangler Pages looks for a
+      # `functions/` directory relative to its own cwd, not relative to
+      # `directory` - so it was looking for ./functions at the repo root,
+      # which doesn't exist, and silently never deployed
+      # content/site/functions/waitlist.ts at all. The live symptom: POSTing
+      # to /waitlist got Cloudflare's default 404 (HTML, not JSON), which
+      # the client's `.json().catch(() => ({}))` swallowed into the generic
+      # "Something went wrong" message - issue #70's own HANDOFF doc flagged
+      # this exact risk as unverified. Setting workingDirectory makes both
+      # `directory` and Wrangler's functions/ auto-detection resolve
+      # relative to content/site, where the function file actually lives.
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/pages-action@v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           projectName: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
-          directory: content/site/dist
+          workingDirectory: content/site
+          directory: dist
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
