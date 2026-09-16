@@ -10,8 +10,14 @@ repositories {
 }
 
 dependencies {
+    // Per AGENTS.md: "use Kotlin coroutines for async code" - the async
+    // connect/disconnect calls in the bluetooth package are suspend
+    // functions backed by this.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
 
 tasks.test {
