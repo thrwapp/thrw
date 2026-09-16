@@ -46,6 +46,42 @@ jobs:
         with:
           fetch-depth: 0 # need main's history to compare test counts
 
+      # `synchronize` fires on every push to the PR branch, including a
+      # merge-main-in / rebase-to-resolve-conflicts push that changes zero
+      # lines of the PR's actual proposed diff. Those still cost a full
+      # real evaluator run (turns + $) for a result that can't differ from
+      # the last one, since nothing the evaluator grades has changed. Skip
+      # by comparing the PR's diff-against-main before vs. after this push
+      # - if it's byte-identical, there's nothing new to grade. `opened`
+      # has no meaningful "before" so this only runs for `synchronize`; if
+      # either SHA can't be diffed (e.g. force-push GC'd the old head),
+      # fail open to `changed=true` rather than silently skipping a real
+      # evaluation.
+      - name: Check whether the PR's diff against main actually changed
+        id: diffcheck
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.user.login == 'thrw-agent[bot]' &&
+          github.event.action == 'synchronize'
+        run: |
+          git fetch origin main "${{ github.event.before }}" "${{ github.event.after }}"
+
+          if before_diff=$(git diff "origin/main...${{ github.event.before }}") \
+            && after_diff=$(git diff "origin/main...${{ github.event.after }}"); then
+            if [ "$before_diff" = "$after_diff" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "Couldn't diff one of before/after against main - evaluating to be safe." >&2
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip - PR diff unchanged since last evaluation
+        if: steps.diffcheck.outputs.changed == 'false'
+        run: echo "This push didn't change the PR's diff against main (e.g. a clean merge-main-in); reusing the last evaluation result rather than re-running it."
+
       # Labels applied with the default GITHUB_TOKEN don't trigger other
       # workflow runs (a deliberate GitHub Actions anti-recursion guard -
       # confirmed live in agent-triage.yml, see its comment). Nothing
@@ -54,7 +90,7 @@ jobs:
       # so it's not a landmine for whatever eventually does.
       - name: Generate thrw-agent App token
         id: app-token
-        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]' && steps.diffcheck.outputs.changed != 'false'
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.AGENT_APP_ID }}
@@ -64,21 +100,21 @@ jobs:
       # at this stage. Reuses the same agent-pipeline service account as
       # agent-triage.yml / agent-code.yml.
       - name: Authenticate to GCP
-        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]' && steps.diffcheck.outputs.changed != 'false'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: agent-pipeline@${{ secrets.GCP_PROJECT_AI }}.iam.gserviceaccount.com
 
       - uses: pnpm/action-setup@v4
-        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]' && steps.diffcheck.outputs.changed != 'false'
       - uses: actions/setup-node@v4
-        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]' && steps.diffcheck.outputs.changed != 'false'
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]' && steps.diffcheck.outputs.changed != 'false'
 
       # --json-schema needs the schema content itself, not a file path -
       # confirmed live: passing the path directly failed with "--json-schema
@@ -89,12 +125,12 @@ jobs:
       # the single source of truth instead of duplicating it inline.
       - name: Load agent-eval JSON schema
         id: schema
-        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]' && steps.diffcheck.outputs.changed != 'false'
         run: echo "json=$(jq -c . .github/schemas/agent-eval-result.schema.json)" >> "$GITHUB_OUTPUT"
 
       - name: Run evaluator
         id: eval
-        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'thrw-agent[bot]' && steps.diffcheck.outputs.changed != 'false'
         uses: anthropics/claude-code-action@v1
         with:
           # This step only ever runs for a PR opened by thrw-agent[bot]
