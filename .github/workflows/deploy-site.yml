@@ -5,6 +5,14 @@ on:
     branches: [main]
     paths:
       - "content/site/**"
+  # Re-running a completed workflow run replays the workflow file as it
+  # existed at that run's original commit, not the current tip of main -
+  # confirmed live: re-running the failed run from before the
+  # deployments:write fix (run 35144959906) reproduced the identical 403,
+  # because the rerun never picked up the fix at all. workflow_dispatch
+  # lets a fresh run be fired against the current workflow file without
+  # waiting for another content/site/** push.
+  workflow_dispatch: {}
 
 concurrency:
   group: deploy-site
