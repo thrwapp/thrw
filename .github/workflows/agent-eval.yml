@@ -112,6 +112,16 @@ jobs:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          # Temporary diagnostic (same move as agent-code.yml's own prior
+          # use of this flag): PR #30's evaluate run hit error_max_turns
+          # again (26 turns, 12 permission_denials_count) on a real,
+          # 8-criterion PR - unlike #25's trivial one. Suspect the
+          # allowedTools list below is missing something the PR's own test
+          # plan claims (e.g. `pnpm turbo typecheck`), but the default
+          # hidden-output mode gives no way to see which commands were
+          # actually denied. Revert once the real denied command(s) are
+          # confirmed from a run with this enabled.
+          show_full_output: "true"
           prompt: |
             You are grading pull request #${{ github.event.pull_request.number }},
             opened by the agent.
