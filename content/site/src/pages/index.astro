@@ -1,0 +1,71 @@
+---
+// Marketing copy below is verbatim from issue #34, criterion 3. Each string is
+// kept on a single source line so the rendered HTML contains it
+// character-for-character (test/index.test.ts asserts this). Do not reflow or
+// rephrase it.
+//
+// The waitlist CTA is deliberately static (href="#"): wiring it to an
+// email-capture service is a follow-up once one is chosen (criterion 4).
+const title = "thrw — One headset. Every device you actually use.";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <main>
+      <h1>One headset. Every device you actually use.</h1>
+      <p>Apple's own device-switching only works between Apple devices signed into the same Apple ID — and even then, it's inconsistently reliable. Add an Android phone, a Windows laptop, or Linux to the mix and you get no automatic handoff at all. thrw runs a small adapter on each of your devices and switches your headset to whichever one needs it — a call, a meeting starting, playback beginning — across ecosystems, without you touching a settings menu.</p>
+      <p>Switching is a real disconnect-and-reconnect, not an instant swap — so it takes a few real seconds, not zero. We're not going to pretend otherwise, or promise a number until we've measured it against real hardware.</p>
+      <a class="cta" href="#">Join the waitlist</a>
+    </main>
+
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+
+      body {
+        margin: 0;
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+        line-height: 1.6;
+      }
+
+      main {
+        max-width: 42rem;
+        margin: 0 auto;
+        padding: 4rem 1.5rem;
+      }
+
+      h1 {
+        font-size: clamp(2rem, 6vw, 3rem);
+        line-height: 1.1;
+        letter-spacing: -0.02em;
+        margin: 0 0 1.5rem;
+      }
+
+      p {
+        margin: 0 0 1.25rem;
+      }
+
+      .cta {
+        display: inline-block;
+        margin-top: 1rem;
+        padding: 0.75rem 1.5rem;
+        border: 1px solid currentColor;
+        border-radius: 0.5rem;
+        font-weight: 600;
+        text-decoration: none;
+        color: inherit;
+      }
+    </style>
+  </body>
+</html>
