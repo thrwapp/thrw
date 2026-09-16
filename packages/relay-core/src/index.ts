@@ -2,6 +2,8 @@ import { PRIORITY_ORDER, type EventKind } from "@thrw/protocol";
 
 export const relayCorePackageName = "@thrw/relay-core";
 
+export { DeviceRegistry } from "./device-registry";
+
 // Default auto-return timeout per architecture.md's "Priority rules" section
 // ("auto-return: call_ended -> return to previous holder after a learned
 // timeout (AI engine sets this per-user; default 90s)"). Per-user learned
