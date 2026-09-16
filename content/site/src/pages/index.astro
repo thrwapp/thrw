@@ -365,27 +365,34 @@ const title = "thrw — One headset. Every device you actually use.";
         outline-offset: 3px;
       }
 
-      .waitlist-message {
+      /* Prefixed with .hero: `.hero p { margin: 0 auto var(--space-4); ... }`
+         above targets every <p> in the hero (including this one) and beats
+         a bare `.waitlist-message` selector on specificity (descendant
+         class+type vs. a single class), silently zeroing out margin-top -
+         confirmed via computed styles showing marginTop:"0px" despite this
+         rule setting var(--space-3). Scoping under .hero fixes the
+         specificity rather than fighting it with !important. */
+      .hero .waitlist-message {
         min-height: 1.5rem;
         margin: var(--space-3) 0 0;
         font-size: 0.9375rem;
       }
 
-      .waitlist-message--success,
-      .waitlist-message--error {
+      .hero .waitlist-message--success,
+      .hero .waitlist-message--error {
         display: inline-block;
         padding: var(--space-2) var(--space-4);
         border-radius: 0.5rem;
         border: 1px solid;
       }
 
-      .waitlist-message--success {
+      .hero .waitlist-message--success {
         color: var(--color-text);
         background: var(--color-surface);
         border-color: var(--color-border);
       }
 
-      .waitlist-message--error {
+      .hero .waitlist-message--error {
         color: var(--color-accent);
         background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
         border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
