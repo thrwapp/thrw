@@ -39,8 +39,11 @@ describe("rendered landing page", () => {
     expect(html).toContain(CTA_TEXT);
   });
 
-  it("renders the call-to-action as a real link", () => {
-    expect(html).toMatch(/<a[^>]*>Join the waitlist<\/a>/);
+  it("renders the call-to-action as a real submit control", () => {
+    expect(html).toMatch(/<form[^>]*id="waitlist-form"[^>]*>/);
+    expect(html).toMatch(
+      /<button[^>]*type="submit"[^>]*>Join the waitlist<\/button>/,
+    );
   });
 
   it("contains both body paragraphs verbatim", () => {

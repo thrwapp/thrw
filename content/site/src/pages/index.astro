@@ -4,8 +4,9 @@
 // character-for-character (test/index.test.ts asserts this). Do not reflow or
 // rephrase it.
 //
-// The waitlist CTA is deliberately static (href="#"): wiring it to an
-// email-capture service is a follow-up once one is chosen (criterion 4).
+// The waitlist CTA now submits to the Cloudflare Pages Function at
+// functions/waitlist.ts, which forwards the address to Buttondown
+// server-side (issue #70).
 const title = "thrw — One headset. Every device you actually use.";
 ---
 
@@ -28,7 +29,12 @@ const title = "thrw — One headset. Every device you actually use.";
         <h1>One headset. Every device you actually use.</h1>
         <p>Apple's own device-switching only works between Apple devices signed into the same Apple ID — and even then, it's inconsistently reliable. Add an Android phone, a Windows laptop, or Linux to the mix and you get no automatic handoff at all. thrw runs a small adapter on each of your devices and switches your headset to whichever one needs it — a call, a meeting starting, playback beginning — across ecosystems, without you touching a settings menu.</p>
         <p>Switching is a real disconnect-and-reconnect, not an instant swap — so it takes a few real seconds, not zero. We're not going to pretend otherwise, or promise a number until we've measured it against real hardware.</p>
-        <a class="cta" href="#">Join the waitlist</a>
+        <form id="waitlist-form" class="waitlist-form" novalidate>
+          <label class="visually-hidden" for="waitlist-email">Email address</label>
+          <input id="waitlist-email" class="waitlist-input" name="email" type="email" placeholder="you@example.com" autocomplete="email" required />
+          <button type="submit" class="cta">Join the waitlist</button>
+        </form>
+        <p id="waitlist-message" class="waitlist-message" role="status" aria-live="polite"></p>
       </section>
 
       <section class="diagram" aria-hidden="true">
@@ -114,6 +120,52 @@ const title = "thrw — One headset. Every device you actually use.";
     <footer class="site-footer">
       <p>thrw — built for the devices you actually own, not the ones in one company's lineup.</p>
     </footer>
+
+    <script>
+      const form = document.getElementById("waitlist-form") as HTMLFormElement | null;
+      const emailInput = document.getElementById("waitlist-email") as HTMLInputElement | null;
+      const message = document.getElementById("waitlist-message");
+
+      form?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!emailInput || !message) return;
+
+        const submitButton = form.querySelector("button[type='submit']") as HTMLButtonElement | null;
+        submitButton?.setAttribute("disabled", "true");
+        message.textContent = "";
+        message.classList.remove("waitlist-message--error", "waitlist-message--success");
+
+        try {
+          const response = await fetch("/waitlist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: emailInput.value }),
+          });
+
+          const data = await response.json().catch(() => ({}));
+
+          if (!response.ok) {
+            throw new Error(
+              typeof data.error === "string"
+                ? data.error
+                : "Something went wrong. Please try again.",
+            );
+          }
+
+          message.textContent = "You're on the list — we'll be in touch.";
+          message.classList.add("waitlist-message--success");
+          form.reset();
+        } catch (error) {
+          message.textContent =
+            error instanceof Error
+              ? error.message
+              : "Something went wrong. Please try again.";
+          message.classList.add("waitlist-message--error");
+        } finally {
+          submitButton?.removeAttribute("disabled");
+        }
+      });
+    </script>
 
     <style>
       :root {
@@ -272,6 +324,59 @@ const title = "thrw — One headset. Every device you actually use.";
 
       .cta:active {
         transform: translateY(1px);
+      }
+
+      .cta:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .waitlist-form {
+        display: inline-flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: var(--space-3);
+      }
+
+      .waitlist-input {
+        min-width: 16rem;
+        padding: var(--space-4) var(--space-6);
+        border: 1px solid var(--color-border);
+        border-radius: 999px;
+        background: var(--color-surface);
+        color: var(--color-text);
+        font-size: var(--font-size-cta);
+      }
+
+      .waitlist-input:focus-visible {
+        outline: 2px solid var(--color-focus-ring);
+        outline-offset: 3px;
+      }
+
+      .waitlist-message {
+        min-height: 1.5rem;
+        margin: var(--space-3) 0 0;
+        font-size: 0.9375rem;
+      }
+
+      .waitlist-message--success {
+        color: var(--color-text);
+      }
+
+      .waitlist-message--error {
+        color: var(--color-accent);
       }
 
       .diagram {
