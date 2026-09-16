@@ -10,6 +10,11 @@ disagree, the ADR wins for architecture; this file wins for process.
 - **`packages/**`** is open, agent-owned. A PR here can auto-merge once CI
   is green and the evaluator (`agent-eval.yml`) passes — no human review
   required by default.
+- **`content/site/**`** (the marketing site) is open, agent-owned, same as
+  `packages/**` — a PR here can auto-merge once CI is green and the
+  evaluator passes. The pricing-path rule below already reaches into it
+  (`content/site/src/pages/pricing*` is CODEOWNERS-gated), so nothing
+  further needs carving out here.
 - **`services/**`** is FSL-licensed (see ADR 0003). Agents may propose
   changes here, but every PR requires human merge via CODEOWNERS,
   regardless of who authored it.
