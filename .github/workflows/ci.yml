@@ -22,6 +22,37 @@ env:
   TURBO_TEAM: ${{ vars.TURBO_TEAM }}
 
 jobs:
+  # mac-ipad only needs to run when packages/adapter-mac or
+  # packages/adapter-ipad (or this workflow file itself) actually changed -
+  # macOS runner minutes are billed at a much higher multiplier than Linux
+  # (see the mac-ipad job's own comment), so running two full Swift builds
+  # on every PR regardless of what it touches is a real ongoing cost for no
+  # signal. A job-level `if: false` (via needs.changes.outputs.mac-ipad)
+  # reports as "skipped", and GitHub treats a skipped required status check
+  # as passing for merge purposes - so this doesn't block merging PRs that
+  # never touch Swift.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      mac-ipad: ${{ steps.filter.outputs.mac-ipad }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect adapter-mac / adapter-ipad changes
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(packages/adapter-(mac|ipad)/|\.github/workflows/ci\.yml$)'; then
+            echo "mac-ipad=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "mac-ipad=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Job id intentionally "lint" - Prompt 4's branch protection checklist
   # requires the status check named "ci / lint".
   lint:
@@ -78,13 +109,16 @@ jobs:
 
   mac-ipad:
     name: mac-ipad
+    needs: changes
+    if: needs.changes.outputs.mac-ipad == 'true'
     # Uses a GitHub-hosted macOS runner (not self-hosted) - Tom decided
     # against registering his own Mac as a runner since it would execute
     # code from every PR (including agent-authored ones) directly on his
     # daily-driver machine, a meaningfully different trust boundary than
     # GitHub's own ephemeral Linux runners. macOS runner minutes are
     # billed at a much higher multiplier than Linux - a real ongoing
-    # cost, not a one-time setup fee.
+    # cost, not a one-time setup fee. See the `changes` job above for why
+    # this only runs when adapter-mac/adapter-ipad actually changed.
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
