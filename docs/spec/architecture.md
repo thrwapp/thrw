@@ -134,6 +134,11 @@ doesn't materialize (e.g. a ringing call is declined). See ADR 0010
 for the full rationale — this state machine, once implemented, is a
 frozen contract in the same way the MQTT topic structure is (AGENTS.md).
 
+This is exactly four states — no fifth "cooldown" state. ADR 0010's
+self-cooldown suppression window is adapter-local implementation
+detail layered around `onClaim`/`onRelease`, not a value in this enum;
+see ADR 0013 for the full reconciliation.
+
 ## MQTT topic design
 
     thrw/{account}/nodes/{node}/events      node publishes, QoS 1

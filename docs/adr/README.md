@@ -14,3 +14,4 @@
 | [0010](./0010-conflict-detection-and-cooldown.md) | Conflict detection and cooldown for BT connection management | Accepted |
 | [0011](./0011-predictive-preclaim.md) | Predictive pre-claim using early trigger signals | Accepted |
 | [0012](./0012-proactive-conflict-resolution.md) | Proactively detect and help resolve competing connection managers | Accepted |
+| [0013](./0013-connection-state-machine-reconciliation.md) | Connection state machine — cooldown is adapter-local, not a node-interface state | Accepted |

@@ -58,9 +58,9 @@ change to them requires a new ADR in `docs/adr/` and human review — never
 a routine agent PR, even if it's inside `packages/**`.
 
 The node interface's connection state machine (idle / pre-claim / claim
-/ active / cooldown) defined in ADR 0010 and ADR 0011 is a frozen
-contract in the same way. Changes require an ADR and human review, not
-a routine agent PR.
+/ active — see ADR 0013 for why "cooldown" is not a fifth state here)
+defined in ADR 0010 and ADR 0011 is a frozen contract in the same way.
+Changes require an ADR and human review, not a routine agent PR.
 
 ## Build-time configuration, not hardcoded endpoints
 
