@@ -59,3 +59,57 @@ export interface NodeInterface {
   onClaim(): void;
   onRelease(): void;
 }
+
+// Connection state machine — see docs/spec/architecture.md's "Connection
+// state machine" section and ADR 0013. Exactly these four states; no
+// "cooldown" state (ADR 0010's self-cooldown window is adapter-local
+// implementation detail layered around onClaim/onRelease, out of scope
+// for this shared type). This is a frozen contract (AGENTS.md).
+export type ConnectionState = "idle" | "pre-claim" | "claim" | "active";
+
+const LEGAL_TRANSITIONS: ReadonlyMap<
+  ConnectionState,
+  ReadonlySet<ConnectionState>
+> = new Map([
+  ["idle", new Set<ConnectionState>(["pre-claim"])],
+  ["pre-claim", new Set<ConnectionState>(["claim", "idle"])],
+  ["claim", new Set<ConnectionState>(["active"])],
+  ["active", new Set<ConnectionState>(["idle"])],
+]);
+
+export class IllegalConnectionTransitionError extends Error {
+  constructor(
+    public readonly from: ConnectionState,
+    public readonly to: ConnectionState,
+  ) {
+    super(`Illegal connection state transition: ${from} -> ${to}`);
+    this.name = "IllegalConnectionTransitionError";
+  }
+}
+
+// Pure in-memory state container — no MQTT, no OS/Bluetooth integration.
+// Adapters (later milestones) own the I/O; this only enforces which
+// transitions are legal.
+export class ConnectionStateMachine {
+  #state: ConnectionState;
+
+  constructor(initial: ConnectionState = "idle") {
+    this.#state = initial;
+  }
+
+  get state(): ConnectionState {
+    return this.#state;
+  }
+
+  canTransition(to: ConnectionState): boolean {
+    return LEGAL_TRANSITIONS.get(this.#state)?.has(to) ?? false;
+  }
+
+  transition(to: ConnectionState): ConnectionState {
+    if (!this.canTransition(to)) {
+      throw new IllegalConnectionTransitionError(this.#state, to);
+    }
+    this.#state = to;
+    return this.#state;
+  }
+}
