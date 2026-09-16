@@ -170,6 +170,15 @@ adapters)
 
 ## Reference hardware
 
-[Cowork: leave this section for Tom to fill in with his exact AirPods
-generation, Pixel model, and Android version once confirmed — this
-grounds hardware-specific issues written later.]
+- **Headset**: AirPods Pro 2, Lightning case (H2 chip).
+- **Android phone**: Pixel 10 Pro.
+- **Mac**: MacBook Air 13-inch, M4, 2025.
+- **iPad**: not yet specified — needed before the iPad adapter issue
+  (M4, lower priority than M3) can cite real API versions.
+
+This grounds M3 (Android + Mac adapter pair) fully — issues can now
+cite exact device models. Exact OS versions (Android build number,
+macOS version) aren't pinned here since they'll drift with each
+device's own update cycle; an M3 issue should have its implementer
+note the OS version actually running on the reference device at
+implementation time rather than hardcoding one here.
