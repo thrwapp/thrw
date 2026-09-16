@@ -1,7 +1,9 @@
 import { defineConfig } from "astro/config";
 
-// Static output: this is a pre-launch marketing page with no server-side
-// behaviour (see issue #34, criterion 4 — no backend wiring in this issue).
+// Static output: the page itself has no server-side rendering. The waitlist
+// form's server-side behaviour lives in a separate Cloudflare Pages Function
+// (functions/waitlist.ts), which Cloudflare deploys alongside this static
+// output independently of Astro's `output` mode (see issue #70).
 export default defineConfig({
   output: "static",
 });

@@ -1,99 +1,101 @@
-# HANDOFF: #61 packages/relay-core MQTT client wrapper
+# HANDOFF: Wire up the waitlist CTA to Buttondown (issue #70)
 
 ## What was done
 
-Added an MQTT transport-layer wrapper to `packages/relay-core`, split out
-of #40 per this issue. No connection state machine, no device registry —
-transport only, as instructed.
+- **Cloudflare Pages Function** — `content/site/functions/waitlist.ts`.
+  Cloudflare's file-based routing maps this file to `POST /waitlist`. It:
+  - Parses the JSON request body and validates the `email` field with a
+    basic regex (`content/site/functions/waitlist.ts:14,26-32`).
+  - Reads the Buttondown API key from `env.BUTTONDOWN_API_KEY` — never
+    hardcoded, never committed (`content/site/functions/waitlist.ts:1-6,34-39`).
+  - Calls `POST https://api.buttondown.email/v1/subscribers` with
+    `Authorization: Token <key>` server-side, using the runtime's native
+    `fetch` (no HTTP client dependency added) (`content/site/functions/waitlist.ts:46-60`).
+  - Returns a JSON error body with a non-2xx status on invalid input,
+    missing config, network failure, or a non-OK Buttondown response
+    (`content/site/functions/waitlist.ts:29-31,41-44,55-58,62-64`), and
+    `{ ok: true }` on success (`content/site/functions/waitlist.ts:67`).
 
-- `packages/relay-core/src/mqtt-client.ts`: `RelayMqttClient` class wrapping
-  the `mqtt` npm package (v5.16.0). Exposes:
-  - `RelayMqttClient.connect(url?, options?)` — static factory, resolves once
-    the underlying client emits `connect`.
-  - `publishEvent(account, node, payload: EventPayload)` — publishes to
-    `eventsTopic(account, node)` at `TopicQos.events.qos` (1).
-  - `publishCommand(account, node, payload: CommandPayload)` — publishes to
-    `commandsTopic(account, node)` at `TopicQos.commands.qos` (1).
-  - `publishState(account, payload: StatePayload)` — publishes to
-    `stateTopic(account)` with `retain: TopicQos.state.retained` (true).
-  - `subscribeHeartbeat(account, node, onMessage)` — subscribes to
-    `heartbeatTopic(account, node)` at `TopicQos.heartbeat.qos` (0), resolves
-    with the broker's granted subscription so callers/tests can confirm the
-    QoS actually acknowledged.
-  - `defaultMqttBrokerUrl()` — reads `MQTT_BROKER_URL`, falls back to
-    `mqtt://localhost:1883` (same address CI's Mosquitto container listens
-    on) for local dev.
-- All topic strings and QoS/retain values come from `@thrw/protocol`
-  (`eventsTopic`, `commandsTopic`, `stateTopic`, `heartbeatTopic`,
-  `TopicQos`) — none are hardcoded in `relay-core`. `packages/protocol` was
-  not modified.
-- Payload shapes are defined per the issue's acceptance criteria 3, as new
-  design decisions (not frozen contracts): `EventPayload { type: EventKind;
-  priority: Priority }`, `CommandPayload { type: "claim" | "release" }`,
-  `StatePayload { holder: string | null }`.
-- Re-exported from `packages/relay-core/src/index.ts` alongside the
-  existing `PriorityEngine`/`ConnectionState`-adjacent exports already in
-  that file (untouched).
-- Tests: `packages/relay-core/test/mqtt-client.test.ts`, four integration
-  tests against a **real broker**, no mock MQTT library. Each test uses a
-  raw `mqtt` client as an independent verifier (subscribing/publishing
-  outside the wrapper) so the assertions don't just check that
-  `RelayMqttClient` calls itself consistently:
-  - events published at QoS 1 (asserted via the verifier's received
-    `packet.qos`).
-  - commands published at QoS 1 (same approach).
-  - state published retained — proven by subscribing a *new* client after
-    the publish and confirming it still receives the message immediately
-    with `packet.retain === true`, not just checking the live packet flag.
-  - heartbeat subscribed at QoS 0 — asserted on the `granted` subscription
-    array `subscribeHeartbeat` resolves with, then confirms a heartbeat
-    payload published by the verifier is delivered to the wrapper's
-    callback.
-  - Tests read `MQTT_BROKER_URL` (via `defaultMqttBrokerUrl()`), matching
-    what CI sets.
+- **Real form in `index.astro`** — replaced the static
+  `<a class="cta" href="#">Join the waitlist</a>` with a `<form
+  id="waitlist-form">` containing a labeled `<input type="email" required>`
+  and a `<button type="submit" class="cta">Join the waitlist</button>`
+  (`content/site/src/pages/index.astro:32-37`). A plain inline `<script>`
+  (no framework, no new dependency) intercepts the submit, `fetch`s
+  `/waitlist` with the email as JSON, disables the button while in
+  flight, and updates a `role="status" aria-live="polite"` message
+  element with a success or error string without a full page reload
+  (`content/site/src/pages/index.astro:76-120`). Matching CSS was added
+  for the form, input, disabled button state, and success/error message
+  colors (`content/site/src/pages/index.astro:280-331`), plus a
+  `.visually-hidden` utility for the email `<label>`.
 
-## Dependency justification (AGENTS.md: no new dependency without justification)
+- **Test update (criterion 3)** — `content/site/test/index.test.ts`'s
+  `"renders the call-to-action as a real link"` test asserted the CTA was
+  a bare `<a>Join the waitlist</a>`. That assumption is superseded by the
+  real form now required, so it was replaced with an assertion that a
+  `<form id="waitlist-form">` and a `<button type="submit">Join the
+  waitlist</button>` are present (`content/site/test/index.test.ts:42-47`).
+  The hero headline and both body paragraph assertions were **not**
+  touched — still asserting the exact frozen strings.
 
-- `mqtt` (`^5.16.0`, installed via `pnpm add mqtt` in
-  `packages/relay-core`): the standard/most widely used Node.js MQTT client,
-  explicitly named in the issue's acceptance criteria. It ships its own
-  TypeScript type definitions (`build/index.d.ts`, verified in the installed
-  package's `package.json`), so no separate `@types/mqtt` package was
-  needed or added. No other packages were added — `pnpm-lock.yaml`'s diff
-  is `mqtt` plus its own transitive dependency tree only.
+- **`astro.config.mjs` comment** updated — the old comment claimed "no
+  backend wiring in this issue," which is no longer true now that a
+  Cloudflare Pages Function exists alongside the static build output.
+  Clarified that `output: "static"` still governs only Astro's own
+  rendering; the Function is a separate, independently-deployed piece
+  (`content/site/astro.config.mjs:1-6`).
 
-## Verification actually performed
+## Required human step (cannot be done from this PR)
 
-- `pnpm turbo test --filter=@thrw/relay-core` (the exact command in the
-  issue) — ran and passed: 16 tests (12 pre-existing `PriorityEngine`
-  tests, unchanged, + 4 new MQTT integration tests), against a real MQTT
-  broker (`aedes-cli`, run locally via `pnpm dlx aedes-cli start --port
-  1883`, standing in for the Mosquitto container CI starts — same MQTT
-  protocol, same test code path, no mocking library involved either way).
-- `pnpm turbo build typecheck --filter=@thrw/relay-core` — both pass with
-  no errors, `strict` mode.
-- Did **not** run the full monorepo test suite (`pnpm turbo test` with no
-  filter) — out of scope for this change and `packages/protocol` (the only
-  other package touched indirectly, via its build output) was not
-  modified.
+Per the issue, set the `BUTTONDOWN_API_KEY` environment variable directly
+in the **Cloudflare Pages project's dashboard** (Settings → Environment
+variables, for both Production and Preview if waitlist testing on preview
+deploys is wanted), using a real Buttondown API token. Nothing in this
+repo or CI can set this — it must be a manual step in Cloudflare's UI. If
+that dashboard has separate settings for Pages *Functions* environment
+variables (as distinct from build-time variables), use that one.
 
-## Uncertain / worth a second look
+## Test results
 
-- Local verification used `aedes-cli` (a real, spec-compliant MQTT broker,
-  just not Mosquitto) because Docker is unavailable in this sandbox — CI's
-  actual Mosquitto container was not exercised by me directly. The code
-  only depends on standard MQTT semantics (QoS levels, retain flag,
-  SUBACK-granted QoS), which both brokers implement, so I expect CI's
-  Mosquitto run to pass identically, but that's an expectation, not a
-  claim of having observed it.
-- `subscribeHeartbeat`'s `onMessage` callback delivers `unknown` (best-effort
-  `JSON.parse`, falling back to the raw `Buffer` if parsing fails) rather
-  than a typed heartbeat payload — the issue's acceptance criteria define
-  payload shapes for event/command/state but not heartbeat, and
-  architecture.md doesn't specify one either, so I didn't invent one.
-- `RelayMqttClient`'s `message` listener in `subscribeHeartbeat` is
-  currently registered once per call and filters by topic; calling it
-  multiple times on the same client attaches multiple listeners. Not an
-  issue for this PR's scope (a single heartbeat subscription per client is
-  the only case exercised), flagging in case a future caller subscribes to
-  multiple heartbeat topics on one client.
+Ran the exact command from the issue:
+
+```
+pnpm turbo build test --filter=@thrw/site
+```
+
+Both the `build` and `test` tasks passed (4/4 tests green), including the
+updated CTA assertion. Output confirmed locally, not just assumed.
+
+## Uncertain / not verified
+
+- **Not tested against the live Buttondown API** — no API key is
+  available in this environment, so the actual `POST
+  https://api.buttondown.email/v1/subscribers` call, its exact success/
+  error response shapes, and Buttondown-side duplicate-email behavior are
+  unverified. The function treats any non-OK response as a generic error;
+  if Buttondown returns a more specific/user-friendly error body worth
+  surfacing (e.g. "already subscribed"), that would need real-key testing
+  to confirm the response shape and could be a small follow-up.
+- **Cloudflare Pages Functions detection in the deploy workflow** —
+  `.github/workflows/deploy-site.yml` runs `cloudflare/pages-action@v1`
+  with `directory: content/site/dist`. I did not verify whether Wrangler/
+  the Pages action picks up `content/site/functions/` correctly in this
+  monorepo layout (it may need a `workingDirectory: content/site` input,
+  or none at all — Cloudflare's direct-upload convention for functions
+  can be sensitive to the cwd the action runs Wrangler from). I did not
+  change `.github/**` myself since it's always human-merge per AGENTS.md
+  and out of scope for this issue, but whoever reviews this should
+  double check the first real deploy actually serves `/waitlist` (e.g.
+  via `curl -X POST .../waitlist` against the live site) rather than
+  404ing.
+- No browser end-to-end test of the form (no dev server / real network
+  available here) — verified only via the built HTML output and the
+  vitest assertions, per AGENTS.md's honesty requirement: this is not a
+  claim that the UI was clicked through in a browser.
+- Did not add `@cloudflare/workers-types` as a dev dependency; the
+  function file uses a small hand-written `Env`/context interface
+  instead to avoid an unjustified new dependency (issue criterion 5).
+  This means editor/IDE type support for the full Pages Functions API
+  surface (e.g. `context.waitUntil`, KV bindings) is not available if a
+  future change needs it.

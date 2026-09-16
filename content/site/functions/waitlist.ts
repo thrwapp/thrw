@@ -1,0 +1,73 @@
+// Cloudflare Pages Function: file-based routing maps this file to a POST
+// handler at /waitlist. Keeps the Buttondown API key server-side — it is
+// read from the BUTTONDOWN_API_KEY environment variable, which must be set
+// in the Cloudflare Pages project's dashboard (see HANDOFF.md).
+interface Env {
+  BUTTONDOWN_API_KEY: string;
+}
+
+interface PagesContext {
+  request: Request;
+  env: Env;
+}
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function jsonResponse(data: unknown, status: number): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export async function onRequestPost(context: PagesContext): Promise<Response> {
+  const { request, env } = context;
+
+  let email: unknown;
+  try {
+    const body = (await request.json()) as Record<string, unknown>;
+    email = body?.email;
+  } catch {
+    return jsonResponse({ error: "Invalid request body." }, 400);
+  }
+
+  if (typeof email !== "string" || !EMAIL_PATTERN.test(email)) {
+    return jsonResponse({ error: "Please enter a valid email address." }, 400);
+  }
+
+  if (!env.BUTTONDOWN_API_KEY) {
+    return jsonResponse(
+      { error: "Waitlist signups are temporarily unavailable." },
+      500,
+    );
+  }
+
+  let buttondownResponse: Response;
+  try {
+    buttondownResponse = await fetch(
+      "https://api.buttondown.email/v1/subscribers",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Token ${env.BUTTONDOWN_API_KEY}`,
+        },
+        body: JSON.stringify({ email }),
+      },
+    );
+  } catch {
+    return jsonResponse(
+      { error: "Couldn't reach the waitlist service. Please try again." },
+      502,
+    );
+  }
+
+  if (!buttondownResponse.ok) {
+    return jsonResponse(
+      { error: "Couldn't join the waitlist. Please try again." },
+      502,
+    );
+  }
+
+  return jsonResponse({ ok: true }, 200);
+}
