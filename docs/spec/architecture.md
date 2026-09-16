@@ -170,15 +170,15 @@ adapters)
 
 ## Reference hardware
 
-- **Headset**: AirPods Pro 2 (H2 chip). Case generation (Lightning vs.
-  USB-C) and firmware version not yet pinned — shouldn't matter for
-  Bluetooth Classic connect/disconnect behavior, but flag if it does.
-- **Android phone**: a recent Pixel (8/9 series) — exact model and
-  Android version still to be confirmed.
-- **Mac / iPad**: not yet specified — needed before M3's Mac adapter
-  issue can cite real macOS/CoreBluetooth API versions.
+- **Headset**: AirPods Pro 2, Lightning case (H2 chip).
+- **Android phone**: Pixel 10 Pro.
+- **Mac**: MacBook Air 13-inch, M4, 2025.
+- **iPad**: not yet specified — needed before the iPad adapter issue
+  (M4, lower priority than M3) can cite real API versions.
 
-M3 issue-writing can proceed for the pieces this already grounds (the
-AirPods side), but the exact Pixel model/Android version, and the Mac/
-iPad hardware, are still open — confirm before writing acceptance
-criteria that cite specific OS API behavior for those platforms.
+This grounds M3 (Android + Mac adapter pair) fully — issues can now
+cite exact device models. Exact OS versions (Android build number,
+macOS version) aren't pinned here since they'll drift with each
+device's own update cycle; an M3 issue should have its implementer
+note the OS version actually running on the reference device at
+implementation time rather than hardcoding one here.
