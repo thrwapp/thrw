@@ -3,10 +3,7 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
-    "lib": ["ES2022", "DOM"],
-    "paths": {
-      "@thrw/protocol": ["../protocol/dist/index"]
-    }
+    "lib": ["ES2022", "DOM"]
   },
   "include": ["src"]
 }
