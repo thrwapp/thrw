@@ -49,7 +49,8 @@ spec from architecture.md rather than inventing new shapes.
    every adapter and the relay both import, so it should ship before
    anything else in M1-M3.
 2. `packages/protocol`: connection state machine (idle → pre-claim → claim
-   → active → cooldown) as a typed state container with the transition
+   → active, per architecture.md and ADR 0013 — cooldown is adapter-local,
+   not a fifth state here) as a typed state container with the transition
    rules from ADR 0010/0011, unit-tested against every legal and illegal
    transition.
 3. `packages/relay-core`: MQTT client wrapper (QoS 1 for events/commands,
