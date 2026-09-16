@@ -3,6 +3,14 @@ import { PRIORITY_ORDER, type EventKind } from "@thrw/protocol";
 export const relayCorePackageName = "@thrw/relay-core";
 
 export { DeviceRegistry } from "./device-registry";
+export {
+  RelayMqttClient,
+  defaultMqttBrokerUrl,
+  type CommandPayload,
+  type EventPayload,
+  type HeartbeatListener,
+  type StatePayload,
+} from "./mqtt-client.js";
 
 // Default auto-return timeout per architecture.md's "Priority rules" section
 // ("auto-return: call_ended -> return to previous holder after a learned

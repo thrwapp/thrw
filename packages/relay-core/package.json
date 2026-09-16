@@ -17,6 +17,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@thrw/protocol": "workspace:*"
+    "@thrw/protocol": "workspace:*",
+    "mqtt": "^5.16.0"
   }
 }
