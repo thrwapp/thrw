@@ -112,18 +112,6 @@ jobs:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          # Temporary diagnostic: PR #35's evaluate run hit error_max_turns
-          # (26 turns, permission_denials_count: 14) - the first PR whose
-          # own claims span build+typecheck+test (content/site's test
-          # depends on its own build via turbo, and criterion 2 makes a
-          # specific "astro check runs with zero errors" claim), not just
-          # a bare test run. allowedTools only permits `Bash(pnpm test *)`,
-          # which doesn't match `pnpm turbo build typecheck test ...` or a
-          # standalone typecheck/build command the evaluator would need to
-          # independently verify those claims. Re-enabling to see the
-          # actual denied commands before touching allowedTools - don't
-          # guess the fix.
-          show_full_output: "true"
           prompt: |
             You are grading pull request #${{ github.event.pull_request.number }},
             opened by the agent.
@@ -166,7 +154,7 @@ jobs:
           claude_args: |
             --model claude-sonnet-5
             --max-turns 25
-            --allowedTools "Read,Bash(pnpm test *),Bash(git diff *),Bash(gh pr *)"
+            --allowedTools "Read,Bash(pnpm test *),Bash(pnpm turbo *),Bash(git diff *),Bash(gh pr *)"
             --json-schema '${{ steps.schema.outputs.json }}'
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT_AI }}
