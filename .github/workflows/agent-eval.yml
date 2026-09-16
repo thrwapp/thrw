@@ -112,6 +112,15 @@ jobs:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          # TEMPORARY: PR #54's evaluator has now failed a third time with
+          # yet another shape - num_turns:1, $0 cost, permission_denials:0,
+          # i.e. it died before doing anything at all. Same signature as
+          # the instant 1-turn/$0/is_error:true failures agent-code.yml hit
+          # early in this pipeline, which turned out to be a real error
+          # hidden by this input's own default. Need to see it before
+          # guessing again. Revert once a run actually succeeds or the
+          # real error is identified.
+          show_full_output: "true"
           prompt: |
             You are grading pull request #${{ github.event.pull_request.number }},
             opened by the agent.
