@@ -107,6 +107,14 @@ jobs:
                what's uncertain, per AGENTS.md's definition of done.
             5. Open a pull request with `gh pr create`, citing file+line
                evidence for every acceptance criterion in the PR body.
+               The PR body MUST include the literal line `Closes #${{ github.event.issue.number }}`
+               (a GitHub auto-close keyword, not just prose like
+               "Implements #N") so the linked issue closes automatically
+               when this PR merges - confirmed live: PRs #25/#30/#43 all
+               used "Implements #N" phrasing, which GitHub does not
+               recognize, so issues #24/#29/#41 stayed open and
+               `agent-ready`-labeled indefinitely after their PRs merged,
+               making completed work look unpicked-up.
             6. Immediately run `gh pr merge --auto --squash` on the PR you
                just opened. This is required, not optional: packages/**
                is meant to auto-merge on green CI + a passing evaluator
