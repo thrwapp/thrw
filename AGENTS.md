@@ -29,8 +29,13 @@ A task is not done until all of the following are true:
 1. Tests pass via `pnpm turbo test --filter=<pkg>` for every package touched.
 2. Every acceptance criterion in the linked issue is addressed, cited with
    file+line evidence in the PR description (not just asserted).
-3. A `HANDOFF.md` is written in the branch describing what was done and
-   what's uncertain — see Honesty requirement below.
+3. A handoff doc is written in the branch at `docs/handoffs/<issue-number>.md`
+   describing what was done and what's uncertain — see Honesty requirement
+   below. Use the issue number, not a shared `HANDOFF.md`: every agent PR
+   used to overwrite the same root file, which meant near-constant merge
+   conflicts between concurrently-developed branches and threw away every
+   prior PR's handoff notes the moment the next one landed. A per-issue
+   path can never collide with another issue's file.
 4. The commit message follows Conventional Commits format.
 
 ## Stop conditions
