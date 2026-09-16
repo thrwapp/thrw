@@ -44,7 +44,11 @@ importers:
 
   packages/protocol: {}
 
-  packages/relay-core: {}
+  packages/relay-core:
+    dependencies:
+      '@thrw/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/testkit: {}
 
