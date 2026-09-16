@@ -146,19 +146,45 @@ jobs:
             file+line evidence against this PR's actual diff - never take
             the PR description's own claims at face value.
 
-            Run the tests yourself (read-only: `pnpm test`/`pnpm turbo
-            test` variants only) and confirm the total test count did not
-            decrease versus main.
+            Run the tests yourself (read-only: `pnpm test`, `pnpm turbo
+            test`, `pnpm run typecheck`, or `pnpm turbo typecheck`
+            variants only, scoped with `--filter=<pkg>` where relevant)
+            and confirm the total test count did not decrease versus
+            main.
 
             Output your result as JSON matching the provided schema.
           claude_args: |
             --model claude-sonnet-5
             --max-turns 50
-            --allowedTools "Read,Bash(pnpm test *),Bash(pnpm turbo *),Bash(git diff *),Bash(gh pr *)"
+            --allowedTools "Read,Bash(pnpm test *),Bash(pnpm turbo *),Bash(pnpm run *),Bash(git diff *),Bash(gh pr *)"
             --json-schema '${{ steps.schema.outputs.json }}'
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT_AI }}
           CLOUD_ML_REGION: ${{ vars.GCP_VERTEX_REGION }}
+
+      # Distinct failure mode from "Act on evaluation result" below: the
+      # evaluator step itself can fail *before* producing any structured
+      # result at all - confirmed live on PR #54, twice, via
+      # claude-code-action's own `subtype: "error_max_structured_output_
+      # retries"` and a plain `success`-but-missing-structured_output
+      # result, both with nonzero permission_denials_count (suspected
+      # cause: the evaluator tried an allowedTools shape not on the list,
+      # e.g. `pnpm run typecheck`, and repeated denials degraded its final
+      # answer - widened allowedTools above to cover this). Without this
+      # step, that failure was completely invisible on the PR: no
+      # comment, no label, since the next step's condition requires
+      # non-empty structured_output. The next step's `if` already handles
+      # "always run even after a prior step failure" via `always()`.
+      - name: Flag evaluator infra failure
+        if: always() && steps.eval.outcome == 'failure' && steps.eval.outputs.structured_output == ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf '## Evaluator infra failure\n\nThe evaluator did not produce a result for this PR — this is not a criteria failure, grading itself failed to complete. See the run log: %s\n' "$RUN_URL" > /tmp/eval-infra-failure-body.md
+          gh pr comment "$PR_URL" --body-file /tmp/eval-infra-failure-body.md
+          gh issue edit "$PR_URL" --add-label needs-human
 
       - name: Act on evaluation result
         if: always() && steps.eval.outputs.structured_output != ''
