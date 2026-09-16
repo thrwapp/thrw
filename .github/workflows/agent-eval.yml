@@ -30,7 +30,7 @@ jobs:
   # doesn't apply to.
   evaluate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20 # not specified in the original plan; a safety net sized to --max-turns 25 below
+    timeout-minutes: 20 # not specified in the original plan; a safety net sized to --max-turns 35 below
     steps:
       # merge_group runs carry no `pull_request` object at all (a different
       # event shape, not just a missing field) - checking event_name first
@@ -153,7 +153,7 @@ jobs:
             Output your result as JSON matching the provided schema.
           claude_args: |
             --model claude-sonnet-5
-            --max-turns 25
+            --max-turns 35
             --allowedTools "Read,Bash(pnpm test *),Bash(pnpm turbo *),Bash(git diff *),Bash(gh pr *)"
             --json-schema '${{ steps.schema.outputs.json }}'
         env:
