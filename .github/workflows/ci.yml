@@ -22,50 +22,85 @@ env:
   TURBO_TEAM: ${{ vars.TURBO_TEAM }}
 
 jobs:
-  # mac-ipad only needs to run when packages/adapter-mac or
-  # packages/adapter-ipad (or this workflow file itself) actually changed -
-  # macOS runner minutes are billed at a much higher multiplier than Linux
-  # (see the mac-ipad job's own comment), so running two full Swift builds
-  # on every PR regardless of what it touches is a real ongoing cost for no
-  # signal. A job-level `if: false` (via needs.changes.outputs.mac-ipad)
-  # reports as "skipped", and GitHub treats a skipped required status check
-  # as passing for merge purposes - so this doesn't block merging PRs that
-  # never touch Swift.
+  # Each of lint/android/mac-ipad only needs to run when the files it
+  # actually covers changed - macOS runner minutes in particular are
+  # billed at a much higher multiplier than Linux (see the mac-ipad job's
+  # own comment), and even the Linux jobs cost real setup/runner time for
+  # no signal on, e.g., a docs-only or single-adapter PR.
+  #
+  # `lint` is "ci / lint", a required status check (docs/ops/prompt-5-...
+  # .md's branch ruleset) - a job-level `if: false` reports as "skipped",
+  # which is fine for a *non*-required check (mac-ipad, android below) but
+  # leaves a required check stuck "Expected - waiting" forever, blocking
+  # every PR's merge queue entry (this exact trap already hit agent-eval.yml
+  # once - see that workflow's "No job-level `if` here on purpose" comment).
+  # So `lint` always runs as a job; only its real-work steps are
+  # step-conditional on `needs.changes.outputs.lint`, same pattern as
+  # agent-eval.yml. `android` and `mac-ipad` are not required checks, so
+  # they can and do use a job-level `if` to skip the runner entirely.
   changes:
     name: changes
     runs-on: ubuntu-latest
     outputs:
+      lint: ${{ steps.filter.outputs.lint }}
+      android: ${{ steps.filter.outputs.android }}
       mac-ipad: ${{ steps.filter.outputs.mac-ipad }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Detect adapter-mac / adapter-ipad changes
+      - name: Detect which CI jobs the changed files are relevant to
         id: filter
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
-          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(packages/adapter-(mac|ipad)/|\.github/workflows/ci\.yml$)'; then
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          echo "Changed files:"
+          echo "$changed"
+
+          if echo "$changed" | grep -qE '^(packages/adapter-(mac|ipad)/|\.github/workflows/ci\.yml$)'; then
             echo "mac-ipad=true" >> "$GITHUB_OUTPUT"
           else
             echo "mac-ipad=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$changed" | grep -qE '^(packages/adapter-android/|\.github/workflows/ci\.yml$)'; then
+            echo "android=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "android=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # lint covers every package except the three adapters below (see
+          # its own `--filter=!...` flags) plus content/site and every root
+          # config file (turbo.json, package.json, pnpm-lock.yaml, etc.) -
+          # rather than enumerate all of that, treat it as relevant whenever
+          # *any* changed file falls outside the three excluded adapter
+          # directories. ci.yml itself is covered by this same rule already
+          # (it isn't under any adapter-*/ prefix), no special-case needed.
+          if echo "$changed" | grep -qvE '^packages/adapter-(android|mac|ipad)/'; then
+            echo "lint=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "lint=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Job id intentionally "lint" - Prompt 4's branch protection checklist
   # requires the status check named "ci / lint".
   lint:
     name: lint
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.lint == 'true'
 
       # Not a `services:` container: those start before checkout, so a
       # volume mount referencing a repo file (.github/mosquitto-ci.conf)
       # fails with the file not found - confirmed by a real CI run.
       # Running it as a step after checkout sidesteps that entirely.
       - name: Start Mosquitto (MQTT broker for contract tests)
+        if: needs.changes.outputs.lint == 'true'
         run: |
           docker run -d --name mosquitto \
             -p 1883:1883 \
@@ -73,17 +108,21 @@ jobs:
             eclipse-mosquitto:2
 
       - uses: pnpm/action-setup@v4
+        if: needs.changes.outputs.lint == 'true'
 
       - uses: actions/setup-node@v4
+        if: needs.changes.outputs.lint == 'true'
         with:
           node-version-file: .nvmrc
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+        if: needs.changes.outputs.lint == 'true'
 
       # Android, Mac and iPad run in their own jobs below, on runners that
       # actually have their toolchains - exclude them here rather than fail.
       - name: Lint, typecheck, and test (TypeScript + Rust ecosystems)
+        if: needs.changes.outputs.lint == 'true'
         run: >
           pnpm turbo lint typecheck test
           --filter=!@thrw/adapter-android
@@ -94,6 +133,8 @@ jobs:
 
   android:
     name: android
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
