@@ -131,7 +131,7 @@ jobs:
             add the needs-human label instead of continuing.
           claude_args: |
             --model ${{ contains(github.event.issue.labels.*.name, 'model:opus') && 'claude-opus-5' || 'claude-sonnet-5' }}
-            --max-turns ${{ contains(github.event.issue.labels.*.name, 'model:opus') && 80 || 60 }}
+            --max-turns ${{ contains(github.event.issue.labels.*.name, 'model:opus') && 100 || 90 }}
             --allowedTools "Read,Edit,Write,Bash(pnpm *),Bash(git *),Bash(gh *)"
         env:
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT_AI }}
