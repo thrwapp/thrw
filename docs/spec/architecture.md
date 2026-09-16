@@ -170,6 +170,15 @@ adapters)
 
 ## Reference hardware
 
-[Cowork: leave this section for Tom to fill in with his exact AirPods
-generation, Pixel model, and Android version once confirmed — this
-grounds hardware-specific issues written later.]
+- **Headset**: AirPods Pro 2 (H2 chip). Case generation (Lightning vs.
+  USB-C) and firmware version not yet pinned — shouldn't matter for
+  Bluetooth Classic connect/disconnect behavior, but flag if it does.
+- **Android phone**: a recent Pixel (8/9 series) — exact model and
+  Android version still to be confirmed.
+- **Mac / iPad**: not yet specified — needed before M3's Mac adapter
+  issue can cite real macOS/CoreBluetooth API versions.
+
+M3 issue-writing can proceed for the pieces this already grounds (the
+AirPods side), but the exact Pixel model/Android version, and the Mac/
+iPad hardware, are still open — confirm before writing acceptance
+criteria that cite specific OS API behavior for those platforms.
