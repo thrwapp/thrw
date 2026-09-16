@@ -112,19 +112,24 @@ jobs:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          # Temporary diagnostic (same move as agent-code.yml's own prior
-          # use of this flag): PR #30's evaluate run hit error_max_turns
-          # again (26 turns, 12 permission_denials_count) on a real,
-          # 8-criterion PR - unlike #25's trivial one. Suspect the
-          # allowedTools list below is missing something the PR's own test
-          # plan claims (e.g. `pnpm turbo typecheck`), but the default
-          # hidden-output mode gives no way to see which commands were
-          # actually denied. Revert once the real denied command(s) are
-          # confirmed from a run with this enabled.
-          show_full_output: "true"
           prompt: |
             You are grading pull request #${{ github.event.pull_request.number }},
             opened by the agent.
+
+            Your working directory is ALREADY checked out at this PR's
+            merge commit (actions/checkout's default ref for a
+            pull_request event) - the files on disk right now are the
+            PR's own proposed changes, not main. Do not run `git fetch
+            origin pull/N/head`, `gh api repos/.../contents/...`, or any
+            other attempt to fetch the PR's content separately - none of
+            that is in your allowed tools anyway, and it's redundant work.
+            Just `Read` the files directly, and use `git diff
+            main...HEAD` (already allowed) if you want an explicit diff
+            view. Confirmed live on PR #30: without this, the evaluator
+            burned most of a 25-turn budget on repeated denied
+            git-fetch/gh-api attempts before eventually falling back to
+            reading the local checkout directly - it happened to still
+            finish in time that once, but shouldn't have needed to.
 
             The PR's own description already lists every acceptance
             criterion under "Acceptance criteria evidence", each with the
