@@ -104,8 +104,12 @@ jobs:
             3. Run the exact test command the issue specifies (or
                `pnpm turbo test --filter=<pkg>` for the target package) and
                confirm it passes.
-            4. Write HANDOFF.md in the branch describing what was done and
-               what's uncertain, per AGENTS.md's definition of done.
+            4. Write docs/handoffs/${{ github.event.issue.number }}.md in the
+               branch describing what was done and what's uncertain, per
+               AGENTS.md's definition of done. Use exactly this path (the
+               issue number, not a shared HANDOFF.md) - a shared file caused
+               constant merge conflicts between concurrently-developed
+               agent branches.
             5. Open a pull request with `gh pr create`, citing file+line
                evidence for every acceptance criterion in the PR body.
                The PR body MUST include the literal line `Closes #${{ github.event.issue.number }}`
