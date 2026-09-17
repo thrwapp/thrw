@@ -10,7 +10,17 @@ permissions:
   id-token: write # required for GCP Workload Identity Federation
 
 jobs:
+  # `local-only`: Tom adds this via the label picker on GitHub's own "New
+  # issue" page at creation time (so it's already present by the time this
+  # `opened` event fires - no race with triage running first). Signals
+  # "I'm picking this up myself in Claude Code locally" - skip the whole
+  # job so it never gets auto-labeled agent-ready (or needs-spec) and
+  # agent-code.yml never touches it. Safe as a job-level `if` here (unlike
+  # ci.yml/agent-eval.yml's required PR checks): this workflow triggers on
+  # `issues`, not `pull_request`, so it's never a required status check
+  # and a skip can't leave anything stuck "Expected".
   triage:
+    if: ${{ !contains(github.event.issue.labels.*.name, 'local-only') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

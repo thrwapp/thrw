@@ -662,6 +662,7 @@ gh label create agent-ready   --repo "$GH_REPO" --color 0E8A16 --description "Pa
 gh label create needs-spec    --repo "$GH_REPO" --color D93F0B --description "Issue is missing required agent-task sections"
 gh label create needs-human   --repo "$GH_REPO" --color B60205 --description "Agent hit a stop condition or failed evaluation; needs human attention"
 gh label create model:opus    --repo "$GH_REPO" --color 5319E7 --description "Route this issue to Opus instead of Sonnet"
+gh label create local-only    --repo "$GH_REPO" --color 6A737D --description "Being picked up manually in Claude Code locally - never auto-triaged or auto-labeled agent-ready"
 ```
 
 ## Step C — Day-2 smoke test

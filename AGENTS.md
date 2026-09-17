@@ -43,6 +43,12 @@ A task is not done until all of the following are true:
 - After 5 failed test-fix cycles on the same issue, stop. Comment on the
   issue explaining exactly what's blocking, add the `needs-human` label,
   and stop — do not keep retrying.
+- An issue labeled `local-only` is being picked up manually in Claude
+  Code, not by the automated pipeline. `agent-triage.yml` already skips
+  it entirely (never auto-labels it `agent-ready`), so a routine agent
+  run should never see one — but if you ever do, don't touch it: don't
+  remove the label, don't open a PR against it, don't triage or
+  re-label it.
 - If the issue is ambiguous, ask a clarifying comment on the issue rather
   than guessing at intent.
 - Never delete or skip a test to make a suite pass.
