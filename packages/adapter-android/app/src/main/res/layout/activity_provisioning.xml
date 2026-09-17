@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ProvisioningActivity's layout (#102). Plain platform widgets in a
+  vertical LinearLayout - no ConstraintLayout/Material dependency, since
+  this is a two-field settings screen and AGENTS.md asks for a
+  justification for every new dependency (#102 acceptance criterion 6
+  allows androidx.activity/androidx.core only).
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/provisioning_explainer"
+            android:paddingBottom="24dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:labelFor="@id/account_id"
+            android:text="@string/account_id_label" />
+
+        <EditText
+            android:id="@+id/account_id"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/account_id_hint"
+            android:inputType="textNoSuggestions"
+            android:maxLines="1"
+            android:importantForAutofill="no" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:labelFor="@id/headset_address"
+            android:paddingTop="16dp"
+            android:text="@string/headset_address_label" />
+
+        <EditText
+            android:id="@+id/headset_address"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/headset_address_hint"
+            android:inputType="textCapCharacters|textNoSuggestions"
+            android:maxLines="1"
+            android:importantForAutofill="no" />
+
+        <Button
+            android:id="@+id/save"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/save" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="32dp"
+            android:text="@string/permissions_explainer" />
+
+        <TextView
+            android:id="@+id/permission_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp" />
+
+        <Button
+            android:id="@+id/grant_permissions"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/grant_permissions" />
+
+    </LinearLayout>
+
+</ScrollView>

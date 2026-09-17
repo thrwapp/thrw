@@ -8,4 +8,26 @@
     <string name="adapter_notification_channel_name">thrw headset switching</string>
     <string name="adapter_notification_title">thrw is active</string>
     <string name="adapter_notification_text">Watching for calls and VoIP sessions to switch your headset</string>
+
+    <!-- ui/ProvisioningActivity (#102): the launcher screen that writes
+         AdapterProvisioning's account id / headset address and requests
+         the manifest's runtime-dangerous permissions. -->
+    <string name="provisioning_title">thrw setup</string>
+    <string name="provisioning_explainer">thrw needs to know which relay account this device belongs to, and which already-paired headset it manages. Pair the headset in Android\'s Bluetooth settings first, then copy its address here.</string>
+    <string name="account_id_label">Relay account ID</string>
+    <string name="account_id_hint">e.g. tom-personal</string>
+    <string name="headset_address_label">Headset Bluetooth address</string>
+    <string name="headset_address_hint">AA:BB:CC:DD:EE:FF</string>
+    <string name="save">Save</string>
+    <!-- Deliberate: this screen doesn't start AdapterForegroundService -
+         BootCompletedReceiver does, on boot. See ProvisioningActivity's kdoc. -->
+    <string name="provisioning_saved">Saved. thrw starts watching after the next device restart.</string>
+    <string name="error_account_id_blank">Enter your relay account ID</string>
+    <string name="error_account_id_unsupported_characters">Use up to 64 letters, digits, dots, dashes or underscores — no spaces or slashes</string>
+    <string name="error_headset_address_blank">Enter the headset\'s Bluetooth address</string>
+    <string name="error_headset_address_malformed">Use six colon-separated hex pairs, like AA:BB:CC:DD:EE:FF</string>
+    <string name="permissions_explainer">thrw needs these permissions to see calls, switch the headset and show its ongoing notification.</string>
+    <string name="permissions_all_granted">All required permissions granted.</string>
+    <string name="permissions_missing">Not granted yet:\n%1$s</string>
+    <string name="grant_permissions">Grant permissions</string>
 </resources>
