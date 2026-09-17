@@ -56,6 +56,30 @@ data class RegistrationPayload(
 const val REGISTRATION_KIND: String = "register"
 
 /**
+ * "The trigger I reported earlier stopped", published on the node's own
+ * events topic. New here (#68) - see docs/handoffs/68.md.
+ *
+ * Nothing on the wire carried this yet: relay-core publishes/consumes only
+ * [EventPayload] (start) and [CommandPayload]. But relay-core's
+ * `PriorityEngine` already has `endEvent(nodeId, type)` alongside
+ * `recordEvent(nodeId, type)`, and architecture.md's "Priority rules"
+ * section hangs auto-return off `call_ended`, so the *engine* expects this
+ * signal - only the message shape was missing.
+ *
+ * Same `kind`-discriminator trick as [RegistrationPayload], and for the
+ * same reason (the topic set is frozen, so this rides the events topic).
+ * It carries no `priority`: ending a trigger needs only its kind, which is
+ * all `PriorityEngine.endEvent` takes.
+ */
+@Serializable
+data class EventEndPayload(
+    val kind: String = EVENT_END_KIND,
+    val type: EventKind,
+)
+
+const val EVENT_END_KIND: String = "event_end"
+
+/**
  * Lenient on decode so a relay that grows extra command fields later
  * doesn't break older adapters mid-rollout; strict-ish on encode (no
  * defaults omitted) so the `kind` discriminator is always on the wire.
