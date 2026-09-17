@@ -55,7 +55,12 @@ export async function onRequestPost(context: PagesContext): Promise<Response> {
         body: JSON.stringify({ email }),
       },
     );
-  } catch {
+  } catch (err) {
+    // Logged (visible in Cloudflare Pages' Functions real-time logs / tail)
+    // rather than surfaced to the caller - the client only ever sees the
+    // generic message below, never Buttondown's own response, so this is
+    // the only way to actually see why a submission failed in production.
+    console.error("waitlist: fetch to Buttondown threw", err);
     return jsonResponse(
       { error: "Couldn't reach the waitlist service. Please try again." },
       502,
@@ -63,6 +68,11 @@ export async function onRequestPost(context: PagesContext): Promise<Response> {
   }
 
   if (!buttondownResponse.ok) {
+    const body = await buttondownResponse.text().catch(() => "<unreadable body>");
+    console.error(
+      `waitlist: Buttondown returned ${buttondownResponse.status}`,
+      body,
+    );
     return jsonResponse(
       { error: "Couldn't join the waitlist. Please try again." },
       502,
