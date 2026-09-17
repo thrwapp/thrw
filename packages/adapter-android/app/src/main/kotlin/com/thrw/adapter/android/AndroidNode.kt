@@ -4,6 +4,7 @@ import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.mqtt.MqttTransport
 import com.thrw.adapter.android.protocol.CommandPayload
 import com.thrw.adapter.android.protocol.CommandType
+import com.thrw.adapter.android.protocol.EventEndPayload
 import com.thrw.adapter.android.protocol.EventKind
 import com.thrw.adapter.android.protocol.EventPayload
 import com.thrw.adapter.android.protocol.NodeInterface
@@ -13,6 +14,7 @@ import com.thrw.adapter.android.protocol.ProtocolJson
 import com.thrw.adapter.android.protocol.RegistrationPayload
 import com.thrw.adapter.android.protocol.Topics
 import com.thrw.adapter.android.protocol.TopicQos
+import com.thrw.adapter.android.triggers.EventLifecycle
 import kotlinx.serialization.json.Json
 
 /**
@@ -27,7 +29,9 @@ import kotlinx.serialization.json.Json
  *   plain side-effecting hooks the TypeScript interface declares; nothing
  *   in this class tracks or transitions a node state.
  * - **Trigger detection** (TelephonyManager, NotificationListener, ...).
- *   [emitEvent] is called *by* that layer, which is a follow-up issue.
+ *   [emitEvent] / [endEvent] are called *by* that layer, which lives in
+ *   `triggers/` (`CallTriggerMonitor`, `VoipTriggerMonitor`); this class
+ *   just publishes what it's handed. Media triggers aren't detected yet.
  * - **Priority rules.** Server-side in the relay, "never duplicated in
  *   adapters" (architecture.md). This node reports; it does not decide.
  */
@@ -38,7 +42,7 @@ class AndroidNode(
     private val transport: MqttTransport,
     private val bluetooth: BluetoothConnectionManager,
     private val json: Json = ProtocolJson,
-) : NodeInterface {
+) : NodeInterface, EventLifecycle {
 
     /**
      * Publishes this node's manifest so the relay's device registry knows
@@ -55,6 +59,21 @@ class AndroidNode(
     /** Publishes a trigger to the events topic at QoS 1 per `TopicQos`. */
     override suspend fun emitEvent(type: EventKind, priority: Priority) {
         publishToEvents(json.encodeToString(EventPayload.serializer(), EventPayload(type, priority)))
+    }
+
+    /**
+     * The symmetric partner of [emitEvent]: the [type] trigger this node
+     * reported has stopped. Publishes an [EventEndPayload] on the same
+     * events topic at the same QoS.
+     *
+     * Added here, in the adapter, rather than to the Kotlin
+     * `NodeInterface` mirror or to `packages/protocol` - that type is a
+     * frozen cross-platform contract and growing it needs an ADR plus
+     * human review (AGENTS.md). See [EventLifecycle] for the full
+     * argument, and docs/handoffs/68.md.
+     */
+    override suspend fun endEvent(type: EventKind) {
+        publishToEvents(json.encodeToString(EventEndPayload.serializer(), EventEndPayload(type = type)))
     }
 
     /** Claim won: connect the headset to this device. */

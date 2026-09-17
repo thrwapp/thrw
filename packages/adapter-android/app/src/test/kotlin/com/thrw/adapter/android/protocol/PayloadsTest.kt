@@ -57,6 +57,30 @@ class PayloadsTest {
     }
 
     @Test
+    fun `event-end payload carries the kind discriminator and the kind that ended`() {
+        val json = ProtocolJson.encodeToString(
+            EventEndPayload.serializer(),
+            EventEndPayload(type = EventKind.CALL),
+        )
+
+        assertEquals("""{"kind":"event_end","type":"call"}""", json)
+    }
+
+    @Test
+    fun `an event-end payload is distinguishable from an event start`() {
+        val start = ProtocolJson.encodeToString(EventPayload.serializer(), EventPayload(EventKind.CALL, 0))
+        val end = ProtocolJson.encodeToString(
+            EventEndPayload.serializer(),
+            EventEndPayload(type = EventKind.CALL),
+        )
+
+        // Both ride the events topic, so the discriminator is the only
+        // thing keeping them apart: a start has no "kind", an end does.
+        assertEquals(false, start.contains("\"kind\""), start)
+        assertEquals(true, end.contains("""{"kind":"event_end""""), end)
+    }
+
+    @Test
     fun `commands decode from relay-core's CommandPayload shape`() {
         assertEquals(
             CommandPayload(CommandType.CLAIM),
