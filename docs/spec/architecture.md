@@ -99,7 +99,9 @@ to them at all.
   adapter-linux): platform-specific code implementing a shared "node
   interface" — register(manifest), emit_event(type, priority),
   on_claim(), on_release(). Each adapter wraps the local Bluetooth API
-  (LibrePods on Android, CoreBluetooth on Mac/iPad, BlueZ on Linux) and
+  (LibrePods on Android, IOBluetooth on Mac — classic Bluetooth, since
+  CoreBluetooth is BLE-only and can't move the audio route, see #101 —
+  CoreBluetooth on iPad, BlueZ on Linux) and
   the local trigger APIs (TelephonyManager + NotificationListener on
   Android, AVAudioSession + process watching on Mac, CallKit on iPad,
   PulseAudio + D-Bus on Linux).
