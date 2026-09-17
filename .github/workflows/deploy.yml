@@ -64,6 +64,15 @@ jobs:
       # Needs the deploy service account to have roles/iap.tunnelResourceAccessor
       # (for --tunnel-through-iap) and a firewall rule allowing tcp:22 from
       # IAP's range (35.235.240.0/20) to the relay VM.
+      # EMQX_RELAY_USERNAME/PASSWORD: the shared relay MQTT credential
+      # services/relay-hosted/docker-entrypoint-relay.sh requires at
+      # container start (see docs/handoffs/80.md) - confirmed live, the
+      # container crash-looped without them ("EMQX_RELAY_USERNAME must be
+      # set"). Must exist as repo secrets before this step can succeed;
+      # base64-encoded here (and decoded inside relay-redeploy.sh) purely
+      # to survive two layers of shell quoting (this run block, then
+      # --command's own string) regardless of what characters the actual
+      # credential contains.
       - name: Roll the relay VM
         env:
           IMAGE: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_PROD }}/thrw/relay
@@ -74,9 +83,21 @@ jobs:
           gcloud compute scp scripts/relay-redeploy.sh "${RELAY_VM_NAME}:/tmp/relay-redeploy.sh" \
             --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap
 
+          EMQX_USER_B64=$(printf '%s' "${{ secrets.EMQX_RELAY_USERNAME }}" | base64 -w0)
+          EMQX_PASS_B64=$(printf '%s' "${{ secrets.EMQX_RELAY_PASSWORD }}" | base64 -w0)
+
           gcloud compute ssh "$RELAY_VM_NAME" \
             --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap \
-            --command="sudo bash /tmp/relay-redeploy.sh '${IMAGE}:${{ github.sha }}' '$ARTIFACT_HOST'"
+            --command="sudo bash /tmp/relay-redeploy.sh '${IMAGE}:${{ github.sha }}' '$ARTIFACT_HOST' '$EMQX_USER_B64' '$EMQX_PASS_B64'"
 
+      # A fully-configured EMQX boot (auth bootstrap file, ACL, disabled
+      # listeners per emqx.conf) is slower than the bare default image the
+      # original 5-attempt/5s window was sized against - confirmed live,
+      # that window wasn't even enough to tell "still starting" apart from
+      # "crashed" during the first credentialed rollout. Widened for
+      # margin; scripts/health-check-or-rollback.sh already reads these.
       - name: Health check
+        env:
+          MAX_ATTEMPTS: "12"
+          SLEEP_SECONDS: "10"
         run: ./scripts/health-check-or-rollback.sh "${{ vars.RELAY_HEALTH_URL }}"
