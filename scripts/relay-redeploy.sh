@@ -14,8 +14,15 @@
 # for a non-Container-Optimized-OS instance.
 set -euo pipefail
 
-IMAGE_REF="${1:?Usage: relay-redeploy.sh <image-ref> <artifact-registry-host>}"
-ARTIFACT_HOST="${2:?Usage: relay-redeploy.sh <image-ref> <artifact-registry-host>}"
+USAGE="Usage: relay-redeploy.sh <image-ref> <artifact-registry-host> <base64-emqx-username> <base64-emqx-password>"
+IMAGE_REF="${1:?$USAGE}"
+ARTIFACT_HOST="${2:?$USAGE}"
+# base64-encoded on the way in (deploy.yml) and decoded here, purely to
+# avoid shell-quoting hazards for arbitrary credential content crossing
+# two layers of quoting (this script's own args, inside gcloud compute
+# ssh's --command string) - not a secrecy measure by itself.
+EMQX_RELAY_USERNAME=$(printf '%s' "${3:?$USAGE}" | base64 -d)
+EMQX_RELAY_PASSWORD=$(printf '%s' "${4:?$USAGE}" | base64 -d)
 
 # Compute Engine's metadata server hands the VM's attached service account
 # a short-lived access token - used directly as the Docker registry
@@ -30,4 +37,22 @@ echo "$ACCESS_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https
 docker pull "$IMAGE_REF"
 docker stop relay || true
 docker rm relay || true
-docker run -d --name relay --restart unless-stopped -p 8083:8083 -p 18083:18083 "$IMAGE_REF"
+
+# services/relay-hosted/docker-entrypoint-relay.sh requires these two at
+# container start (confirmed live: the container crash-looped without
+# them - "EMQX_RELAY_USERNAME must be set"). Written to a restricted-
+# permission env file rather than passed as `-e` flags directly, so the
+# credential doesn't sit in this process's own argv (visible to anything
+# on the VM running `ps aux` while the container starts).
+ENV_FILE=$(mktemp)
+chmod 600 "$ENV_FILE"
+trap 'rm -f "$ENV_FILE"' EXIT
+{
+  printf 'EMQX_RELAY_USERNAME=%s\n' "$EMQX_RELAY_USERNAME"
+  printf 'EMQX_RELAY_PASSWORD=%s\n' "$EMQX_RELAY_PASSWORD"
+} > "$ENV_FILE"
+
+docker run -d --name relay --restart unless-stopped \
+  -p 8083:8083 -p 18083:18083 \
+  --env-file "$ENV_FILE" \
+  "$IMAGE_REF"
