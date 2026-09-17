@@ -41,9 +41,6 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      # NOTE: this assumes a Dockerfile at services/relay-hosted/Dockerfile.
-      # None exists yet in this scaffold - this step will fail on "no such
-      # file" until one is added, separately from the GCP-secrets gap above.
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker "${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev" --quiet
 
@@ -55,13 +52,31 @@ jobs:
           docker push "${IMAGE}:${{ github.sha }}"
           docker push "${IMAGE}:latest"
 
+      # gcloud compute instances update-container / create-with-container
+      # (Container-Optimized OS + the container-startup-agent) is
+      # discontinued - confirmed live, a real create-with-container attempt
+      # was refused outright ("the option to deploy a container during VM
+      # instance creation that relies on a container startup agent is
+      # discontinued"). The relay VM is a plain Debian image with Docker
+      # installed via startup script instead (docs/ops/prompt-5-...md), so
+      # rolling a new image means SSHing in and running Docker directly -
+      # see scripts/relay-redeploy.sh for what actually runs on the VM.
+      # Needs the deploy service account to have roles/iap.tunnelResourceAccessor
+      # (for --tunnel-through-iap) and a firewall rule allowing tcp:22 from
+      # IAP's range (35.235.240.0/20) to the relay VM.
       - name: Roll the relay VM
         env:
           IMAGE: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_PROD }}/thrw/relay
+          ARTIFACT_HOST: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev
+          RELAY_VM_NAME: ${{ vars.GCP_RELAY_VM_NAME || 'thrw-relay' }}
+          RELAY_ZONE: ${{ vars.GCP_RELAY_ZONE || 'us-central1-a' }}
         run: |
-          gcloud compute instances update-container "${{ vars.GCP_RELAY_VM_NAME || 'thrw-relay' }}" \
-            --zone="${{ vars.GCP_RELAY_ZONE || 'us-central1-a' }}" \
-            --container-image="${IMAGE}:${{ github.sha }}"
+          gcloud compute scp scripts/relay-redeploy.sh "${RELAY_VM_NAME}:/tmp/relay-redeploy.sh" \
+            --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap
+
+          gcloud compute ssh "$RELAY_VM_NAME" \
+            --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap \
+            --command="sudo bash /tmp/relay-redeploy.sh '${IMAGE}:${{ github.sha }}' '$ARTIFACT_HOST'"
 
       - name: Health check
         run: ./scripts/health-check-or-rollback.sh "${{ vars.RELAY_HEALTH_URL }}"
