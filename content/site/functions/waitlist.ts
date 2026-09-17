@@ -52,7 +52,12 @@ export async function onRequestPost(context: PagesContext): Promise<Response> {
           "Content-Type": "application/json",
           Authorization: `Token ${env.BUTTONDOWN_API_KEY}`,
         },
-        body: JSON.stringify({ email }),
+        // Buttondown's API renamed this field from `email` to
+        // `email_address` in a later API version - confirmed live via the
+        // function's own error logging (422 field_renamed, "Use
+        // `email_address` instead of `email`"). Sending the old name
+        // isn't just ignored, it's a hard rejection.
+        body: JSON.stringify({ email_address: email }),
       },
     );
   } catch (err) {
