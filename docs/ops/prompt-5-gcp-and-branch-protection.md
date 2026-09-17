@@ -272,10 +272,15 @@ systemctl enable --now docker
 # Named "relay", not "emqx" - scripts/relay-redeploy.sh (run over SSH by
 # deploy.yml on every rollout) stops/removes/recreates a container by
 # this exact name, so the two must agree.
+# Pinned to 5.8.0, not the bare "5" tag - confirmed live, "5" doesn't
+# exist on Docker Hub ("manifest for emqx/emqx:5 not found: manifest
+# unknown"), which failed this exact startup script on a real VM and
+# left the container never created. services/relay-hosted/Dockerfile
+# already pins 5.8.0 for the same reason; keep both in sync.
 docker run -d --name relay --restart unless-stopped \
   -p 8083:8083 \
   -p 18083:18083 \
-  emqx/emqx:5
+  emqx/emqx:5.8.0
 STARTUP
 
 # Runs as the deploy service account (not a separate one) so it already
