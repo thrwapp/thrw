@@ -1,3 +1,5 @@
+pub mod bluetooth;
+
 pub const ADAPTER_NAME: &str = "adapter-linux";
 
 #[cfg(test)]

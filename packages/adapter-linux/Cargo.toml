@@ -7,3 +7,23 @@ publish = false
 [lib]
 name = "adapter_linux"
 path = "src/lib.rs"
+
+[dependencies]
+# bluer is the actively-maintained async Rust binding for BlueZ over
+# D-Bus, used for the real BluetoothGateway implementation - see
+# docs/spec/architecture.md's "BlueZ on Linux" line and
+# docs/handoffs/108.md for why this crate was chosen (and a correction
+# to the issue's premise: bluer 0.17 is built on the `dbus`/libdbus-sys
+# crates, not zbus).
+bluer = { version = "0.17", default-features = false, features = ["bluetoothd"] }
+# bluer's D-Bus transport (the `dbus`/`libdbus-sys` crates) links libdbus
+# by default, which needs libdbus-1-dev + pkg-config on the build host.
+# "vendored" builds libdbus from bundled source instead, so CI's Ubuntu
+# runner (and this dev sandbox) doesn't need a system package installed -
+# see docs/handoffs/108.md for why this was picked over changing
+# ci.yml (a human-merge-only file per AGENTS.md).
+dbus = { version = "0.9", default-features = false, features = ["vendored"] }
+# bluer's D-Bus/BlueZ calls are async and need an executor; tokio is the
+# standard choice for async Rust and is what bluer itself is built
+# against.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
