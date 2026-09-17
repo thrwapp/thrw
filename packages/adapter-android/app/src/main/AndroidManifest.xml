@@ -29,6 +29,27 @@
         android:label="@string/app_name"
         android:allowBackup="false">
 
+        <!-- #102: the app's launcher activity - before this, no Activity
+             existed anywhere in the app and there was no MAIN/LAUNCHER
+             intent filter at all, so the app had no launcher icon and no
+             host for a runtime-permission request. Writes
+             identity/AdapterProvisioning's keys and requests the three
+             dangerous permissions declared above. `exported` must be true:
+             it's the system launcher that starts it (and required for any
+             activity with an intent-filter on API 31+). DayNight theme
+             because this module has no androidx.appcompat, so the
+             platform theme is what's available. -->
+        <activity
+            android:name=".ui.ProvisioningActivity"
+            android:exported="true"
+            android:label="@string/provisioning_title"
+            android:theme="@android:style/Theme.DeviceDefault.DayNight">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".AdapterForegroundService"
             android:exported="false"

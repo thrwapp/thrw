@@ -65,6 +65,27 @@ android {
             isReturnDefaultValues = true
         }
     }
+
+    packaging {
+        resources {
+            // Pre-existing, found while verifying #102's launcher activity
+            // could actually be installed: `./gradlew build` (this module's
+            // `pnpm build` script) fails in `mergeDebugJavaResource` with
+            // "6 files found with path 'META-INF/INDEX.LIST'" - the six
+            // io.netty jars hivemq-mqtt-client pulls in each ship one, and
+            // APK packaging has no default rule for them. Reproduced on an
+            // otherwise-clean tree with none of #102's changes applied, so
+            // it predates this issue; CI's `android` job only runs
+            // `./gradlew test`, which never packages, which is why it went
+            // unnoticed. Excluded rather than picked/merged: these are JAR
+            // index and build-metadata files with no meaning inside an APK.
+            excludes += setOf(
+                "META-INF/INDEX.LIST",
+                "META-INF/io.netty.versions.properties",
+                "META-INF/DEPENDENCIES",
+            )
+        }
+    }
 }
 
 repositories {
@@ -86,6 +107,18 @@ dependencies {
     // and eclipse/paho.mqtt.android is archived/unmaintained), and it
     // supports MQTT-over-WebSocket/TLS - ADR 0001's transport - natively.
     implementation("com.hivemq:hivemq-mqtt-client:1.3.3")
+
+    // #102's ProvisioningActivity: ComponentActivity +
+    // registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()),
+    // the standard runtime-permission flow. The first androidx artifact in
+    // this module, and pre-authorized by #102's acceptance criterion 6
+    // ("no new dependency beyond Android's own androidx.activity/androidx.core
+    // permission APIs"). Note this is the plain `activity` artifact, not
+    // `activity-ktx`/`activity-compose`: the screen is platform views in an
+    // XML layout, so nothing beyond ComponentActivity and the result
+    // contracts is needed. androidx.core/lifecycle/savedstate come in
+    // transitively as part of ComponentActivity, not as separate choices.
+    implementation("androidx.activity:activity:1.9.3")
 
     // JSON for the wire payloads. Needed to encode the manifest's
     // free-text fields with correct escaping and to pin exact field names
