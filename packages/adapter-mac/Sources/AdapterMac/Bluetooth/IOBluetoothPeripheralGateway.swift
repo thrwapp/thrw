@@ -94,8 +94,8 @@ public final class IOBluetoothPeripheralGateway: BluetoothPeripheralGateway {
             // Registered before the close call so that a disconnect
             // which completes immediately still resolves the
             // continuation.
-            let notification = device.registerForDisconnectNotification(
-                callbacks,
+            let notification = device.register(
+                forDisconnectNotification: callbacks,
                 selector: #selector(Callbacks.disconnected(_:fromDevice:))
             )
 
@@ -161,7 +161,7 @@ public final class IOBluetoothPeripheralGateway: BluetoothPeripheralGateway {
             }
         }
 
-        /// `IOBluetoothDevice.registerForDisconnectNotification(_:selector:)`'s
+        /// `IOBluetoothDevice.register(forDisconnectNotification:selector:)`'s
         /// callback. The notification is one-shot — `IOBluetooth`
         /// unregisters it once it has been delivered — so it isn't
         /// unregistered here.
