@@ -3,7 +3,7 @@ import Foundation
 @testable import AdapterMac
 
 /// Fakes the ``BluetoothPeripheralGateway`` boundary instead of mocking
-/// CoreBluetooth's own classes directly — mirrors
+/// the Bluetooth framework's own classes directly — mirrors
 /// `packages/adapter-android`'s `FakeBluetoothClassicGateway`.
 final class FakeBluetoothPeripheralGateway: BluetoothPeripheralGateway, @unchecked Sendable {
     private(set) var connectCalls: [UUID] = []
