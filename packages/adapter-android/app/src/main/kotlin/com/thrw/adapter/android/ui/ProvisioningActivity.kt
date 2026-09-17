@@ -16,7 +16,6 @@ import com.thrw.adapter.android.identity.AdapterProvisioning
 import com.thrw.adapter.android.identity.FieldError
 import com.thrw.adapter.android.identity.FieldResult
 import com.thrw.adapter.android.identity.ProvisioningInput
-import com.thrw.adapter.android.triggers.AndroidNotificationListenerService
 
 /**
  * The app's launcher screen (#102): the two things
@@ -164,24 +163,21 @@ class ProvisioningActivity : ComponentActivity() {
 
     /**
      * There's no programmatic grant for this special access - only a deep
-     * link to the Settings screen where the user grants it by hand. The
-     * `EXTRA_FRAGMENT_ARG_KEY` extra scopes that screen directly to this
-     * app's listener row where the OS honors it; this module's `minSdk`
-     * (31) is already above every OS version this trick is documented to
-     * work on, so no `Build.VERSION.SDK_INT` gate is needed the way
-     * [AdapterPermissions.requestable] gates `POST_NOTIFICATIONS` - the
-     * "fallback to the plain settings screen" the issue asks for happens
-     * for free if an OEM's Settings build ever ignores the extra: an
-     * unrecognized `Intent` extra is simply ignored, landing on the
-     * general notification-access list rather than crashing or erroring.
+     * link to the Settings screen where the user grants it by hand.
+     * Correcting this method's own prior claim: `Settings` has no public
+     * `EXTRA_FRAGMENT_ARG_KEY` field to scope that screen to this app's
+     * specific listener row - referencing it doesn't compile
+     * (`Unresolved reference`, caught by CI's `android` job after this
+     * landed on `main` once already). The row-scoping trick some OEM
+     * Settings builds honor relies on a hidden, undocumented extra key
+     * (`":settings:fragment_args_key"`) that isn't part of the Android
+     * SDK this module compiles against, so it isn't used here. This opens
+     * the general notification-access list instead, which is what the
+     * issue's own "fallback to the plain settings screen" already asked
+     * for as an acceptable outcome.
      */
     private fun openNotificationListenerSettings() {
-        val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-        intent.putExtra(
-            Settings.EXTRA_FRAGMENT_ARG_KEY,
-            NotificationAccess.flattenedComponentName(packageName, AndroidNotificationListenerService::class.java.name),
-        )
-        startActivity(intent)
+        startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
     }
 
     private fun messageFor(error: FieldError): Int = when (error) {

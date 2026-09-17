@@ -1,7 +1,6 @@
 package com.thrw.adapter.android.ui
 
 import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -42,17 +41,6 @@ class NotificationAccessTest {
             NotificationAccess.isGranted(
                 packageName = "com.thrw.adapter.android",
                 enabledListenerPackages = setOf("com.some.other.app", "com.thrw.adapter.android"),
-            ),
-        )
-    }
-
-    @Test
-    fun `flattenedComponentName joins package and class with a slash`() {
-        assertEquals(
-            "com.thrw.adapter.android/com.thrw.adapter.android.triggers.AndroidNotificationListenerService",
-            NotificationAccess.flattenedComponentName(
-                packageName = "com.thrw.adapter.android",
-                className = "com.thrw.adapter.android.triggers.AndroidNotificationListenerService",
             ),
         )
     }
