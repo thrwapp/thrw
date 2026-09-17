@@ -40,6 +40,17 @@ export function defaultMqttBrokerUrl(): string {
 
 export type HeartbeatListener = (payload: unknown, topic: string) => void;
 
+// Improves on HeartbeatListener's (payload, topic) shape rather than
+// repeating it (#97 acceptance criterion 2 explicitly invites either):
+// subscribeHeartbeat's topic is already known to the caller (fixed per
+// account/node at subscribe time), so handing it back is mostly a
+// formality. Here the node is exactly the one piece of information the
+// wildcard subscription *doesn't* statically know - every listener needs
+// it, and re-deriving it from a raw topic string is the same parsing
+// logic every caller would otherwise have to duplicate. So this hands
+// back the already-parsed node directly instead of the topic.
+export type NodeEventListener = (payload: unknown, node: string) => void;
+
 // Thin wrapper around the `mqtt` npm package (see PR description for why
 // this dependency): only exists to guarantee every publish/subscribe call
 // goes through packages/protocol's topic builders and TopicQos constants
@@ -120,6 +131,35 @@ export class RelayMqttClient {
     });
   }
 
+  // Subscribes to *every* registered node's events topic for an account,
+  // via MQTT's `+` single-level wildcard on @thrw/protocol's own
+  // eventsTopic builder (never a hand-rolled topic string - same
+  // discipline every other method here follows). Transport only: no
+  // PriorityEngine/DeviceRegistry wiring, no connection state machine -
+  // out of scope for this issue (#97).
+  subscribeAllEvents(
+    account: string,
+    onMessage: NodeEventListener,
+  ): Promise<ISubscriptionGrant[]> {
+    const topic = eventsTopic(account, "+");
+
+    this.client.on("message", (messageTopic, message) => {
+      const node = nodeFromEventsTopic(account, messageTopic);
+      if (node === null) return;
+      onMessage(parsePayload(message), node);
+    });
+
+    return new Promise((resolve, reject) => {
+      this.client.subscribe(topic, { qos: TopicQos.events.qos }, (err, granted) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(granted ?? []);
+      });
+    });
+  }
+
   private publish(
     topic: string,
     payload: unknown,
@@ -143,4 +183,26 @@ function parsePayload(message: Buffer): unknown {
   } catch {
     return message;
   }
+}
+
+// Reverses @thrw/protocol's eventsTopic(account, node) - splitting on "/"
+// rather than a regex (no escaping to get wrong for special characters in
+// `account`). Returns null for anything that isn't shaped exactly like
+// this account's own events topic, so a message on some other topic this
+// same MQTT connection happens to also be subscribed to (e.g. via a
+// separate subscribeHeartbeat call sharing the same underlying "message"
+// event) is silently ignored rather than misreported as a node id.
+function nodeFromEventsTopic(account: string, topic: string): string | null {
+  const segments = topic.split("/");
+  const [prefix, topicAccount, nodesSegment, node, eventsSegment] = segments;
+  if (
+    segments.length === 5 &&
+    prefix === "thrw" &&
+    topicAccount === account &&
+    nodesSegment === "nodes" &&
+    eventsSegment === "events"
+  ) {
+    return node;
+  }
+  return null;
 }

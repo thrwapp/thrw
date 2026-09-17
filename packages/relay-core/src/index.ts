@@ -9,6 +9,7 @@ export {
   type CommandPayload,
   type EventPayload,
   type HeartbeatListener,
+  type NodeEventListener,
   type StatePayload,
 } from "./mqtt-client.js";
 
