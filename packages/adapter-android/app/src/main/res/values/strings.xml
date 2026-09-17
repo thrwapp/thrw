@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">thrw</string>
+
+    <!-- AdapterForegroundService's persistent notification (required by
+         Android for any foreground service - architecture.md, "System
+         components"). -->
+    <string name="adapter_notification_channel_name">thrw headset switching</string>
+    <string name="adapter_notification_title">thrw is active</string>
+    <string name="adapter_notification_text">Watching for calls and VoIP sessions to switch your headset</string>
+</resources>
