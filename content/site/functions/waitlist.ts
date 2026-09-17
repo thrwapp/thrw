@@ -73,10 +73,28 @@ export async function onRequestPost(context: PagesContext): Promise<Response> {
   }
 
   if (!buttondownResponse.ok) {
-    const body = await buttondownResponse.text().catch(() => "<unreadable body>");
+    const bodyText = await buttondownResponse.text().catch(() => "<unreadable body>");
+
+    // Confirmed live: Buttondown returns this specific documented error
+    // code (https://docs.buttondown.com/api-error-codes#email_already_exists)
+    // when the address already exists - not a real failure, just someone
+    // re-submitting (or already on the list from elsewhere). Treat it as
+    // success rather than showing a scary error for something that isn't
+    // actually wrong.
+    let code: unknown;
+    try {
+      code = (JSON.parse(bodyText) as Record<string, unknown>)?.code;
+    } catch {
+      // bodyText wasn't JSON - fall through, code stays undefined, and
+      // this is handled as a real failure below.
+    }
+    if (code === "email_already_exists") {
+      return jsonResponse({ ok: true }, 200);
+    }
+
     console.error(
       `waitlist: Buttondown returned ${buttondownResponse.status}`,
-      body,
+      bodyText,
     );
     return jsonResponse(
       { error: "Couldn't join the waitlist. Please try again." },
