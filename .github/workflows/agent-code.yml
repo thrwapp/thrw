@@ -36,25 +36,68 @@ jobs:
           app-id: ${{ secrets.AGENT_APP_ID }}
           private-key: ${{ secrets.AGENT_APP_KEY }}
 
+      # Guards against redundant `agent-ready` triggers on the same
+      # issue - confirmed live on #101/#102 (2026-09-17): a burst of
+      # `labeled` events on one issue (created with `agent-ready` already
+      # in its labels array, then the label removed and re-added
+      # shortly after) fired several real runs of this job for the same
+      # issue within a minute of each other. `on.issues.types: [labeled]`
+      # has no built-in dedup, and the `agent-code-<issue>` concurrency
+      # group above only serializes duplicate runs - it doesn't skip
+      # them. One run merged #104, closing #102; a second, independent
+      # run kept going for another ~20 minutes and opened a second,
+      # conflicting PR (#105) implementing the same issue after it was
+      # already closed. Cheap to check up front: if the issue is already
+      # closed, or already has an open or merged PR that would close it,
+      # every later run for the same issue is redundant - skip before
+      # spending a Claude Code turn on it.
+      - name: Check for a duplicate trigger
+        id: dup-check
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          state="$(gh issue view "$ISSUE_NUMBER" --json state --jq .state)"
+          if [ "$state" = "CLOSED" ]; then
+            echo "Issue #$ISSUE_NUMBER is already closed - skipping (duplicate trigger)."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          existing_pr="$(gh issue view "$ISSUE_NUMBER" --json closedByPullRequestsReferences \
+            --jq '[.closedByPullRequestsReferences[] | select(.state == "OPEN" or .state == "MERGED")] | first | .url // empty')"
+          if [ -n "$existing_pr" ]; then
+            echo "Issue #$ISSUE_NUMBER already has a PR that would close it ($existing_pr) - skipping (duplicate trigger)."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+
       # Will fail until WIF_PROVIDER / GCP_PROJECT_AI secrets exist - expected
       # at this stage. Assumes a service account named
       # agent-pipeline@<project>.iam.gserviceaccount.com; adjust to match
       # whatever name you actually create during GCP setup.
       - name: Authenticate to GCP
+        if: steps.dup-check.outputs.should_run == 'true'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: agent-pipeline@${{ secrets.GCP_PROJECT_AI }}.iam.gserviceaccount.com
 
       - uses: pnpm/action-setup@v4
+        if: steps.dup-check.outputs.should_run == 'true'
       - uses: actions/setup-node@v4
+        if: steps.dup-check.outputs.should_run == 'true'
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+        if: steps.dup-check.outputs.should_run == 'true'
 
       - name: Run Claude Code
         id: run
+        if: steps.dup-check.outputs.should_run == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.app-token.outputs.token }}
@@ -98,6 +141,16 @@ jobs:
             ${{ github.event.issue.body }}
 
             Steps:
+            0. Before changing anything, run
+               `gh issue view ${{ github.event.issue.number }} --json state,closedByPullRequestsReferences`.
+               If the issue is already CLOSED, or already has another
+               open or merged PR in `closedByPullRequestsReferences`,
+               stop immediately without making any change - a sibling
+               run already handled this issue (the job-level dup-check
+               only catches this at start-up, not a sibling that
+               finishes while you're still working). Comment on the
+               issue noting which PR already closed it, and finish
+               without opening a new one.
             1. Read the issue's acceptance criteria and the package/service
                path it targets.
             2. Implement the change.
