@@ -136,6 +136,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/.android-sdk
     steps:
       - uses: actions/checkout@v4
 
@@ -143,6 +145,29 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      # #96: packages/adapter-android moved from a plain Kotlin/JVM
+      # scaffold to the real Android Gradle Plugin (docs/handoffs/96.md),
+      # so compiling it now needs an actual Android SDK - this job
+      # previously only needed Java. Installed by hand from Google's own
+      # cmdline-tools archive (no third-party Action) so the exact
+      # platform/build-tools versions match what app/build.gradle.kts
+      # declares (compileSdk 35 / build-tools 35.0.1). If those versions
+      # change, this step's `platforms;android-NN` / `build-tools;NN.N.N`
+      # arguments need updating to match, or the build fails on a package
+      # this step never installed.
+      - name: Install Android SDK
+        run: |
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -sSL -o /tmp/cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip
+          unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+          mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            --sdk_root="$ANDROID_SDK_ROOT" --licenses > /dev/null
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-35" "build-tools;35.0.1"
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > packages/adapter-android/local.properties
 
       - name: gradlew test
         working-directory: packages/adapter-android

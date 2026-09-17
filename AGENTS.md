@@ -43,6 +43,17 @@ A task is not done until all of the following are true:
 - After 5 failed test-fix cycles on the same issue, stop. Comment on the
   issue explaining exactly what's blocking, add the `needs-human` label,
   and stop — do not keep retrying.
+- An issue labeled `local-only` is being picked up manually in Claude
+  Code, not by the automated pipeline. `agent-triage.yml` already skips
+  it entirely (never auto-labels it `agent-ready`), so a routine agent
+  run should never see one — but if you ever do, don't touch it: don't
+  remove the label, don't open a PR against it, don't triage or
+  re-label it.
+- Cost-control default: every new issue defaults to `local-only` unless
+  it's explicitly labeled `trivial` at creation time — this is
+  deliberate (real API spend comes from agent-code.yml runs, not from
+  opening issues), not a bug. Don't add `trivial` to an issue yourself
+  to "unblock" it; that's Tom's call to make when opening it.
 - If the issue is ambiguous, ask a clarifying comment on the issue rather
   than guessing at intent.
 - Never delete or skip a test to make a suite pass.

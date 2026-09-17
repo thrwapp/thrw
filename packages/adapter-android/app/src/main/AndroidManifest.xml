@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- MQTT over WebSocket/TLS to the relay (ADR 0001). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Connect/disconnect the already-paired headset (bluetooth/AndroidBluetoothClassicGateway.kt).
+         Scoped to CONNECT only - this adapter never scans for new devices,
+         it manages one already-bonded headset (ADR 0002: sequential
+         handoff, one paired device). -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Phone call state (triggers/AndroidCallStateSource.kt -> CallTriggerMonitor,
+         architecture.md priority rule 1). -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
+    <!-- AdapterForegroundService's own persistent notification (API 33+). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- AdapterForegroundService itself, and its declared type below. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
+    <!-- Starts AdapterForegroundService on boot - see BootCompletedReceiver's
+         kdoc and docs/handoffs/96.md for why boot rather than app launch. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:label="@string/app_name"
+        android:allowBackup="false">
+
+        <service
+            android:name=".AdapterForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- VoipTriggerMonitor's NotificationSource, real implementation
+             (triggers/AndroidNotificationListenerService.kt). Requires the
+             user to grant notification access in Settings - there is no
+             runtime-permission dialog for this, and no in-app flow to
+             prompt for it yet (out of scope here, see docs/handoffs/96.md). -->
+        <service
+            android:name=".triggers.AndroidNotificationListenerService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name=".BootCompletedReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

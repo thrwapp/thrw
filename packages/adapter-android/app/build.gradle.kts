@@ -1,14 +1,75 @@
 import java.util.Properties
 
-// Placeholder: plain Kotlin/JVM module, not the Android Gradle Plugin. This
-// scaffold exists to prove the polyglot task graph works before the Android
-// SDK is provisioned in CI; swap to com.android.application once it is.
+// Real Android Gradle Plugin module as of #96 - was previously a plain
+// Kotlin/JVM placeholder scaffold ("swap to com.android.application once
+// [the Android SDK is] provisioned in CI"). The swap landed as part of
+// #96's composition-root wiring, since the foreground Service, the
+// NotificationListenerService subclass, and the real android.bluetooth /
+// android.telephony-backed seam implementations all need android.jar on
+// the compile classpath. See docs/handoffs/96.md.
 plugins {
-    kotlin("jvm") version "2.1.0"
-    kotlin("plugin.serialization") version "2.1.0"
+    id("com.android.application")
+    kotlin("android")
+    kotlin("plugin.serialization")
+}
+
+android {
+    namespace = "com.thrw.adapter.android"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.thrw.adapter.android"
+        // TelephonyCallback (registerTelephonyCallback + CallStateListener,
+        // see triggers/CallStateSource.kt) and CallStyle notifications'
+        // EXTRA_CALL_TYPE (see triggers/NotificationSource.kt) both need
+        // API 31. Reference hardware (architecture.md) is a Pixel 10 Pro on
+        // Android 16 QPR3/17, well above that floor, so this issue doesn't
+        // carry the deprecated PhoneStateListener fallback path for older
+        // releases - a judgment call, documented in docs/handoffs/96.md.
+        minSdk = 31
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    buildFeatures {
+        // Exposes AGP's own generated BuildConfig.VERSION_NAME, used as
+        // NodeManifest.adapterVersion (see DeviceIdentity.kt) - a single
+        // source of truth for the adapter's version rather than
+        // duplicating `versionName` as a second literal somewhere else.
+        // Distinct from, and doesn't collide with, this module's own
+        // hand-generated com.thrw.adapter.android.config.BuildConfig
+        // below (ADR 0005's RELAY_URL/LICENSING_URL/SELF_HOSTED).
+        buildConfig = true
+    }
+
+    testOptions {
+        unitTests {
+            // Tests never call into real android.* code paths (they fake
+            // the BluetoothClassicGateway/CallStateSource/NotificationSource
+            // seams, same discipline as before AGP - see each seam's kdoc)
+            // - this is a safety net against android.jar's stub methods
+            // throwing if any incidental framework call (e.g. android.util.Log)
+            // slips into a tested path, not a sign real framework classes are
+            // meant to be exercised here. No Robolectric: not justified for
+            // that alone (AGENTS.md - no new dependency without justification).
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 repositories {
+    // AGP / androidx artifacts live on Google's Maven, not mavenCentral.
+    google()
     mavenCentral()
 }
 
@@ -89,10 +150,17 @@ val generateAdapterBuildConfig =
         }
     }
 
-kotlin.sourceSets.named("main") {
-    kotlin.srcDir(generateAdapterBuildConfig)
+android.sourceSets.getByName("main").kotlin.srcDir(generateAdapterBuildConfig)
+
+// Unlike the Kotlin/JVM plugin's `kotlin.sourceSets`, wiring a generated
+// dir into `android.sourceSets` above doesn't on its own add a task
+// dependency - AGP's per-variant Kotlin compile tasks need telling
+// explicitly, or they read the (not yet generated) source dir before this
+// task has run.
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    dependsOn(generateAdapterBuildConfig)
 }
 
-tasks.test {
+tasks.withType<Test>().configureEach {
     useJUnitPlatform()
 }
