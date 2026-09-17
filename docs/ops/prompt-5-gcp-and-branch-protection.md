@@ -241,6 +241,19 @@ protocol/adapter development to start against. Do that as separate,
 later work once billing/licensing is actually being built - don't
 block on it now.
 
+**Why a plain VM + startup script, not "Deploy a container" / Container-
+Optimized OS:** an earlier draft of `deploy.yml` used
+`gcloud compute instances create-with-container` /
+`update-container` (the COS + container-startup-agent approach), on the
+assumption it'd be a cleaner fit for CI-driven rollouts. Confirmed live:
+`create-with-container` is now refused outright by Google -
+`"the option to deploy a container during VM instance creation that
+relies on a container startup agent is discontinued"` - not merely
+deprecated-with-a-warning. The plain-Debian-plus-startup-script approach
+below is the one actually in use; `deploy.yml`'s rollout step SSHes in
+and runs `scripts/relay-redeploy.sh` to swap the running container,
+since there's no GCE API left that does this for a non-COS instance.
+
 **Region constraint:** the Always Free e2-micro tier only applies in
 `us-west1`, `us-central1`, or `us-east1`. Outside those three, this VM
 is a real, billed resource. `$GCP_REGION` from Part A should already be
@@ -256,12 +269,18 @@ set -euo pipefail
 apt-get update
 apt-get install -y docker.io
 systemctl enable --now docker
-docker run -d --name emqx --restart unless-stopped \
+# Named "relay", not "emqx" - scripts/relay-redeploy.sh (run over SSH by
+# deploy.yml on every rollout) stops/removes/recreates a container by
+# this exact name, so the two must agree.
+docker run -d --name relay --restart unless-stopped \
   -p 8083:8083 \
   -p 18083:18083 \
   emqx/emqx:5
 STARTUP
 
+# Runs as the deploy service account (not a separate one) so it already
+# has the Artifact Registry access scripts/relay-redeploy.sh needs when
+# pulling the real image on later rollouts - see A6 for its roles.
 gcloud compute instances create "$RELAY_VM_NAME" \
   --project="$GCP_PROJECT_PROD" \
   --zone="$RELAY_ZONE" \
@@ -269,6 +288,8 @@ gcloud compute instances create "$RELAY_VM_NAME" \
   --image-family=debian-12 \
   --image-project=debian-cloud \
   --tags=thrw-relay \
+  --service-account="deploy@${GCP_PROJECT_PROD}.iam.gserviceaccount.com" \
+  --scopes=cloud-platform \
   --metadata-from-file=startup-script=/tmp/relay-startup.sh
 
 # Open only what ADR 0001 actually calls for: MQTT-over-WebSocket (8083,
@@ -284,6 +305,26 @@ gcloud compute firewall-rules create thrw-relay-emqx \
   --rules=tcp:8083,tcp:18083 \
   --target-tags=thrw-relay \
   --source-ranges=0.0.0.0/0
+
+# deploy.yml's rollout step SSHes into the VM via IAP (gcloud compute ssh
+# --tunnel-through-iap) rather than opening 22 to the whole internet or
+# depending on the runner's own ever-changing IP. IAP connects from a
+# fixed Google-owned range, not the target's own IP - allow only that.
+gcloud compute firewall-rules create thrw-relay-iap-ssh \
+  --project="$GCP_PROJECT_PROD" \
+  --network=default \
+  --direction=INGRESS \
+  --action=ALLOW \
+  --rules=tcp:22 \
+  --target-tags=thrw-relay \
+  --source-ranges=35.235.240.0/20
+
+# --tunnel-through-iap itself (distinct from the firewall rule above,
+# which only allows the *network path*) needs this role on top of A6's
+# artifactregistry.writer / compute.instanceAdmin.v1 / iam.serviceAccountUser.
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_PROD" \
+  --member="serviceAccount:deploy@${GCP_PROJECT_PROD}.iam.gserviceaccount.com" \
+  --role="roles/iap.tunnelResourceAccessor"
 ```
 
 Get the external IP and verify EMQX is actually up (the startup script
@@ -319,8 +360,10 @@ on a public IP even for a few minutes.
   ADR 0001's actual decision is WebSocket **over TLS**; the setup above
   is a plaintext bring-up step, not the final state.
 - Keygen CE (ADR 0009) - separate task once licensing work starts.
-- `services/relay-hosted`'s own application code and Dockerfile
-  (referenced by `deploy.yml`) - still doesn't exist.
+- Wiring `packages/relay-core`'s `PriorityEngine`/`DeviceRegistry` into a
+  live process that actually subscribes to this broker - the Dockerfile
+  above packages EMQX itself only (issue #80/PR #81); that wiring is a
+  separate, not-yet-scoped follow-up.
 
 ---
 
