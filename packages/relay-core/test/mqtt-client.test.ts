@@ -16,6 +16,8 @@ import {
   type StatePayload,
 } from "../src/mqtt-client";
 
+type ReceivedNodeEvent = { payload: unknown; node: string };
+
 // Integration tests against a real MQTT broker (acceptance criterion 5) -
 // CI's ci.yml starts Mosquitto and sets MQTT_BROKER_URL; defaultMqttBrokerUrl()
 // falls back to the same address for local dev.
@@ -139,5 +141,83 @@ describe("RelayMqttClient (real broker)", () => {
     await expect
       .poll(() => received, { timeout: 2000 })
       .toEqual([heartbeatPayload]);
+  });
+
+  it("subscribes to every node's events topic for an account at QoS 1, and identifies which node each message came from", async () => {
+    const account = randomUUID();
+    const nodeA = randomUUID();
+    const nodeB = randomUUID();
+    const nodeC = randomUUID();
+
+    const received: ReceivedNodeEvent[] = [];
+    const granted = await relayClient.subscribeAllEvents(account, (payload, node) => {
+      received.push({ payload, node });
+    });
+
+    expect(granted).toEqual([
+      { topic: eventsTopic(account, "+"), qos: TopicQos.events.qos },
+    ]);
+
+    const payloadA: EventPayload = { type: "call", priority: 1 };
+    const payloadB: EventPayload = { type: "voip", priority: 3 };
+    const payloadC: EventPayload = { type: "media", priority: 4 };
+
+    await Promise.all([
+      new Promise<void>((resolve, reject) => {
+        verifier.publish(eventsTopic(account, nodeA), JSON.stringify(payloadA), { qos: 1 }, (err) =>
+          err ? reject(err) : resolve(),
+        );
+      }),
+      new Promise<void>((resolve, reject) => {
+        verifier.publish(eventsTopic(account, nodeB), JSON.stringify(payloadB), { qos: 1 }, (err) =>
+          err ? reject(err) : resolve(),
+        );
+      }),
+      new Promise<void>((resolve, reject) => {
+        verifier.publish(eventsTopic(account, nodeC), JSON.stringify(payloadC), { qos: 1 }, (err) =>
+          err ? reject(err) : resolve(),
+        );
+      }),
+    ]);
+
+    await expect
+      .poll(() => received, { timeout: 2000 })
+      .toEqual(
+        expect.arrayContaining([
+          { payload: payloadA, node: nodeA },
+          { payload: payloadB, node: nodeB },
+          { payload: payloadC, node: nodeC },
+        ]),
+      );
+    expect(received).toHaveLength(3);
+  });
+
+  it("does not mistake a different account's events, or an unrelated topic, for this account's node events", async () => {
+    const account = randomUUID();
+    const otherAccount = randomUUID();
+    const node = randomUUID();
+
+    const received: ReceivedNodeEvent[] = [];
+    await relayClient.subscribeAllEvents(account, (payload, emittedNode) => {
+      received.push({ payload, node: emittedNode });
+    });
+
+    // A raw subscribe (not through subscribeAllEvents) so the verifier
+    // itself, not relayClient, receives this - proving isolation doesn't
+    // depend on nobody else being subscribed to the other account's topic.
+    await new Promise<void>((resolve, reject) => {
+      verifier.subscribe(eventsTopic(otherAccount, node), { qos: 1 }, (err) =>
+        err ? reject(err) : resolve(),
+      );
+    });
+
+    await relayClient.publishEvent(otherAccount, node, { type: "call", priority: 1 });
+    await relayClient.publishState(account, { holder: node });
+    const matchingPayload: EventPayload = { type: "call", priority: 1 };
+    await relayClient.publishEvent(account, node, matchingPayload);
+
+    await expect
+      .poll(() => received, { timeout: 2000 })
+      .toEqual([{ payload: matchingPayload, node }]);
   });
 });
