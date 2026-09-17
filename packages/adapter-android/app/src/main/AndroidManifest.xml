@@ -55,8 +55,8 @@
         <!-- VoipTriggerMonitor's NotificationSource, real implementation
              (triggers/AndroidNotificationListenerService.kt). Requires the
              user to grant notification access in Settings - there is no
-             runtime-permission dialog for this, and no in-app flow to
-             prompt for it yet (out of scope here, see docs/handoffs/96.md). -->
+             runtime-permission dialog for this; ui/ProvisioningActivity
+             (#107) shows whether it's granted and deep-links here. -->
         <service
             android:name=".triggers.AndroidNotificationListenerService"
             android:exported="true"

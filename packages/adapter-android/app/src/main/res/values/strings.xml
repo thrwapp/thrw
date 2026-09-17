@@ -30,4 +30,12 @@
     <string name="permissions_all_granted">All required permissions granted.</string>
     <string name="permissions_missing">Not granted yet:\n%1$s</string>
     <string name="grant_permissions">Grant permissions</string>
+
+    <!-- Notification-listener access (#107): a special-access Settings
+         toggle, not a runtime permission - see ProvisioningActivity's kdoc
+         and ui/NotificationAccess.kt. -->
+    <string name="notification_access_explainer">thrw needs notification access to detect VoIP calls (Settings, not a permission dialog).</string>
+    <string name="notification_access_granted">Notification access granted.</string>
+    <string name="notification_access_missing">Not granted yet. Open Settings and turn on access for thrw.</string>
+    <string name="open_notification_access_settings">Open notification access settings</string>
 </resources>

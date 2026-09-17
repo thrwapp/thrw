@@ -1,18 +1,22 @@
 package com.thrw.adapter.android.ui
 
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.NotificationManagerCompat
 import com.thrw.adapter.android.R
 import com.thrw.adapter.android.identity.AdapterProvisioning
 import com.thrw.adapter.android.identity.FieldError
 import com.thrw.adapter.android.identity.FieldResult
 import com.thrw.adapter.android.identity.ProvisioningInput
+import com.thrw.adapter.android.triggers.AndroidNotificationListenerService
 
 /**
  * The app's launcher screen (#102): the two things
@@ -39,17 +43,27 @@ import com.thrw.adapter.android.identity.ProvisioningInput
  * `startForegroundService` here if the reboot wait proves unacceptable on
  * real hardware - see docs/handoffs/102.md.
  *
- * Note this screen covers *runtime* permissions only. The notification
- * access [com.thrw.adapter.android.triggers.AndroidNotificationListenerService]
- * needs is a Settings toggle with no runtime-permission equivalent, and
- * pairing the headset itself happens in Android's Bluetooth settings - both
- * still have no in-app flow (docs/handoffs/96.md), which is why the address
- * is typed in rather than picked from a list of bonded devices.
+ * Note this screen covers *runtime* permissions only. Notification-listener
+ * access (below, #107) and pairing the headset itself in Android's
+ * Bluetooth settings still have no in-app flow for the pairing step
+ * (docs/handoffs/96.md), which is why the address is typed in rather than
+ * picked from a list of bonded devices.
+ *
+ * Notification-listener access (#107) is a different access model from
+ * the three runtime permissions above: it's a special-access toggle the
+ * user grants manually in a Settings screen
+ * ([Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS]), not a
+ * [ActivityResultContracts.RequestMultiplePermissions]-style dialog, and
+ * there's no programmatic grant - only a deep link to the right screen and
+ * a status readout ([NotificationAccess]) once the user comes back.
+ * Without it, [AndroidNotificationListenerService] never connects and
+ * trigger detection silently degrades with no other signal to the user.
  */
 class ProvisioningActivity : ComponentActivity() {
     private lateinit var accountIdField: EditText
     private lateinit var headsetAddressField: EditText
     private lateinit var permissionStatus: TextView
+    private lateinit var notificationAccessStatus: TextView
 
     private val requestPermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -66,6 +80,7 @@ class ProvisioningActivity : ComponentActivity() {
         accountIdField = findViewById(R.id.account_id)
         headsetAddressField = findViewById(R.id.headset_address)
         permissionStatus = findViewById(R.id.permission_status)
+        notificationAccessStatus = findViewById(R.id.notification_access_status)
 
         // Pre-fill with what's already persisted, so this doubles as a
         // settings screen rather than a one-shot setup wizard.
@@ -74,14 +89,21 @@ class ProvisioningActivity : ComponentActivity() {
 
         findViewById<Button>(R.id.save).setOnClickListener { save() }
         findViewById<Button>(R.id.grant_permissions).setOnClickListener { requestMissingPermissions() }
+        findViewById<Button>(R.id.open_notification_access_settings).setOnClickListener {
+            openNotificationListenerSettings()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         // Permissions can be revoked from system Settings while this
         // activity is stopped, so the status line is recomputed on every
-        // resume rather than only after a request.
+        // resume rather than only after a request. Notification-listener
+        // access is granted/revoked in its own separate Settings screen
+        // this activity has no result callback for, so it's re-checked
+        // here too rather than only right after launching that screen.
         renderPermissionStatus()
+        renderNotificationAccessStatus()
     }
 
     private fun save() {
@@ -129,6 +151,38 @@ class ProvisioningActivity : ComponentActivity() {
 
     private fun isGranted(permission: String): Boolean =
         checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun renderNotificationAccessStatus() {
+        val granted = NotificationAccess.isGranted(
+            packageName = packageName,
+            enabledListenerPackages = NotificationManagerCompat.getEnabledListenerPackages(this),
+        )
+        notificationAccessStatus.text = getString(
+            if (granted) R.string.notification_access_granted else R.string.notification_access_missing,
+        )
+    }
+
+    /**
+     * There's no programmatic grant for this special access - only a deep
+     * link to the Settings screen where the user grants it by hand. The
+     * `EXTRA_FRAGMENT_ARG_KEY` extra scopes that screen directly to this
+     * app's listener row where the OS honors it; this module's `minSdk`
+     * (31) is already above every OS version this trick is documented to
+     * work on, so no `Build.VERSION.SDK_INT` gate is needed the way
+     * [AdapterPermissions.requestable] gates `POST_NOTIFICATIONS` - the
+     * "fallback to the plain settings screen" the issue asks for happens
+     * for free if an OEM's Settings build ever ignores the extra: an
+     * unrecognized `Intent` extra is simply ignored, landing on the
+     * general notification-access list rather than crashing or erroring.
+     */
+    private fun openNotificationListenerSettings() {
+        val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+        intent.putExtra(
+            Settings.EXTRA_FRAGMENT_ARG_KEY,
+            NotificationAccess.flattenedComponentName(packageName, AndroidNotificationListenerService::class.java.name),
+        )
+        startActivity(intent)
+    }
 
     private fun messageFor(error: FieldError): Int = when (error) {
         FieldError.ACCOUNT_ID_BLANK -> R.string.error_account_id_blank

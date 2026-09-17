@@ -31,8 +31,10 @@ import kotlinx.coroutines.flow.asSharedFlow
  * Declared in `AndroidManifest.xml` with the
  * `BIND_NOTIFICATION_LISTENER_SERVICE` permission; the user must grant
  * notification access in Settings for it to ever connect - there is no
- * runtime-permission dialog for this, and no in-app flow prompting for it
- * yet (out of scope here, see docs/handoffs/96.md).
+ * runtime-permission dialog for this. [com.thrw.adapter.android.ui.ProvisioningActivity]
+ * (#107) shows whether that access is currently granted and deep-links to
+ * the Settings screen that grants it, via
+ * [com.thrw.adapter.android.ui.NotificationAccess].
  */
 class AndroidNotificationListenerService : NotificationListenerService() {
     override fun onListenerConnected() {

@@ -84,6 +84,16 @@ dependencies {
     // provisioning screen is plain platform widgets.
     implementation("androidx.activity:activity:1.9.3")
 
+    // NotificationManagerCompat.getEnabledListenerPackages(context), the
+    // standard way to check the notification-listener special access
+    // ui/ProvisioningActivity's status line reads (#107) - there's no
+    // checkSelfPermission equivalent for it. Not a new dependency in
+    // practice: androidx.activity:1.9.3 above already pulls in
+    // androidx.core transitively (#102's handoff), this just declares the
+    // direct compile-time use explicitly rather than relying on that being
+    // true.
+    implementation("androidx.core:core:1.13.1")
+
     // Per AGENTS.md: "use Kotlin coroutines for async code" - the async
     // connect/disconnect calls in the bluetooth package are suspend
     // functions backed by this.
