@@ -7,6 +7,12 @@ on:
       - "packages/relay-core/**"
       - "services/relay-hosted/**"
       - "services/licensing/**"
+  # Re-running a completed workflow run replays the workflow file as it
+  # existed at that run's original commit, not the current tip of main -
+  # confirmed on deploy-site.yml (see its matching comment). workflow_dispatch
+  # lets a fresh run be fired manually once the relay VM actually exists,
+  # without needing another push to a watched path.
+  workflow_dispatch: {}
 
 concurrency:
   group: deploy-relay
