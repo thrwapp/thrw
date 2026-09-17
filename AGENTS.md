@@ -49,6 +49,11 @@ A task is not done until all of the following are true:
   run should never see one — but if you ever do, don't touch it: don't
   remove the label, don't open a PR against it, don't triage or
   re-label it.
+- Cost-control default: every new issue defaults to `local-only` unless
+  it's explicitly labeled `trivial` at creation time — this is
+  deliberate (real API spend comes from agent-code.yml runs, not from
+  opening issues), not a bug. Don't add `trivial` to an issue yourself
+  to "unblock" it; that's Tom's call to make when opening it.
 - If the issue is ambiguous, ask a clarifying comment on the issue rather
   than guessing at intent.
 - Never delete or skip a test to make a suite pass.

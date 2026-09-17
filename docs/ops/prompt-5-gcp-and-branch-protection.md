@@ -663,6 +663,7 @@ gh label create needs-spec    --repo "$GH_REPO" --color D93F0B --description "Is
 gh label create needs-human   --repo "$GH_REPO" --color B60205 --description "Agent hit a stop condition or failed evaluation; needs human attention"
 gh label create model:opus    --repo "$GH_REPO" --color 5319E7 --description "Route this issue to Opus instead of Sonnet"
 gh label create local-only    --repo "$GH_REPO" --color 6A737D --description "Being picked up manually in Claude Code locally - never auto-triaged or auto-labeled agent-ready"
+gh label create trivial       --repo "$GH_REPO" --color C5DEF5 --description "Small enough to auto-triage - without this, every new issue defaults to local-only"
 ```
 
 ## Step C — Day-2 smoke test
