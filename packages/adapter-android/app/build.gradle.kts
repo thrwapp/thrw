@@ -74,6 +74,16 @@ repositories {
 }
 
 dependencies {
+    // ComponentActivity + registerForActivityResult /
+    // ActivityResultContracts.RequestMultiplePermissions, the platform's
+    // standard runtime-permission flow used by ui/ProvisioningActivity
+    // (#102). The framework's own Activity has no registerForActivityResult,
+    // only the deprecated onRequestPermissionsResult callback - this is the
+    // supported API, and #102 names it explicitly. Nothing else from
+    // androidx is pulled in deliberately (no AppCompat, no Material): the
+    // provisioning screen is plain platform widgets.
+    implementation("androidx.activity:activity:1.9.3")
+
     // Per AGENTS.md: "use Kotlin coroutines for async code" - the async
     // connect/disconnect calls in the bluetooth package are suspend
     // functions backed by this.

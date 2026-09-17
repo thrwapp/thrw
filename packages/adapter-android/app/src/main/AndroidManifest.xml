@@ -29,6 +29,24 @@
         android:label="@string/app_name"
         android:allowBackup="false">
 
+        <!-- The launcher screen (#102). Before this landed there was no
+             Activity in this codebase at all - hence no MAIN/LAUNCHER
+             filter to attach it to, and no way to set the provisioning
+             values AdapterForegroundService refuses to start without, or
+             to grant the three runtime-dangerous permissions declared
+             above. Themed from the platform's own DayNight theme rather
+             than pulling in AppCompat/Material for a two-field form. -->
+        <activity
+            android:name=".ui.ProvisioningActivity"
+            android:exported="true"
+            android:label="@string/provisioning_title"
+            android:theme="@android:style/Theme.DeviceDefault.DayNight">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".AdapterForegroundService"
             android:exported="false"
