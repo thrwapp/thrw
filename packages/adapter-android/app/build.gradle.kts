@@ -18,7 +18,16 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.thrw.adapter.android"
+        // Play Store identity (#132) - deliberately distinct from `namespace`
+        // above, which stays com.thrw.adapter.android (the Kotlin package
+        // every source file already lives under; changing it would mean
+        // moving every file, not a one-line config edit). applicationId has
+        // no such constraint - it's purely the manifest/Play Console
+        // identity, free to differ from the source package. Set to
+        // app.thrw.android to match app.thrw.mac's reverse-DNS-of-thrw.app
+        // convention (docs/handoffs/132.md), decided before this app's
+        // first Play Store publish since it's effectively immutable after.
+        applicationId = "app.thrw.android"
         // TelephonyCallback (registerTelephonyCallback + CallStateListener,
         // see triggers/CallStateSource.kt) and CallStyle notifications'
         // EXTRA_CALL_TYPE (see triggers/NotificationSource.kt) both need
