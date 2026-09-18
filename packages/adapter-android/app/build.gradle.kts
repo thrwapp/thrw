@@ -26,6 +26,14 @@ plugins {
 // expected to work without it, and an unsigned bundle is a perfectly valid
 // thing to produce locally. Only an *incomplete* configuration is an error,
 // since that silently yields an artifact Play would reject.
+//
+// Env vars are namespaced THRW_PLAY_* because CI secrets share one flat
+// namespace across every platform this repo ships (#153). The Mac/iPad
+// release flow will need its own unrelated material - signing certificate,
+// team id, App Store Connect API key - which belongs under THRW_APPLE_*
+// rather than competing for generic names like THRW_UPLOAD_*. The
+// keystore.properties *keys* stay unprefixed: that file lives inside
+// packages/adapter-android, so it has no such ambiguity to resolve.
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) {
@@ -36,18 +44,18 @@ val keystoreProperties = Properties().apply {
 fun uploadKeyValue(propertyName: String, environmentName: String): String? =
     keystoreProperties.getProperty(propertyName) ?: System.getenv(environmentName)
 
-val uploadStoreFile = uploadKeyValue("storeFile", "THRW_UPLOAD_STORE_FILE")
-val uploadStorePassword = uploadKeyValue("storePassword", "THRW_UPLOAD_STORE_PASSWORD")
-val uploadKeyAlias = uploadKeyValue("keyAlias", "THRW_UPLOAD_KEY_ALIAS")
-val uploadKeyPassword = uploadKeyValue("keyPassword", "THRW_UPLOAD_KEY_PASSWORD")
+val uploadStoreFile = uploadKeyValue("storeFile", "THRW_PLAY_KEYSTORE_FILE")
+val uploadStorePassword = uploadKeyValue("storePassword", "THRW_PLAY_KEYSTORE_PASSWORD")
+val uploadKeyAlias = uploadKeyValue("keyAlias", "THRW_PLAY_KEY_ALIAS")
+val uploadKeyPassword = uploadKeyValue("keyPassword", "THRW_PLAY_KEY_PASSWORD")
 
 val uploadKeyConfigured = uploadStoreFile != null
 
 if (uploadKeyConfigured) {
     val missing = buildList {
-        if (uploadStorePassword == null) add("storePassword/THRW_UPLOAD_STORE_PASSWORD")
-        if (uploadKeyAlias == null) add("keyAlias/THRW_UPLOAD_KEY_ALIAS")
-        if (uploadKeyPassword == null) add("keyPassword/THRW_UPLOAD_KEY_PASSWORD")
+        if (uploadStorePassword == null) add("storePassword/THRW_PLAY_KEYSTORE_PASSWORD")
+        if (uploadKeyAlias == null) add("keyAlias/THRW_PLAY_KEY_ALIAS")
+        if (uploadKeyPassword == null) add("keyPassword/THRW_PLAY_KEY_PASSWORD")
     }
     require(missing.isEmpty()) {
         "Upload key is partially configured - missing ${missing.joinToString(", ")}. " +
