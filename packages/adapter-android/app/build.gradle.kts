@@ -13,6 +13,19 @@ plugins {
     kotlin("plugin.serialization")
 }
 
+// Play permanently burns each versionCode on upload and rejects any repeat,
+// so it can't be a hand-edited literal anyone has to remember to bump (#153).
+// CI derives it from the commit count and passes it in; a local build falls
+// back to 1, which is safe precisely because local builds are never uploaded
+// - and if one ever is, Play rejecting it is the correct outcome.
+//
+// Deliberately not silently coerced: a malformed value here would produce an
+// artifact whose version ordering is wrong in a way nobody notices until
+// Play refuses a later upload.
+val releaseVersionCode: Int = System.getenv("THRW_VERSION_CODE")?.let { raw ->
+    requireNotNull(raw.toIntOrNull()) { "THRW_VERSION_CODE must be an integer, got: '$raw'" }
+} ?: 1
+
 // Upload-key material for Play Store releases (#132). Never committed: it
 // comes from a gitignored keystore.properties next to config/, or from
 // environment variables so CI can supply it from secrets instead of a file.
@@ -79,7 +92,7 @@ android {
         // releases - a judgment call, documented in docs/handoffs/96.md.
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
+        versionCode = releaseVersionCode
         versionName = "0.1.0"
     }
 
