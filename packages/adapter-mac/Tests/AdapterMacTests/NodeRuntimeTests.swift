@@ -25,6 +25,12 @@ private let runtimeManifest = NodeManifest(
 ///
 /// `@MainActor` because ``NodeRuntime`` is (see its own kdoc for why) -
 /// no run loop, host app or AppKit type is needed for any of this.
+/// Never emits, so the media monitor (#166) stays inert in tests about
+/// the other tasks.
+private struct SilentAudioSource: AudioPlaybackSource {
+    func events() -> AsyncStream<AudioPlaybackEvent> { AsyncStream { $0.finish() } }
+}
+
 @MainActor
 final class NodeRuntimeTests: XCTestCase {
     private func makeNode(transport: FakeMqttTransport, gateway: FakeBluetoothPeripheralGateway) -> MacNode {
@@ -58,7 +64,11 @@ final class NodeRuntimeTests: XCTestCase {
         let transport = FakeMqttTransport()
         let node = makeNode(transport: transport, gateway: FakeBluetoothPeripheralGateway())
         let source = FakeRunningApplicationSource()
-        let runtime = NodeRuntime(node: node, voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node))
+        let runtime = NodeRuntime(
+            node: node,
+            voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node),
+            mediaTriggerMonitor: MediaTriggerMonitor(source: SilentAudioSource(), node: node)
+        )
 
         let handle = runtime.start(manifest: runtimeManifest)
         defer { handle.cancel() }
@@ -81,7 +91,11 @@ final class NodeRuntimeTests: XCTestCase {
         let transport = FakeMqttTransport()
         let node = makeNode(transport: transport, gateway: FakeBluetoothPeripheralGateway())
         let source = FakeRunningApplicationSource()
-        let runtime = NodeRuntime(node: node, voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node))
+        let runtime = NodeRuntime(
+            node: node,
+            voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node),
+            mediaTriggerMonitor: MediaTriggerMonitor(source: SilentAudioSource(), node: node)
+        )
 
         let handle = runtime.start(manifest: runtimeManifest)
         defer { handle.cancel() }
@@ -98,7 +112,11 @@ final class NodeRuntimeTests: XCTestCase {
         let transport = FakeMqttTransport()
         let node = makeNode(transport: transport, gateway: FakeBluetoothPeripheralGateway())
         let source = FakeRunningApplicationSource()
-        let runtime = NodeRuntime(node: node, voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node))
+        let runtime = NodeRuntime(
+            node: node,
+            voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node),
+            mediaTriggerMonitor: MediaTriggerMonitor(source: SilentAudioSource(), node: node)
+        )
 
         let handle = runtime.start(manifest: runtimeManifest)
         defer { handle.cancel() }
@@ -135,7 +153,11 @@ final class NodeRuntimeTests: XCTestCase {
         let gateway = FakeBluetoothPeripheralGateway()
         let node = makeNode(transport: transport, gateway: gateway)
         let source = FakeRunningApplicationSource()
-        let runtime = NodeRuntime(node: node, voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node))
+        let runtime = NodeRuntime(
+            node: node,
+            voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node),
+            mediaTriggerMonitor: MediaTriggerMonitor(source: SilentAudioSource(), node: node)
+        )
 
         let handle = runtime.start(manifest: runtimeManifest)
         defer { handle.cancel() }
@@ -159,7 +181,11 @@ final class NodeRuntimeTests: XCTestCase {
         let transport = FakeMqttTransport()
         let node = makeNode(transport: transport, gateway: FakeBluetoothPeripheralGateway())
         let source = FakeRunningApplicationSource()
-        let runtime = NodeRuntime(node: node, voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node))
+        let runtime = NodeRuntime(
+            node: node,
+            voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node),
+            mediaTriggerMonitor: MediaTriggerMonitor(source: SilentAudioSource(), node: node)
+        )
 
         let handle = runtime.start(manifest: runtimeManifest)
         defer { handle.cancel() }
@@ -192,7 +218,11 @@ final class NodeRuntimeTests: XCTestCase {
         let transport = FakeMqttTransport()
         let node = makeNode(transport: transport, gateway: FakeBluetoothPeripheralGateway())
         let source = FakeRunningApplicationSource()
-        let runtime = NodeRuntime(node: node, voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node))
+        let runtime = NodeRuntime(
+            node: node,
+            voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node),
+            mediaTriggerMonitor: MediaTriggerMonitor(source: SilentAudioSource(), node: node)
+        )
 
         let handle = runtime.start(manifest: runtimeManifest)
         defer { handle.cancel() }
@@ -218,7 +248,11 @@ final class NodeRuntimeTests: XCTestCase {
         let transport = FakeMqttTransport()
         let node = makeNode(transport: transport, gateway: FakeBluetoothPeripheralGateway())
         let source = FakeRunningApplicationSource()
-        let runtime = NodeRuntime(node: node, voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node))
+        let runtime = NodeRuntime(
+            node: node,
+            voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node),
+            mediaTriggerMonitor: MediaTriggerMonitor(source: SilentAudioSource(), node: node)
+        )
 
         let handle = runtime.start(manifest: runtimeManifest)
         await waitUntil("the registration to be published") { !transport.published.isEmpty }

@@ -191,7 +191,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
 
             let voipMonitor = VoipTriggerMonitor(source: NSWorkspaceRunningApplicationSource(), node: node)
-            runtimeHandle = NodeRuntime(node: node, voipTriggerMonitor: voipMonitor).start(manifest: manifest)
+            // #166: media (rule 4), via public CoreAudio.
+            let mediaMonitor = MediaTriggerMonitor(source: CoreAudioPlaybackSource(), node: node)
+            runtimeHandle = NodeRuntime(node: node, voipTriggerMonitor: voipMonitor, mediaTriggerMonitor: mediaMonitor)
+                .start(manifest: manifest)
             Self.logger.info("Node runtime started for account \(accountId, privacy: .public)")
         } catch {
             Self.logger.error("Failed to start node runtime: \(String(describing: error), privacy: .public)")

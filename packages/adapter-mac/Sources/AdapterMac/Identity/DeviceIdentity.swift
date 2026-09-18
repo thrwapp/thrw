@@ -37,7 +37,7 @@ public enum DeviceIdentity {
     /// no call-detection API at all (AVAudioSession is iOS/tvOS/
     /// watchOS-only), a permanent platform gap, not a missing feature -
     /// see `docs/spec/architecture.md`'s "Mac's trigger-detection gap"
-    /// section. `.media` has no detector anywhere in this package yet,
+    /// section. `.media` is detected by ``MediaTriggerMonitor`` as of #166;
     /// and `.manual_claim` isn't something this node spontaneously emits
     /// (no UI to trigger it) - mirrors `DeviceIdentity.kt`'s own
     /// reasoning for the same two omissions.
@@ -47,7 +47,7 @@ public enum DeviceIdentity {
             platform: .mac,
             displayName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName,
             adapterVersion: adapterVersion,
-            supportedEventKinds: [.voip]
+            supportedEventKinds: [.voip, .media]
         )
     }
 }
