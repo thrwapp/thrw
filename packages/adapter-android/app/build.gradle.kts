@@ -13,6 +13,19 @@ plugins {
     kotlin("plugin.serialization")
 }
 
+// Play permanently burns each versionCode on upload and rejects any repeat,
+// so it can't be a hand-edited literal anyone has to remember to bump (#153).
+// CI derives it from the commit count and passes it in; a local build falls
+// back to 1, which is safe precisely because local builds are never uploaded
+// - and if one ever is, Play rejecting it is the correct outcome.
+//
+// Deliberately not silently coerced: a malformed value here would produce an
+// artifact whose version ordering is wrong in a way nobody notices until
+// Play refuses a later upload.
+val releaseVersionCode: Int = System.getenv("THRW_VERSION_CODE")?.let { raw ->
+    requireNotNull(raw.toIntOrNull()) { "THRW_VERSION_CODE must be an integer, got: '$raw'" }
+} ?: 1
+
 // Upload-key material for Play Store releases (#132). Never committed: it
 // comes from a gitignored keystore.properties next to config/, or from
 // environment variables so CI can supply it from secrets instead of a file.
@@ -26,6 +39,14 @@ plugins {
 // expected to work without it, and an unsigned bundle is a perfectly valid
 // thing to produce locally. Only an *incomplete* configuration is an error,
 // since that silently yields an artifact Play would reject.
+//
+// Env vars are namespaced THRW_PLAY_* because CI secrets share one flat
+// namespace across every platform this repo ships (#153). The Mac/iPad
+// release flow will need its own unrelated material - signing certificate,
+// team id, App Store Connect API key - which belongs under THRW_APPLE_*
+// rather than competing for generic names like THRW_UPLOAD_*. The
+// keystore.properties *keys* stay unprefixed: that file lives inside
+// packages/adapter-android, so it has no such ambiguity to resolve.
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) {
@@ -36,18 +57,18 @@ val keystoreProperties = Properties().apply {
 fun uploadKeyValue(propertyName: String, environmentName: String): String? =
     keystoreProperties.getProperty(propertyName) ?: System.getenv(environmentName)
 
-val uploadStoreFile = uploadKeyValue("storeFile", "THRW_UPLOAD_STORE_FILE")
-val uploadStorePassword = uploadKeyValue("storePassword", "THRW_UPLOAD_STORE_PASSWORD")
-val uploadKeyAlias = uploadKeyValue("keyAlias", "THRW_UPLOAD_KEY_ALIAS")
-val uploadKeyPassword = uploadKeyValue("keyPassword", "THRW_UPLOAD_KEY_PASSWORD")
+val uploadStoreFile = uploadKeyValue("storeFile", "THRW_PLAY_KEYSTORE_FILE")
+val uploadStorePassword = uploadKeyValue("storePassword", "THRW_PLAY_KEYSTORE_PASSWORD")
+val uploadKeyAlias = uploadKeyValue("keyAlias", "THRW_PLAY_KEY_ALIAS")
+val uploadKeyPassword = uploadKeyValue("keyPassword", "THRW_PLAY_KEY_PASSWORD")
 
 val uploadKeyConfigured = uploadStoreFile != null
 
 if (uploadKeyConfigured) {
     val missing = buildList {
-        if (uploadStorePassword == null) add("storePassword/THRW_UPLOAD_STORE_PASSWORD")
-        if (uploadKeyAlias == null) add("keyAlias/THRW_UPLOAD_KEY_ALIAS")
-        if (uploadKeyPassword == null) add("keyPassword/THRW_UPLOAD_KEY_PASSWORD")
+        if (uploadStorePassword == null) add("storePassword/THRW_PLAY_KEYSTORE_PASSWORD")
+        if (uploadKeyAlias == null) add("keyAlias/THRW_PLAY_KEY_ALIAS")
+        if (uploadKeyPassword == null) add("keyPassword/THRW_PLAY_KEY_PASSWORD")
     }
     require(missing.isEmpty()) {
         "Upload key is partially configured - missing ${missing.joinToString(", ")}. " +
@@ -79,7 +100,7 @@ android {
         // releases - a judgment call, documented in docs/handoffs/96.md.
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
+        versionCode = releaseVersionCode
         versionName = "0.1.0"
     }
 

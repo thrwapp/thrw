@@ -13,8 +13,15 @@ final class ProvisioningViewModel: ObservableObject {
     @Published var headsetError: String?
     @Published private(set) var statusText: String = ""
     @Published private(set) var isRunning: Bool = false
+    /// #144. Reflects the *system's* current answer, re-read on every
+    /// appearance and after every change - never a remembered flag, since
+    /// the user can revoke a login item in System Settings without
+    /// telling the app.
+    @Published private(set) var opensAtLogin: Bool = false
+    @Published private(set) var loginItemNote: String?
 
     private let deviceSource: PairedDeviceSource
+    private let loginItem: LoginItemController
     private let defaults: UserDefaults
     /// Called after a successful save, so the app can (re)start the node
     /// without an app relaunch - #143 acceptance criterion 4.
@@ -22,10 +29,12 @@ final class ProvisioningViewModel: ObservableObject {
 
     init(
         deviceSource: PairedDeviceSource,
+        loginItem: LoginItemController,
         defaults: UserDefaults = .standard,
         onProvisioned: @escaping () async -> Void
     ) {
         self.deviceSource = deviceSource
+        self.loginItem = loginItem
         self.defaults = defaults
         self.onProvisioned = onProvisioned
 
@@ -40,6 +49,29 @@ final class ProvisioningViewModel: ObservableObject {
 
     func reloadDevices() {
         headsetsState = PairedHeadsets.state(pairedDevices: deviceSource.pairedDevices())
+        refreshLoginItem()
+    }
+
+    /// Opt-in only (#144 acceptance criterion 5): nothing registers
+    /// unless the user flips this.
+    func toggleOpenAtLogin() {
+        do {
+            switch LoginItem.action(for: loginItem.currentState()) {
+            case .register: try loginItem.register()
+            case .unregister: try loginItem.unregister()
+            }
+        } catch {
+            loginItemNote = "Couldn't change Open at Login."
+        }
+        // Re-read rather than assuming the attempt worked, so a failed
+        // register leaves the toggle showing reality.
+        refreshLoginItem()
+    }
+
+    private func refreshLoginItem() {
+        let state = loginItem.currentState()
+        opensAtLogin = LoginItem.isOn(state)
+        loginItemNote = LoginItem.explanation(for: state)
     }
 
     /// Validates both fields, persists them only if *both* are good, then
