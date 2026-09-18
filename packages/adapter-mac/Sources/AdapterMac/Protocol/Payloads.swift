@@ -53,3 +53,22 @@ public struct RegistrationPayload: Codable, Sendable, Equatable {
         self.manifest = manifest
     }
 }
+
+/// The `kind` discriminator for [EventEndPayload].
+public let eventEndKind = "event_end"
+
+/// "The trigger I reported earlier stopped", published on the node's own
+/// events topic (#127) - mirrors `Payloads.kt`'s own `EventEndPayload`
+/// (added there in #68). Same `kind`-discriminator trick as
+/// `RegistrationPayload`, and for the same reason: the topic set is
+/// frozen, so this rides the events topic rather than getting one of its
+/// own. Carries no `priority`: ending a trigger needs only its kind.
+public struct EventEndPayload: Codable, Sendable, Equatable {
+    public let kind: String
+    public let type: EventKind
+
+    public init(type: EventKind) {
+        self.kind = eventEndKind
+        self.type = type
+    }
+}
