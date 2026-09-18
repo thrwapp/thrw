@@ -41,18 +41,35 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:labelFor="@id/headset_address"
+            android:labelFor="@id/headset_picker"
             android:paddingTop="16dp"
             android:text="@string/headset_address_label" />
 
-        <EditText
-            android:id="@+id/headset_address"
+        <!--
+          #117: a picker over BluetoothAdapter.getBondedDevices() rather
+          than the free-text field #102 shipped - see BondedHeadsets.kt's
+          kdoc for why this replaces it outright instead of offering both.
+          Visibility of this Spinner vs. headset_picker_status below is
+          toggled in code (ProvisioningActivity.renderHeadsetPicker) per
+          BondedHeadsetsState - both start gone so nothing flashes empty
+          before the first render.
+        -->
+        <Spinner
+            android:id="@+id/headset_picker"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="@string/headset_address_hint"
-            android:inputType="textCapCharacters|textNoSuggestions"
-            android:maxLines="1"
-            android:importantForAutofill="no" />
+            android:visibility="gone" />
+
+        <!-- "Permission not granted" / "no bonded devices" explanation -
+             #117 acceptance criterion 2, an explicit message rather than
+             an empty picker. Doubles as the "select a headset" validation
+             error on Save (ProvisioningActivity.save). -->
+        <TextView
+            android:id="@+id/headset_picker_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="4dp"
+            android:visibility="gone" />
 
         <Button
             android:id="@+id/save"

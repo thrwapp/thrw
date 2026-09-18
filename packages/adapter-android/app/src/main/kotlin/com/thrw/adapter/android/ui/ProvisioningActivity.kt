@@ -4,8 +4,11 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.provider.Settings
+import android.view.View
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -45,8 +48,8 @@ import com.thrw.adapter.android.identity.ProvisioningInput
  * Note this screen covers *runtime* permissions only. Notification-listener
  * access (below, #107) and pairing the headset itself in Android's
  * Bluetooth settings still have no in-app flow for the pairing step
- * (docs/handoffs/96.md), which is why the address is typed in rather than
- * picked from a list of bonded devices.
+ * (docs/handoffs/96.md) - the headset field only *picks* an already-bonded
+ * device ([BondedHeadsets], #117), it doesn't pair a new one.
  *
  * Notification-listener access (#107) is a different access model from
  * the three runtime permissions above: it's a special-access toggle the
@@ -60,9 +63,19 @@ import com.thrw.adapter.android.identity.ProvisioningInput
  */
 class ProvisioningActivity : ComponentActivity() {
     private lateinit var accountIdField: EditText
-    private lateinit var headsetAddressField: EditText
+    private lateinit var headsetPicker: Spinner
+    private lateinit var headsetPickerStatus: TextView
+    private lateinit var headsetPickerAdapter: ArrayAdapter<String>
     private lateinit var permissionStatus: TextView
     private lateinit var notificationAccessStatus: TextView
+
+    /**
+     * The bonded devices backing [headsetPicker]'s *real* entries - the
+     * adapter's position `i + 1` is `bondedDevices[i]`; position `0` is
+     * always the placeholder ([R.string.headset_picker_placeholder]), not
+     * a device. Refreshed every [renderHeadsetPicker] call.
+     */
+    private var bondedDevices: List<BondedDevice> = emptyList()
 
     private val requestPermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -70,6 +83,9 @@ class ProvisioningActivity : ComponentActivity() {
             // permissions in *this* request, whereas the status line below
             // re-reads the live grant state of all of them.
             renderPermissionStatus()
+            // BLUETOOTH_CONNECT may have just been granted, which changes
+            // whether the picker can read the bonded-device list at all.
+            renderHeadsetPicker()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -77,14 +93,22 @@ class ProvisioningActivity : ComponentActivity() {
         setContentView(R.layout.activity_provisioning)
 
         accountIdField = findViewById(R.id.account_id)
-        headsetAddressField = findViewById(R.id.headset_address)
+        headsetPicker = findViewById(R.id.headset_picker)
+        headsetPickerStatus = findViewById(R.id.headset_picker_status)
         permissionStatus = findViewById(R.id.permission_status)
         notificationAccessStatus = findViewById(R.id.notification_access_status)
 
+        headsetPickerAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_item)
+        headsetPickerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        headsetPicker.adapter = headsetPickerAdapter
+
         // Pre-fill with what's already persisted, so this doubles as a
-        // settings screen rather than a one-shot setup wizard.
+        // settings screen rather than a one-shot setup wizard. The
+        // headset picker's own first render happens in onResume, same as
+        // the permission/notification-access status lines below - onResume
+        // always runs right after onCreate on a fresh launch, so nothing
+        // is skipped, and this avoids rendering it twice.
         accountIdField.setText(AdapterProvisioning.accountId(this).orEmpty())
-        headsetAddressField.setText(AdapterProvisioning.headsetAddress(this).orEmpty())
 
         findViewById<Button>(R.id.save).setOnClickListener { save() }
         findViewById<Button>(R.id.grant_permissions).setOnClickListener { requestMissingPermissions() }
@@ -101,16 +125,34 @@ class ProvisioningActivity : ComponentActivity() {
         // access is granted/revoked in its own separate Settings screen
         // this activity has no result callback for, so it's re-checked
         // here too rather than only right after launching that screen.
+        // The bonded-device list can change the same way (the user pairs
+        // or unpairs a headset in system Bluetooth settings and comes
+        // back), so the picker is refreshed here too, not only in
+        // onCreate.
         renderPermissionStatus()
         renderNotificationAccessStatus()
+        renderHeadsetPicker()
     }
 
     private fun save() {
         val accountId = ProvisioningInput.accountId(accountIdField.text.toString())
-        val headsetAddress = ProvisioningInput.headsetAddress(headsetAddressField.text.toString())
+        // ProvisioningInput.headsetAddress is unchanged (#117 "paths the
+        // agent must not touch") - the picker only changes *how* a value
+        // reaches it, an empty string when nothing real is selected
+        // produces the same FieldError.HEADSET_ADDRESS_BLANK it always
+        // has.
+        val headsetAddress = ProvisioningInput.headsetAddress(selectedHeadsetAddress().orEmpty())
 
         accountIdField.error = (accountId as? FieldResult.Invalid)?.let { getString(messageFor(it.error)) }
-        headsetAddressField.error = (headsetAddress as? FieldResult.Invalid)?.let { getString(messageFor(it.error)) }
+        if (headsetAddress is FieldResult.Invalid && bondedDevices.isNotEmpty()) {
+            // Only overwrite the status line with "pick one" when the
+            // picker actually has pickable entries - in the permission-
+            // not-granted / no-bonded-devices states that line is already
+            // explaining exactly why nothing can be selected, and this
+            // would erase a more useful message with a less useful one.
+            headsetPickerStatus.text = getString(messageFor(headsetAddress.error))
+            headsetPickerStatus.visibility = View.VISIBLE
+        }
 
         // Both fields are validated and flagged above before this returns,
         // so one save press reports every problem at once.
@@ -119,12 +161,71 @@ class ProvisioningActivity : ComponentActivity() {
         AdapterProvisioning.setAccountId(this, accountId.value)
         AdapterProvisioning.setHeadsetAddress(this, headsetAddress.value)
 
-        // Show the normalized values (trimmed, address upper-cased) - what
-        // was actually persisted, not what was typed.
+        // Show the normalized account id (trimmed) - what was actually
+        // persisted, not what was typed. The headset picker's own
+        // selection already shows exactly what was persisted; nothing to
+        // normalize/redisplay there the way the old free-text field
+        // needed (address upper-casing).
         accountIdField.setText(accountId.value)
-        headsetAddressField.setText(headsetAddress.value)
 
         Toast.makeText(this, R.string.provisioning_saved, Toast.LENGTH_LONG).show()
+    }
+
+    /**
+     * The address of whatever's currently picked in [headsetPicker], or
+     * `null` if nothing real is selected - position `0` is always the
+     * placeholder ([R.string.headset_picker_placeholder]), and
+     * `AdapterView.INVALID_POSITION` (`-1`) is what an empty adapter
+     * reports.
+     */
+    private fun selectedHeadsetAddress(): String? {
+        val position = headsetPicker.selectedItemPosition
+        if (position <= 0) return null
+        return bondedDevices.getOrNull(position - 1)?.address
+    }
+
+    /**
+     * Repopulates [headsetPicker] from [BondedDeviceSource.bondedDevices]
+     * via [BondedHeadsets.state] (#117 acceptance criteria 1-2): shows the
+     * picker with a placeholder-first device list, or - for the two
+     * non-list states - hides it in favor of an explanatory message in
+     * [headsetPickerStatus].
+     */
+    private fun renderHeadsetPicker() {
+        val granted = isGranted(AdapterPermissions.BLUETOOTH_CONNECT)
+        val devices = if (granted) BondedDeviceSource.bondedDevices(this) else emptyList()
+        bondedDevices = devices
+
+        when (val state = BondedHeadsets.state(granted, devices)) {
+            is BondedHeadsetsState.PermissionNotGranted ->
+                showHeadsetPickerMessage(R.string.headset_permission_not_granted)
+
+            is BondedHeadsetsState.NoDevicesBonded ->
+                showHeadsetPickerMessage(R.string.headset_none_bonded)
+
+            is BondedHeadsetsState.Devices -> {
+                headsetPickerStatus.visibility = View.GONE
+                headsetPicker.visibility = View.VISIBLE
+
+                headsetPickerAdapter.clear()
+                headsetPickerAdapter.add(getString(R.string.headset_picker_placeholder))
+                headsetPickerAdapter.addAll(state.devices.map(BondedHeadsets::label))
+
+                // Pre-select whatever's already persisted, if it's still
+                // among the bonded devices - otherwise leave the
+                // placeholder selected rather than silently assuming the
+                // platform's first-listed device.
+                val persistedAddress = AdapterProvisioning.headsetAddress(this)
+                val matchIndex = state.devices.indexOfFirst { it.address == persistedAddress }
+                headsetPicker.setSelection(if (matchIndex >= 0) matchIndex + 1 else 0)
+            }
+        }
+    }
+
+    private fun showHeadsetPickerMessage(messageRes: Int) {
+        headsetPicker.visibility = View.GONE
+        headsetPickerStatus.visibility = View.VISIBLE
+        headsetPickerStatus.text = getString(messageRes)
     }
 
     private fun requestMissingPermissions() {
