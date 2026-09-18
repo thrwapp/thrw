@@ -169,7 +169,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let nodeId = DeviceIdentity.nodeId()
             let manifest = DeviceIdentity.manifest()
 
-            let transport = try await MQTTNIOTransport.connect(config: relayConfig, clientId: nodeId)
+            // #147: nil when unset, which connects anonymously - correct
+            // for a local broker, rejected by the deployed relay.
+            let credentials = RelayCredentials.fromBuildConfig()
+            if credentials == nil {
+                Self.logger.error("No relay credential configured - see config/adapter.properties (#147)")
+            }
+            let transport = try await MQTTNIOTransport.connect(
+                config: relayConfig,
+                clientId: nodeId,
+                credentials: credentials
+            )
             self.transport = transport
             let bluetooth = BluetoothConnectionManager(gateway: IOBluetoothPeripheralGateway())
             let node = MacNode(

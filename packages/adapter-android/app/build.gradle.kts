@@ -254,16 +254,36 @@ val generateAdapterBuildConfig =
         val source = adapterConfigFile
         val outputDir = generatedConfigDir
         inputs.file(source)
+        // Optional, so `inputs.files` rather than `inputs.file` - Gradle
+        // would otherwise cache straight past a credential change.
+        inputs.files(source.resolveSibling("adapter.local.properties"))
         outputs.dir(outputDir)
 
         doLast {
             val properties = Properties()
             source.inputStream().use { properties.load(it) }
+            // #147: untracked overlay (config/adapter.local.properties,
+            // gitignored) wins over the committed file. That's how the
+            // relay's MQTT credential reaches the build without ever
+            // being committed - see adapter.properties' own comment.
+            val localSource = source.resolveSibling("adapter.local.properties")
+            if (localSource.exists()) {
+                localSource.inputStream().use { properties.load(it) }
+            }
 
             fun required(key: String): String =
                 requireNotNull(properties.getProperty(key)) {
                     "$key missing from ${source.name} - see ADR 0005"
                 }
+
+            // Credentials are legitimately absent: a local broker with
+            // allow_anonymous on needs none, and that's how this module's
+            // tests run. Empty means "connect anonymously".
+            fun optional(key: String): String = properties.getProperty(key).orEmpty()
+
+            // A credential is arbitrary text; a quote or backslash must
+            // not break out of the Kotlin string literal below.
+            fun escape(value: String): String = value.replace("\\", "\\\\").replace("\"", "\\\"")
 
             val packageDir = outputDir.get().asFile.resolve("com/thrw/adapter/android/config")
             packageDir.mkdirs()
@@ -279,6 +299,9 @@ val generateAdapterBuildConfig =
                 |    const val RELAY_URL: String = "${required("relay.url")}"
                 |    const val LICENSING_URL: String = "${required("licensing.url")}"
                 |    const val SELF_HOSTED: Boolean = ${required("selfHosted").toBoolean()}
+                |    /** Empty when unset - see RelayCredentials.fromBuildConfig(). */
+                |    const val RELAY_USERNAME: String = "${escape(optional("relay.username"))}"
+                |    const val RELAY_PASSWORD: String = "${escape(optional("relay.password"))}"
                 |}
                 |
                 """.trimMargin(),

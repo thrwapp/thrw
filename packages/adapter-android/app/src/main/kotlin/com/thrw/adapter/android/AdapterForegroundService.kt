@@ -11,6 +11,7 @@ import android.util.Log
 import com.thrw.adapter.android.bluetooth.AndroidBluetoothClassicGateway
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.config.RelayConfig
+import com.thrw.adapter.android.config.RelayCredentials
 import com.thrw.adapter.android.identity.AdapterProvisioning
 import com.thrw.adapter.android.identity.DeviceIdentity
 import com.thrw.adapter.android.mqtt.HiveMqttTransport
@@ -75,7 +76,14 @@ class AdapterForegroundService : Service() {
             val nodeId = DeviceIdentity.nodeId(this@AdapterForegroundService)
             val manifest = DeviceIdentity.manifest(this@AdapterForegroundService)
 
-            val hiveTransport = HiveMqttTransport.connect(relayConfig, clientId = nodeId)
+            // #147: null connects anonymously, which the deployed relay
+            // rejects - logged so a missing credential is diagnosable
+            // rather than looking like a network fault.
+            val credentials = RelayCredentials.fromBuildConfig()
+            if (credentials == null) {
+                Log.e(TAG, "No relay credential configured - see config/adapter.properties (#147)")
+            }
+            val hiveTransport = HiveMqttTransport.connect(relayConfig, clientId = nodeId, credentials = credentials)
             transport = hiveTransport
 
             val bluetooth = BluetoothConnectionManager(AndroidBluetoothClassicGateway(this@AdapterForegroundService))

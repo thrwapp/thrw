@@ -30,6 +30,10 @@ import PackagePlugin
 struct GenerateAdapterConfigPlugin: BuildToolPlugin {
     func createBuildCommands(context: PluginContext, target: Target) async throws -> [Command] {
         let propertiesFile = context.package.directory.appending(subpath: "config/adapter.properties")
+        // #147: untracked overlay, optional. generate.sh tolerates it not
+        // existing; it's how the relay credential reaches the build
+        // without being committed.
+        let localPropertiesFile = context.package.directory.appending(subpath: "config/adapter.local.properties")
         let generatorScript = context.package.directory.appending(
             subpath: "Plugins/GenerateAdapterConfigPlugin/generate.sh"
         )
@@ -40,7 +44,12 @@ struct GenerateAdapterConfigPlugin: BuildToolPlugin {
             .prebuildCommand(
                 displayName: "Generate AdapterBuildConfig.swift from config/adapter.properties",
                 executable: Path("/bin/sh"),
-                arguments: [generatorScript.string, propertiesFile.string, outputFile.string],
+                arguments: [
+                    generatorScript.string,
+                    propertiesFile.string,
+                    outputFile.string,
+                    localPropertiesFile.string,
+                ],
                 // A prebuildCommand (rather than buildCommand) because
                 // the output file's existence can't be declared upfront
                 // for SwiftPM's dependency graph - it's produced by this

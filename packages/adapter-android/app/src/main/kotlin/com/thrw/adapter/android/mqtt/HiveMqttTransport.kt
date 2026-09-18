@@ -5,6 +5,7 @@ import com.hivemq.client.mqtt.datatypes.MqttQos
 import com.hivemq.client.mqtt.mqtt3.Mqtt3BlockingClient
 import com.hivemq.client.mqtt.mqtt3.Mqtt3Client
 import com.thrw.adapter.android.config.RelayConfig
+import com.thrw.adapter.android.config.RelayCredentials
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -78,6 +79,7 @@ class HiveMqttTransport private constructor(
         suspend fun connect(
             config: RelayConfig,
             clientId: String,
+            credentials: RelayCredentials? = null,
         ): HiveMqttTransport = withContext(Dispatchers.IO) {
             var builder = Mqtt3Client.builder()
                 .identifier(clientId)
@@ -94,7 +96,20 @@ class HiveMqttTransport private constructor(
             }
 
             val client = builder.buildBlocking()
-            client.connect()
+            // #147: null connects anonymously, which is correct for a
+            // local broker with allow_anonymous on (how this module's
+            // tests run). The deployed relay sets allow_anonymous=false
+            // and rejects that with a NOT_AUTHORIZED connack.
+            if (credentials != null) {
+                client.toBlocking().connectWith()
+                    .simpleAuth()
+                    .username(credentials.username)
+                    .password(credentials.password.toByteArray())
+                    .applySimpleAuth()
+                    .send()
+            } else {
+                client.connect()
+            }
             HiveMqttTransport(client)
         }
     }

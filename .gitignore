@@ -33,3 +33,7 @@ packages/adapter-linux/target/
 # Python
 __pycache__/
 *.pyc
+
+# #147: untracked build-time credential overlay for each adapter - see
+# packages/adapter-mac/config/adapter.properties for why this is never committed.
+**/config/adapter.local.properties
