@@ -1,0 +1,143 @@
+name: release-android
+
+# Builds a *signed* Android App Bundle and attaches it to a GitHub Release
+# for manual upload to Play Console (#153).
+#
+# Deliberately build-only: auto-uploading to Play needs a Google Cloud
+# service account with Play Console access plus a third-party action, which
+# isn't worth the dependency until releases are frequent enough to be a
+# chore. Revisit when that's true.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+concurrency:
+  group: release-android
+  cancel-in-progress: false
+
+permissions:
+  contents: write # creating the Release and uploading its asset
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/.android-sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # versionCode is the commit count (below), which a shallow clone
+          # would compute wrong - and wrong low, so it would collide with a
+          # value Play has already burned.
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Same hand-rolled install as ci.yml's `android` job, for the same
+      # reason: it pins the exact platform/build-tools versions
+      # app/build.gradle.kts declares rather than trusting a third-party
+      # setup action's defaults (AGENTS.md: no new dependency without
+      # justification). If compileSdk or build-tools change there, these
+      # arguments need updating to match - and so does ci.yml's copy.
+      - name: Install Android SDK
+        run: |
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -sSL -o /tmp/cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip
+          unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+          mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            --sdk_root="$ANDROID_SDK_ROOT" --licenses > /dev/null
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-35" "build-tools;35.0.1"
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > packages/adapter-android/local.properties
+
+      # Commit count rather than github.run_number: it's reproducible
+      # locally (`git rev-list --count HEAD` gives the same answer), traces
+      # back to a specific commit, and doesn't reset if this workflow file
+      # is ever renamed or recreated - which would silently restart the
+      # sequence at 1 and collide with values Play has already burned.
+      - name: Derive versionCode
+        id: version
+        run: |
+          code="$(git rev-list --count HEAD)"
+          echo "Derived versionCode: $code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Decode upload keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.THRW_UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::THRW_UPLOAD_KEYSTORE_BASE64 is not set. Without it the build" \
+                 "would still succeed and produce an *unsigned* bundle (by design - see" \
+                 "app/build.gradle.kts), which Play rejects. Failing early instead."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+
+      - name: Build signed bundle
+        working-directory: packages/adapter-android
+        env:
+          THRW_VERSION_CODE: ${{ steps.version.outputs.code }}
+          THRW_UPLOAD_STORE_FILE: ${{ runner.temp }}/upload.jks
+          THRW_UPLOAD_STORE_PASSWORD: ${{ secrets.THRW_UPLOAD_STORE_PASSWORD }}
+          THRW_UPLOAD_KEY_ALIAS: ${{ secrets.THRW_UPLOAD_KEY_ALIAS }}
+          THRW_UPLOAD_KEY_PASSWORD: ${{ secrets.THRW_UPLOAD_KEY_PASSWORD }}
+        run: ./gradlew bundleRelease
+
+      # A green `bundleRelease` does NOT mean the bundle is signed: an
+      # unconfigured build succeeds and produces an unsigned one on purpose.
+      # So assert the signature explicitly rather than inferring it, or a
+      # misconfigured secret ships a bundle Play silently rejects hours later.
+      - name: Verify the bundle is signed
+        run: |
+          aab="packages/adapter-android/app/build/outputs/bundle/release/app-release.aab"
+          if ! keytool -printcert -jarfile "$aab" > /tmp/cert.txt 2>&1; then
+            echo "::error::Could not read a certificate from $aab"
+            cat /tmp/cert.txt
+            exit 1
+          fi
+          if ! grep -q "^Owner:" /tmp/cert.txt; then
+            echo "::error::$aab is not signed - check the upload-key secrets"
+            cat /tmp/cert.txt
+            exit 1
+          fi
+          echo "Signed by:"
+          grep -E "^(Owner|Valid from)" /tmp/cert.txt
+
+      # Runs even if the build or verification failed, so key material never
+      # outlives the job that needed it.
+      - name: Remove decoded keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release-${{ steps.version.outputs.code }}
+          path: packages/adapter-android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+      # Only on a tag: a workflow_dispatch run has no version to release
+      # against, and its bundle is available as the artifact above. `gh` is
+      # preinstalled on the runner, so this needs no third-party action.
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes "Signed Android App Bundle, versionCode ${{ steps.version.outputs.code }}. Upload to Play Console manually." \
+            --draft \
+            packages/adapter-android/app/build/outputs/bundle/release/app-release.aab#app-release.aab \
+            || gh release upload "$tag" \
+              packages/adapter-android/app/build/outputs/bundle/release/app-release.aab#app-release.aab \
+              --clobber
