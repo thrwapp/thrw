@@ -1,5 +1,6 @@
 import AdapterMac
 import AppKit
+import SwiftUI
 import os
 
 /// The composition root's untestable half (#128) - a menu-bar
@@ -30,6 +31,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem?
     private var runtimeHandle: NodeRuntimeHandle?
+    /// Held so a restart can close the old connection before opening a
+    /// new one - otherwise re-saving provisioning leaks an MQTT client
+    /// per save, each still subscribed to the old node's commands topic.
+    private var transport: MQTTNIOTransport?
+    private var provisioningWindow: NSWindow?
+    private var provisioningModel: ProvisioningViewModel?
+    /// Guards against two overlapping starts (double-click Save, or Save
+    /// racing the launch-time start) producing two live nodes.
+    private var isStarting = false
 
     static func main() {
         let app = NSApplication.shared
@@ -52,29 +62,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image = NSImage(systemSymbolName: "headphones", accessibilityDescription: "thrw")
 
         let menu = NSMenu()
+        let setUpItem = NSMenuItem(title: "Set Up\u{2026}", action: #selector(openProvisioning), keyEquivalent: ",")
+        setUpItem.target = self
+        menu.addItem(setUpItem)
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit thrw", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
 
         statusItem = item
     }
 
+    /// Opens (or re-focuses) the provisioning window - #143. An
+    /// `LSUIElement` app has no Dock icon and isn't normally activated,
+    /// so this has to activate explicitly or the window opens behind
+    /// whatever the user was doing.
+    @objc private func openProvisioning() {
+        if let provisioningWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            provisioningWindow.makeKeyAndOrderFront(nil)
+            provisioningModel?.reloadDevices()
+            return
+        }
+
+        let model = ProvisioningViewModel(
+            deviceSource: IOBluetoothPairedDeviceSource(),
+            onProvisioned: { [weak self] in await self?.restartNodeRuntime() }
+        )
+        provisioningModel = model
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "thrw"
+        window.contentView = NSHostingView(rootView: ProvisioningView(model: model))
+        window.isReleasedWhenClosed = false
+        window.center()
+        provisioningWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Tears the current node down and starts a fresh one from whatever
+    /// provisioning is now stored (#143 acceptance criterion 4). Cancels
+    /// the old tasks *and* closes the old transport before reconnecting -
+    /// leaving the old MQTT client open would keep a second subscriber on
+    /// the previous node's commands topic.
+    private func restartNodeRuntime() async {
+        runtimeHandle?.cancel()
+        runtimeHandle = nil
+        if let transport {
+            self.transport = nil
+            try? await transport.close()
+        }
+        await startNodeRuntimeIfProvisioned()
+    }
+
     /// Constructs and starts the real node, or logs why it didn't -
-    /// never connects a half-configured node. No provisioning UI exists
-    /// yet (#128's own acceptance criterion 4 excludes building one) -
-    /// see ``AdapterProvisioning``'s own kdoc for the honest gap this
-    /// leaves: today, nothing writes these `UserDefaults` keys.
+    /// never connects a half-configured node.
+    ///
+    /// The provisioned/not decision comes from ``ProvisioningStatus``
+    /// (#143) rather than being re-derived here, so this path and the
+    /// provisioning window can't disagree about what "provisioned" means.
+    /// Since #143 this is re-callable: saving in the window restarts the
+    /// node without an app relaunch.
     private func startNodeRuntimeIfProvisioned() async {
-        guard let accountId = AdapterProvisioning.accountId() else {
+        guard !isStarting else {
+            Self.logger.error("A node start is already in flight - ignoring this one")
+            return
+        }
+        isStarting = true
+        defer { isStarting = false }
+
+        let accountId: String
+        let headsetIdentifier: UUID
+        switch ProvisioningStatus.current() {
+        case .notProvisioned(.accountId):
             Self.logger.error("Not provisioned (no account id) - not starting a node")
+            provisioningModel?.nodeStopped()
             return
-        }
-        guard let headsetAddress = AdapterProvisioning.headsetAddress() else {
+        case .notProvisioned(.headsetAddress):
             Self.logger.error("Not provisioned (no headset address) - not starting a node")
+            provisioningModel?.nodeStopped()
             return
-        }
-        guard let headsetIdentifier = BluetoothDeviceIdentifier.identifier(forAddressString: headsetAddress) else {
-            Self.logger.error("Configured headset address is not a valid Bluetooth address - not starting a node")
+        case .notProvisioned(.headsetAddressUnusable(let stored)):
+            Self.logger.error("Stored headset address is unusable (\(stored, privacy: .public)) - not starting a node")
+            provisioningModel?.nodeStopped()
             return
+        case .provisioned(let account, let identifier):
+            accountId = account
+            headsetIdentifier = identifier
         }
 
         do {
@@ -83,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let manifest = DeviceIdentity.manifest()
 
             let transport = try await MQTTNIOTransport.connect(config: relayConfig, clientId: nodeId)
+            self.transport = transport
             let bluetooth = BluetoothConnectionManager(gateway: IOBluetoothPeripheralGateway())
             let node = MacNode(
                 accountId: accountId,
@@ -94,8 +175,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let voipMonitor = VoipTriggerMonitor(source: NSWorkspaceRunningApplicationSource(), node: node)
             runtimeHandle = NodeRuntime(node: node, voipTriggerMonitor: voipMonitor).start(manifest: manifest)
+            Self.logger.info("Node runtime started for account \(accountId, privacy: .public)")
         } catch {
             Self.logger.error("Failed to start node runtime: \(String(describing: error), privacy: .public)")
+            transport = nil
+            provisioningModel?.nodeStopped()
         }
     }
 }
