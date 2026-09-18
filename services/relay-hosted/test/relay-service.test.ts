@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { commandsTopic, eventsTopic, type EventKind, type NodeManifest } from "@thrw/protocol";
+import { commandsTopic, eventsTopic, heartbeatTopic, type EventKind, type NodeManifest } from "@thrw/protocol";
 import {
   defaultMqttBrokerUrl,
   RelayMqttClient,
@@ -97,6 +97,15 @@ function publishEventEnd(client: MqttClient, account: string, node: string, type
 
 function publishEvent(client: MqttClient, account: string, node: string, type: EventKind): Promise<void> {
   return publishJson(client, eventsTopic(account, node), { type, priority: 1 });
+}
+
+/**
+ * Lets the real broker deliver in-flight messages and the service process
+ * them. Used where there's no observable state change to poll on - a
+ * heartbeat arriving updates only private bookkeeping (#142).
+ */
+function settle(ms = 300): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function collectCommands(client: MqttClient, account: string, node: string): CommandPayload[] {
@@ -231,6 +240,56 @@ describe("RelayService (real broker)", () => {
     scheduler.fire(5_000);
 
     expect(service.registryFor(account)?.getById(nodeA.nodeId)).toBeUndefined();
+  });
+
+  // #142: the other half of the sweep's contract. Everything above proves
+  // a node that goes *silent* is reaped; this proves a node that keeps
+  // beating is not. Until #142 no adapter published a heartbeat at all,
+  // so in practice every real node hit the reap path ~90s after
+  // registering - and, once #130 wired forgetNode into that same sweep,
+  // got a RELEASE published to it, dropping the headset mid-call.
+  it("keeps a node that is still heartbeating, even well past the timeout (#142)", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["call"] });
+    const scheduler = new FakeScheduler();
+    let now = 0;
+    const service = await startService([account], scheduler, () => now);
+
+    const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+    await publishRegistration(rawClient, account, nodeA);
+    await publishEvent(rawClient, account, nodeA.nodeId, "call");
+    await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+
+    // `trackHeartbeat` subscribes to this node's heartbeat topic
+    // fire-and-forget when it sees the registration, so a beat published
+    // before that SUBSCRIBE round-trip lands is simply dropped (QoS 0,
+    // no retry). Settle first, or the first beats go nowhere.
+    await settle();
+
+    // Well past the 90s timeout - five 30s intervals, so `now` reaches
+    // 150_000 and the sweep's cutoff (now - 90_000) climbs to 60_000,
+    // comfortably past the registration stamp at 0. Without the beats
+    // below this node is reaped; the loop count matters, and three
+    // intervals is *not* enough (now would land on exactly 90_000, and
+    // the sweep's `lastSeenAt < cutoff` is strict, so 0 < 0 is false and
+    // nothing is reaped - a version of this test with three iterations
+    // passed even with the heartbeat removed, i.e. proved nothing).
+    for (let elapsed = 0; elapsed < 5; elapsed++) {
+      now += 30_000;
+      await publishJson(rawClient, heartbeatTopic(account, nodeA.nodeId), {}, 0);
+      // The beat has to be *delivered and processed* before the sweep
+      // runs, and nothing public on RelayService changes when one
+      // arrives - so there's no poll predicate to wait on, only a
+      // settle. Same approach the "unrecognized payload" test above uses.
+      await settle();
+      scheduler.fire(5_000);
+    }
+
+    // Still registered, still the holder, and never told to release.
+    expect(service.registryFor(account)?.getById(nodeA.nodeId)).toEqual(nodeA);
+    expect(service.engineFor(account)?.currentHolder()).toBe(nodeA.nodeId);
+    expect(commandsA).toEqual([{ type: "claim" }]);
   });
 
   it("forgets a silent node's PriorityEngine signals too (#130), publishing a real RELEASE when it was mid-call", async () => {

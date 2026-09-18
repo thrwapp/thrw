@@ -20,7 +20,7 @@ import Foundation
 /// report trigger start/end through it - `emitEvent`'s signature already
 /// satisfies both `NodeInterface` and `EventLifecycle` at once, so only
 /// `endEvent` needed adding.
-public final class MacNode: NodeInterface, EventLifecycle {
+public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     private let accountId: String
     private let nodeId: String
     private let headsetIdentifier: UUID
@@ -94,6 +94,29 @@ public final class MacNode: NodeInterface, EventLifecycle {
             case .release: try await onRelease()
             }
         }
+    }
+
+    /// ``HeartbeatSink`` conformance (#142) - liveness only, so the
+    /// relay's `sweepHeartbeats` doesn't reap this node.
+    ///
+    /// Empty payload, deliberately: architecture.md's topic table
+    /// specifies this topic as `QoS 0, ~30s` and says nothing about a
+    /// body, and `relay-core`'s `subscribeHeartbeat` ignores the payload
+    /// entirely - arrival *is* the signal. Inventing a body here would
+    /// create something a future relay might start parsing, for no
+    /// current benefit (#142 acceptance criterion 6).
+    ///
+    /// QoS 0 (`TopicQos.heartbeatQos`), also from that table: an
+    /// at-most-once beat is right for a signal that repeats every 30s
+    /// and is only read as "recently alive" - redelivering a stale one
+    /// would be actively misleading.
+    public func publishHeartbeat() async throws {
+        try await transport.publish(
+            topic: Topics.heartbeat(account: accountId, node: nodeId),
+            payload: "",
+            qos: TopicQos.heartbeatQos,
+            retained: false
+        )
     }
 
     private func publishToEvents(_ payload: some Encodable) async throws {

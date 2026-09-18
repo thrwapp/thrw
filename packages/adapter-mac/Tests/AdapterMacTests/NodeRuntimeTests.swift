@@ -63,9 +63,14 @@ final class NodeRuntimeTests: XCTestCase {
         let handle = runtime.start(manifest: runtimeManifest)
         defer { handle.cancel() }
 
-        await waitUntil("the registration to be published") { !transport.published.isEmpty }
+        await waitUntil("the registration to be published") {
+            transport.published.contains { $0.topic == runtimeEventsTopic }
+        }
 
-        let sent = try XCTUnwrap(transport.published.first)
+        // By topic, not by position: the heartbeat task (#142) also
+        // publishes, so `published.first` is only the registration by
+        // virtue of an ordering guarantee tested separately below.
+        let sent = try XCTUnwrap(transport.published.first { $0.topic == runtimeEventsTopic })
         XCTAssertEqual(sent.topic, runtimeEventsTopic)
         let decoded = try JSONDecoder().decode(RegistrationPayload.self, from: Data(sent.payload.utf8))
         XCTAssertEqual(decoded.kind, registrationKind)
@@ -98,18 +103,26 @@ final class NodeRuntimeTests: XCTestCase {
         let handle = runtime.start(manifest: runtimeManifest)
         defer { handle.cancel() }
 
+        // Filter to the events topic rather than indexing `published`
+        // positionally: since #142 the heartbeat task publishes to its
+        // own topic on its own schedule, so position in the combined
+        // array is no longer a reliable way to find trigger payloads.
+        func eventsPayloads() -> [String] {
+            transport.published.filter { $0.topic == runtimeEventsTopic }.map(\.payload)
+        }
+
         // The registration goes out first, on its own task - wait for it
         // so the trigger payloads below are unambiguously the monitor's.
-        await waitUntil("the registration to be published") { !transport.published.isEmpty }
+        await waitUntil("the registration to be published") { !eventsPayloads().isEmpty }
 
         let zoom = RunningApplicationInfo(bundleIdentifier: "us.zoom.xos")
         source.send(.launched(zoom))
-        await waitUntil("the voip event") { transport.published.count >= 2 }
+        await waitUntil("the voip event") { eventsPayloads().count >= 2 }
 
         source.send(.terminated(zoom))
-        await waitUntil("the voip event_end") { transport.published.count >= 3 }
+        await waitUntil("the voip event_end") { eventsPayloads().count >= 3 }
 
-        let triggerPayloads = transport.published.dropFirst().map(\.payload)
+        let triggerPayloads = Array(eventsPayloads().dropFirst())
         let event = try JSONDecoder().decode(EventPayload.self, from: Data(triggerPayloads[0].utf8))
         XCTAssertEqual(event, EventPayload(type: .voip, priority: unrankedPriority))
         let eventEnd = try JSONDecoder().decode(EventEndPayload.self, from: Data(triggerPayloads[1].utf8))
@@ -159,8 +172,46 @@ final class NodeRuntimeTests: XCTestCase {
 
         // ...and the monitor (task 3) is live too, still consuming its
         // source while the subscription remains open.
+        //
+        // Counts events-topic publishes specifically: a bare
+        // `published.count >= 2` would be satisfied by the registration
+        // plus a heartbeat (#142) even if the monitor were dead, which
+        // would make this assertion pass for the wrong reason.
         source.send(.launched(RunningApplicationInfo(bundleIdentifier: "us.zoom.xos")))
-        await waitUntil("the voip event") { transport.published.count >= 2 }
+        await waitUntil("the voip event") {
+            transport.published.filter { $0.topic == runtimeEventsTopic }.count >= 2
+        }
+    }
+
+    /// #142: the relay only subscribes to a node's heartbeat topic once
+    /// it has seen that node register (`relay-service.ts`'s `handleEvent`
+    /// -> `trackHeartbeat`), so a beat published before registration goes
+    /// to a topic nothing is listening to. This ordering is a correctness
+    /// property, not a test convenience.
+    func testTheFirstHeartbeatIsNotPublishedBeforeRegistration() async throws {
+        let transport = FakeMqttTransport()
+        let node = makeNode(transport: transport, gateway: FakeBluetoothPeripheralGateway())
+        let source = FakeRunningApplicationSource()
+        let runtime = NodeRuntime(node: node, voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node))
+
+        let handle = runtime.start(manifest: runtimeManifest)
+        defer { handle.cancel() }
+
+        await waitUntil("a heartbeat to be published") {
+            transport.published.contains { $0.topic == Topics.heartbeat(account: runtimeAccountId, node: runtimeNodeId) }
+        }
+
+        let firstRegistration = transport.published.firstIndex { $0.topic == runtimeEventsTopic }
+        let firstHeartbeat = transport.published.firstIndex {
+            $0.topic == Topics.heartbeat(account: runtimeAccountId, node: runtimeNodeId)
+        }
+        XCTAssertNotNil(firstRegistration)
+        XCTAssertNotNil(firstHeartbeat)
+        XCTAssertLessThan(
+            try XCTUnwrap(firstRegistration),
+            try XCTUnwrap(firstHeartbeat),
+            "the registration must be published before the first heartbeat"
+        )
     }
 
     func testCancellingTheHandleStopsTheTriggerMonitor() async throws {

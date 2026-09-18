@@ -30,6 +30,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 private data class Published(
@@ -83,6 +84,7 @@ private const val NODE = "pixel-10-pro"
 private const val HEADSET = "AA:BB:CC:DD:EE:FF"
 private const val EVENTS_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/events"
 private const val COMMANDS_TOPIC = "thrw/$ACCOUNT/commands/$NODE"
+private const val HEARTBEAT_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/heartbeat"
 
 private val MANIFEST = NodeManifest(
     nodeId = NODE,
@@ -160,6 +162,30 @@ class AndroidNodeTest {
         assertEquals(1, sent.qos)
         assertFalse(sent.retained)
         assertEquals("""{"kind":"event_end","type":"call"}""", sent.payload)
+    }
+
+    @Test
+    fun `publishHeartbeat publishes an empty payload on the heartbeat topic at QoS 0`() = runTest {
+        val f = Fixture()
+
+        f.node.publishHeartbeat()
+
+        val sent = f.transport.published.single()
+        assertEquals(HEARTBEAT_TOPIC, sent.topic)
+        assertEquals(0, sent.qos)
+        assertFalse(sent.retained)
+        // Empty on purpose - arrival is the whole signal, and
+        // relay-core's subscribeHeartbeat ignores the body (#142).
+        assertEquals("", sent.payload)
+    }
+
+    @Test
+    fun `the heartbeat does not ride the events topic`() = runTest {
+        val f = Fixture()
+
+        f.node.publishHeartbeat()
+
+        assertNotEquals(EVENTS_TOPIC, f.transport.published.single().topic)
     }
 
     @Test
