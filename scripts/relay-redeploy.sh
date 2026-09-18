@@ -15,7 +15,7 @@
 # for a non-Container-Optimized-OS instance.
 set -euo pipefail
 
-USAGE="Usage: relay-redeploy.sh <image-ref> <artifact-registry-host> <base64-emqx-username> <base64-emqx-password>"
+USAGE="Usage: relay-redeploy.sh <image-ref> <artifact-registry-host> <base64-emqx-username> <base64-emqx-password> <relay-service-image-ref> <base64-thrw-relay-accounts>"
 IMAGE_REF="${1:?$USAGE}"
 ARTIFACT_HOST="${2:?$USAGE}"
 # base64-encoded on the way in (deploy.yml) and decoded here, purely to
@@ -24,6 +24,11 @@ ARTIFACT_HOST="${2:?$USAGE}"
 # ssh's --command string) - not a secrecy measure by itself.
 EMQX_RELAY_USERNAME=$(printf '%s' "${3:?$USAGE}" | base64 -d)
 EMQX_RELAY_PASSWORD=$(printf '%s' "${4:?$USAGE}" | base64 -d)
+# #129: relay-service's own image and the accounts it manages. Same
+# base64 treatment as the credential above, applied here for consistency
+# even though THRW_RELAY_ACCOUNTS isn't itself secret.
+RELAY_SERVICE_IMAGE_REF="${5:?$USAGE}"
+THRW_RELAY_ACCOUNTS=$(printf '%s' "${6:?$USAGE}" | base64 -d)
 
 # Compute Engine's metadata server hands the VM's attached service account
 # a short-lived access token - used directly as the Docker registry
@@ -36,6 +41,7 @@ ACCESS_TOKEN=$(curl -s -H "Metadata-Flavor: Google" \
 
 echo "$ACCESS_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://${ARTIFACT_HOST}"
 docker pull "$IMAGE_REF"
+docker pull "$RELAY_SERVICE_IMAGE_REF"
 docker stop relay || true
 docker rm relay || true
 
@@ -90,3 +96,45 @@ else
     -v caddy_config:/config \
     caddy:2-alpine
 fi
+
+# relay-service (#118/#129): the live PriorityEngine/DeviceRegistry
+# process. Torn down/recreated on every redeploy, same as `relay` above
+# (not idempotent like `caddy`) - this *is* the thing being versioned by
+# each deploy, unlike Caddy, which only needs touching when its own
+# config changes.
+#
+# --network host, same as caddy: reaches EMQX directly via
+# ws://localhost:8083/mqtt rather than round-tripping out through Caddy/
+# TLS/DNS for a connection that never leaves this VM - EMQX's ws listener
+# expects the /mqtt path (matches every adapter's own
+# wss://relay.thrw.app/mqtt, see config/adapter.properties in each
+# adapter package).
+#
+# MQTT credential: reuses the same shared EMQX_RELAY_USERNAME/PASSWORD
+# `relay` itself authenticates with, rather than a second credential -
+# acl.conf's ACL is currently `{allow, all, ...}` per the single-shared-
+# credential interim model (#80), so a second credential would be
+# functionally identical to this one right now, and inventing per-
+# service credential management before services/accounts exists is
+# premature (#129's own acceptance criteria asked this be a documented
+# choice, not necessarily the more elaborate one).
+docker stop relay-service || true
+docker rm relay-service || true
+
+# Same env-file discipline as $ENV_FILE above (not `-e` flags) - the
+# credential must not sit in this process's own argv, visible to
+# anything on the VM running `ps aux` while the container starts.
+RELAY_SERVICE_ENV_FILE=$(mktemp)
+chmod 600 "$RELAY_SERVICE_ENV_FILE"
+trap 'rm -f "$ENV_FILE" "$RELAY_SERVICE_ENV_FILE"' EXIT
+{
+  printf 'THRW_RELAY_ACCOUNTS=%s\n' "$THRW_RELAY_ACCOUNTS"
+  printf 'MQTT_BROKER_URL=ws://localhost:8083/mqtt\n'
+  printf 'EMQX_RELAY_USERNAME=%s\n' "$EMQX_RELAY_USERNAME"
+  printf 'EMQX_RELAY_PASSWORD=%s\n' "$EMQX_RELAY_PASSWORD"
+} > "$RELAY_SERVICE_ENV_FILE"
+
+docker run -d --name relay-service --restart unless-stopped \
+  --network host \
+  --env-file "$RELAY_SERVICE_ENV_FILE" \
+  "$RELAY_SERVICE_IMAGE_REF"
