@@ -30,6 +30,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem?
     private var runtimeHandle: NodeRuntimeHandle?
+    /// #144. A protocol rather than `SMAppServiceLoginItem` directly, so
+    /// the decisions around it live in the testable ``LoginItem`` type.
+    private let loginItem: LoginItemController = SMAppServiceLoginItem()
+    private var openAtLoginItem: NSMenuItem?
 
     static func main() {
         let app = NSApplication.shared
@@ -52,10 +56,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image = NSImage(systemSymbolName: "headphones", accessibilityDescription: "thrw")
 
         let menu = NSMenu()
+        // #144. Checkable menu item rather than a settings window: this
+        // is a single boolean on a menu-bar app, and it's where macOS
+        // users already look for it. The provisioning window (#143) is
+        // the right home for it once that lands; deliberately not a
+        // second window here.
+        let openAtLogin = NSMenuItem(title: "Open at Login", action: #selector(toggleOpenAtLogin), keyEquivalent: "")
+        openAtLogin.target = self
+        menu.addItem(openAtLogin)
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit thrw", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        // Re-read the live state every time the menu opens, so a change
+        // made in System Settings is reflected rather than a stale
+        // remembered flag (#144 acceptance criterion 3).
+        menu.delegate = self
         item.menu = menu
 
+        openAtLoginItem = openAtLogin
         statusItem = item
+        refreshOpenAtLoginItem()
+    }
+
+    /// Opt-in only (#144 acceptance criterion 5): registering a login
+    /// item behind the user's back is the kind of thing that makes a
+    /// utility feel hostile, so nothing here runs unless they click.
+    @objc private func toggleOpenAtLogin() {
+        let state = loginItem.currentState()
+        do {
+            switch LoginItem.action(for: state) {
+            case .register: try loginItem.register()
+            case .unregister: try loginItem.unregister()
+            }
+        } catch {
+            Self.logger.error("Open at Login change failed: \(String(describing: error), privacy: .public)")
+        }
+        // Re-read rather than assuming the attempt worked - a failed
+        // register must leave the checkmark showing reality.
+        refreshOpenAtLoginItem()
+    }
+
+    private func refreshOpenAtLoginItem() {
+        let state = loginItem.currentState()
+        openAtLoginItem?.state = LoginItem.isOn(state) ? .on : .off
+        // A state the user can't fix by clicking again (needs System
+        // Settings, or the app isn't in a location macOS accepts) is
+        // surfaced rather than silently leaving a toggle that won't move.
+        openAtLoginItem?.toolTip = LoginItem.explanation(for: state)
+        if let explanation = LoginItem.explanation(for: state) {
+            Self.logger.info("Open at Login: \(explanation, privacy: .public)")
+        }
     }
 
     /// Constructs and starts the real node, or logs why it didn't -
@@ -97,5 +146,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             Self.logger.error("Failed to start node runtime: \(String(describing: error), privacy: .public)")
         }
+    }
+}
+
+/// Refreshes the Open at Login checkmark each time the menu is opened,
+/// so a change the user made in System Settings shows up (#144).
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        refreshOpenAtLoginItem()
     }
 }
