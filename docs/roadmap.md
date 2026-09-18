@@ -1,12 +1,28 @@
 # thrw — build roadmap
 
-Status snapshot as of 2026-09-15: governance, CI/CD, and the fully agentic
-issue→PR→eval→merge pipeline are proven end-to-end (issue #24 → PR #25).
-Every package and service under `packages/**` and `services/**` is still a
-one-line placeholder (`export const xPackageName = "@thrw/x";`) or, for the
-native adapters, a single constant. **None of the actual product exists
-yet.** This document breaks that remaining work into milestones and states,
-for each one, which pipeline lane it runs through.
+Status snapshot as of 2026-09-18 (the 09-15 snapshot below went stale
+within days — governance/CI/CD proved out fast, and the packages/services
+work moved faster still): the "none of the actual product exists yet"
+framing is no longer true. M1 (protocol +
+relay-core) is fully built and tested. `packages/adapter-android` is a
+substantially complete node — Bluetooth Classic connect/disconnect, the
+node interface over real MQTT, call/VoIP trigger detection, a foreground
+`Service` composition root, and a provisioning UI with a bonded-device
+picker. `packages/adapter-mac` has real classic-Bluetooth connect/disconnect
+(via `IOBluetooth`, not `CoreBluetooth` — see #101) and, as of #112, the
+node interface wired over real MQTT too; it still needs a composition
+root and trigger detection to reach parity with Android. `packages/adapter-linux`
+has a bootstrapped BlueZ connection seam (#108), one stage behind
+adapter-mac's own trajectory. `packages/adapter-ipad` is still a bare
+skeleton, and per #115's research, faces a real platform ceiling (below).
+`services/relay-hosted` has a live EMQX broker deployed to GCP (#80/#81)
+and, as of #118, an actual `PriorityEngine`/`DeviceRegistry` process
+subscribing to it — production deployment wiring for that process is a
+documented, deliberate follow-up, not done yet. Every other service
+(`licensing`, `billing`, `accounts`, `ai-engine`, `telemetry`) remains a
+one-line placeholder, genuinely not started. This document breaks the
+remaining work into milestones and states, for each one, which pipeline
+lane it runs through.
 
 ## Pipeline lanes (recap from AGENTS.md)
 
@@ -35,75 +51,134 @@ needs a new ADR. Every M1 issue below should say this explicitly, or an
 evaluator/triage agent may reflexively flag it as touching a frozen
 contract and stop.
 
-## M1 — Protocol & relay core (packages/protocol, packages/relay-core)
+## M1 — Protocol & relay core (packages/protocol, packages/relay-core) — ✅ done
 
 The foundation everything else depends on. Agent auto-merge lane, per the
 nuance above, as long as each issue's acceptance criteria quote the exact
-spec from architecture.md rather than inventing new shapes.
+spec from architecture.md rather than inventing new shapes. All four items
+below are merged; `packages/relay-core`'s own priority-engine logic has
+since been proven end-to-end against a real broker too (#113/#114, M3.3
+below).
 
-1. `packages/protocol`: wire types for the node interface —
-   `register(manifest)`, `emit_event(type, priority)`, `on_claim()`,
-   `on_release()` — and the MQTT topic strings (`thrw/{account}/nodes/
-   {node}/events`, `.../commands/{node}`, `.../state`, `.../heartbeat`).
-   TypeScript types + a small serialization/validation layer. This is what
-   every adapter and the relay both import, so it should ship before
-   anything else in M1-M3.
-2. `packages/protocol`: connection state machine (idle → pre-claim → claim
-   → active, per architecture.md and ADR 0013 — cooldown is adapter-local,
-   not a fifth state here) as a typed state container with the transition
-   rules from ADR 0010/0011, unit-tested against every legal and illegal
-   transition.
-3. `packages/relay-core`: MQTT client wrapper (QoS 1 for events/commands,
-   QoS 0 heartbeat, retained state topic) and device/capability registry —
-   holds nothing about a node beyond what its manifest declared.
-4. `packages/relay-core`: priority rules engine — the 5 ordered rules from
-   architecture.md (call > manual claim > VoIP > media > last-claimed) plus
-   the auto-return timeout after `call_ended` (default 90s, later tunable
-   by `services/ai-engine`).
+1. ✅ `packages/protocol`: node-interface types (`NodeInterface`,
+   `NodeManifest`, `EventKind`), MQTT topic builders, and `TopicQos` —
+   `packages/protocol/src/index.ts` (#30).
+2. ✅ `packages/protocol`: connection state machine (idle → pre-claim →
+   claim → active, ADR 0013's four states, no fifth "cooldown") —
+   `ConnectionStateMachine`/`LEGAL_TRANSITIONS` in the same file (#54),
+   unit-tested against every legal and illegal transition
+   (`packages/protocol/test/index.test.ts`).
+3. ✅ `packages/relay-core`: `RelayMqttClient` (#65) and `DeviceRegistry`
+   (#62) — the registry holds nothing about a node beyond what its
+   manifest declared, per architecture.md. `RelayMqttClient` has since
+   grown a generic events-topic subscription (`subscribeAllEvents`, #97)
+   beyond this milestone's original single-heartbeat scope.
+4. ✅ `packages/relay-core`: `PriorityEngine` — all 5 ordered rules (call
+   > manual claim > VoIP > media > last-claimed) plus the `call_ended`
+   auto-return timeout (default 90s) — #43.
 
-## M2 — Relay hosted service (services/relay-hosted)
+## M2 — Relay hosted service (services/relay-hosted) — mostly done
 
-Human-merge lane (`services/**`). Wraps `relay-core` in an actual
-deployable EMQX-backed service per ADR 0006 (GCP Compute Engine, not
-Fly.io/Cloud Run), wired into the already-scaffolded `deploy.yml` +
-`scripts/health-check-or-rollback.sh`. Needs real GCP infra decisions
-(networking, EMQX config, TLS termination) that should go through a human
-first pass rather than a cold agent issue.
+Human-merge lane (`services/**`). This section's own text was stale as of
+#116's research (it described the EMQX deployment as future work; it's
+been live since #80/#81) — updated here per that issue's own allowance to
+fix factually-wrong M2 text found along the way, not rewritten wholesale.
 
-## M3 — First real adapter pair (Android + Mac)
+✅ The EMQX broker itself is built, configured (ADR 0006: GCP Compute
+Engine, not Fly.io/Cloud Run) and deployed to a live GCP VM — `Dockerfile`/
+`emqx.conf`/`acl.conf`/`docker-entrypoint-relay.sh` (#80/#81), wired into
+`deploy.yml` + `scripts/health-check-or-rollback.sh`, debugged live post-
+deploy (#92/#93).
+
+✅ `relay-core`'s `PriorityEngine`/`DeviceRegistry` now actually runs
+against that broker as a real process, not just against a simulated pair
+of nodes — `services/relay-hosted/src/relay-service.ts` (#118),
+per-account subscription via `RelayMqttClient.subscribeAllEvents`,
+tested against a real local broker and verified end-to-end with a real
+`docker build`/`docker run`.
+
+**Still open**: wiring #118's process into the *actual* production
+deploy pipeline (`deploy.yml` currently builds/runs only the EMQX
+container; running the new process alongside it on the relay VM is a
+deliberate, documented follow-up — see `docs/handoffs/118.md`), and TLS
+termination for the broker's WebSocket listener (plaintext today; #119
+tracks this, gated on a real domain + cert existing first).
+
+## M3 — First real adapter pair (Android + Mac) — Android substantially done, Mac in progress
 
 This is the actual product demo: cross-device handoff working on real
 hardware. Agent auto-merge lane for the code; **real-hardware validation
 is human-only** (no Bluetooth in CI) — every M3 PR's tests are necessarily
 mocked/simulated at the OS-API boundary, and "done" per AGENTS.md still
 needs a follow-up manual QA pass against Tom's actual AirPods + Pixel
-before it's trusted.
+before it's trusted. That manual QA pass is now the main thing actually
+blocking a real demo, not missing code — see item 2 below for the one
+real code gap left.
 
-Blocking prerequisite: the "Reference hardware" section in
-`docs/spec/architecture.md` is still a placeholder — needs Tom's exact
-AirPods generation, Pixel model, and Android version before M3 acceptance
-criteria can cite real OS API versions/behavior.
+The blocking prerequisite this section used to name (a placeholder
+"Reference hardware" section) is resolved for Android/Mac:
+`docs/spec/architecture.md`'s "Reference hardware" section now names
+AirPods Pro 2, Pixel 10 Pro, and MacBook Air 13" M4 2025. (iPad's
+reference hardware is still unspecified —
+see M4 below, a real but separate gap.)
 
-1. `packages/adapter-android`: implement the node interface — Bluetooth
-   Classic connect/disconnect (no root, no VendorID spoofing — ADR 0002),
-   `TelephonyManager` + `NotificationListenerService` for call/VoIP
-   trigger detection, Kotlin coroutines per AGENTS.md.
-2. `packages/adapter-mac`: implement the node interface — CoreBluetooth
-   connect/disconnect, `AVAudioSession` + process watching for trigger
-   detection, Swift 6 concurrency per AGENTS.md.
-3. Integration issue (likely `model:opus`, since it touches two adapters'
-   platform APIs and the triage heuristic in `agent-triage.yml` routes
-   platform-API adapter work to Opus automatically): end-to-end mocked
-   handoff test — simulated call-start on the Android side correctly
-   drives a claim/release cycle observed by the Mac side through
-   `relay-core`.
+1. ✅ `packages/adapter-android`: the node interface, fully wired -
+   Bluetooth Classic connect/disconnect (#74), MQTT transport + node
+   interface (#83), call/VoIP trigger detection via `TelephonyManager`/
+   `NotificationListenerService` (#86), a foreground `Service`
+   composition root actually instantiating all of it (#96), a
+   provisioning UI for account id + runtime permissions (#102) and
+   notification-listener access (#109), and a bonded-device picker
+   replacing free-text address entry (#117). Substantially complete as
+   code; unverified against real hardware (see above).
+2. 🚧 `packages/adapter-mac`: the node interface - Bluetooth connect/
+   disconnect via `IOBluetooth`, not `CoreBluetooth` (#95, corrected by
+   #101 after CoreBluetooth turned out to be BLE-only and unable to move
+   the audio route), and, as of #112, the node interface wired over real
+   MQTT (`MacNode`, `MQTTNIOTransport`, `RelayConfig` via a SwiftPM
+   build-tool plugin). **Still missing, to reach parity with Android**: a
+   composition root (Mac's own equivalent of #96 - nothing constructs a
+   real `MacNode`/connects it yet) and trigger detection
+   (`AVAudioSession` + process watching - no `triggers/`-equivalent
+   package exists for Mac yet). Neither has an issue filed yet as of this
+   writing.
+3. ✅ (in spirit) Integration: `packages/relay-core/test/handoff-integration.test.ts`
+   (#113/#114) proves a simulated Android-shaped node and a simulated
+   Mac-shaped node drive a real claim/release/auto-return cycle through
+   real `PriorityEngine`/`RelayMqttClient` over a real broker - the thing
+   this item asked for, just simulated at the relay-core layer rather
+   than through two real running adapter processes (which adapter-mac's
+   gaps above still block). `services/relay-hosted`'s new live process
+   (#118, M2) means a real end-to-end path - two real adapters talking to
+   a real relay - is now only blocked on item 2 above, not on relay-core
+   itself. Real cross-language hardware validation is still outstanding
+   (human-only, per this section's own note above).
 
 ## M4 — Remaining adapters (iPad, Linux)
 
 Same node interface, lower priority than M3 since they don't unblock the
-first demo. `packages/adapter-ipad` (CallKit + CoreBluetooth),
-`packages/adapter-linux` (BlueZ + PulseAudio/D-Bus, Rust). Agent auto-merge
-lane once the M3 pattern is proven and can be pointed to as precedent.
+first demo. Agent auto-merge lane once the M3 pattern is proven and can be
+pointed to as precedent.
+
+- 🚧 `packages/adapter-linux` (BlueZ + PulseAudio/D-Bus, Rust): bootstrap
+  done - a BlueZ-backed Bluetooth connection seam (#108), the same stage
+  `packages/adapter-mac` was at after #95, before its own node-interface/
+  MQTT wiring (#112). Node interface + trigger detection (PulseAudio/
+  D-Bus) still ahead of it.
+- ⚠️ `packages/adapter-ipad` (originally scoped as CallKit + CoreBluetooth):
+  still a bare SwiftPM skeleton, and per #115's research, faces a real
+  platform ceiling before any bootstrap work should start - iPadOS has no
+  public API (CoreBluetooth included - it's BLE-only there too, same as
+  Mac) that lets a third-party app force which device a classic-profile
+  Bluetooth audio accessory is connected to. See
+  `docs/spec/architecture.md`'s "iPad's Bluetooth audio-route limitation"
+  section for the full finding and citations. Practical effect on this
+  milestone: `adapter-ipad`'s node interface can *observe* the route and
+  detect trigger events (CallKit still applies for call detection) but
+  cannot execute `on_claim`/`on_release` automatically - its acceptance
+  criteria need to be scoped around "prompt the user to switch manually,"
+  not "connect/disconnect," which is a real product-behavior difference
+  from the other three adapters, not just an implementation detail.
 
 ## M5 — AI engine (services/ai-engine)
 
@@ -154,11 +229,24 @@ sign-off on store listings).
 
 ## Suggested immediate next step
 
-Start M1 now — it's pure `packages/**`, no external infra or hardware
-dependency, and directly exercises the pipeline we just proved end-to-end
-on a real (if small) piece of the actual product instead of a throwaway
-`sleep()` helper. Suggest opening the 4 M1 issues above via the
-`agent-task.yml` template, one at a time (protocol types before relay-core,
-since relay-core imports them), each explicitly citing the architecture.md
-section it implements so the evaluator has something concrete to check
-citations against.
+M1 is done; the pipeline itself, and this document, moved past "start M1"
+days ago. The most direct path to M3's actual goal — cross-device handoff
+working on real hardware — is closing `packages/adapter-mac`'s two
+remaining gaps (M3 item 2 above): a composition root (mirroring
+`adapter-android`'s #96 — nothing constructs a real `MacNode` yet) and
+trigger detection (`AVAudioSession` + process watching, mirroring
+`adapter-android`'s `triggers/` package). Both are agent auto-merge lane,
+`packages/**` work with real precedent to cite (#96 for the composition
+root's shape, #86 for how trigger monitors wire into `EventLifecycle`).
+Once both land, the real blocker becomes M3's already-known human-only
+step: a manual QA pass against Tom's actual AirPods + Pixel + Mac,
+including wiring `services/relay-hosted`'s new live process (#118) into
+an actual reachable deployment for that test to run against (M2's own
+still-open item).
+
+Lower-priority, but each unblocked and ready to scope whenever it's
+prioritized: `packages/adapter-linux`'s node-interface/MQTT wiring
+(mirroring #112's own shape, one milestone behind where Mac just got to),
+and `packages/adapter-ipad`'s now-scoped bootstrap (#115 answered the
+open question — an issue can be written today around "observe + prompt,"
+not "connect/disconnect").
