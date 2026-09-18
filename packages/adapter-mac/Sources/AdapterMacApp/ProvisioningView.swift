@@ -34,6 +34,22 @@ struct ProvisioningView: View {
 
             Divider()
 
+            VStack(alignment: .leading, spacing: 4) {
+                // #144. A binding that reads the live system state and
+                // routes writes through the controller, rather than a
+                // stored @Published the user could desync by changing it
+                // in System Settings.
+                Toggle("Open at Login", isOn: Binding(
+                    get: { model.opensAtLogin },
+                    set: { _ in model.toggleOpenAtLogin() }
+                ))
+                if let note = model.loginItemNote {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
             HStack {
                 Circle()
                     .fill(model.statusColor)

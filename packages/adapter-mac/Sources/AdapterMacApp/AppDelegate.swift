@@ -40,6 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Guards against two overlapping starts (double-click Save, or Save
     /// racing the launch-time start) producing two live nodes.
     private var isStarting = false
+    /// #144. A protocol rather than `SMAppServiceLoginItem` directly, so
+    /// the decisions around it live in the testable ``LoginItem`` type.
+    /// Handed to the provisioning window, which owns the toggle: #143
+    /// landed first, and #144's own criterion 2 says the toggle belongs
+    /// in that window once it exists rather than in a second surface.
+    private let loginItem: LoginItemController = SMAppServiceLoginItem()
 
     static func main() {
         let app = NSApplication.shared
@@ -86,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let model = ProvisioningViewModel(
             deviceSource: IOBluetoothPairedDeviceSource(),
+            loginItem: loginItem,
             onProvisioned: { [weak self] in await self?.restartNodeRuntime() }
         )
         provisioningModel = model

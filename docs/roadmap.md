@@ -164,7 +164,7 @@ see M4 below, a real but separate gap.)
    over real MQTT (#112 — `MacNode`, `MQTTNIOTransport`, `RelayConfig`
    via a SwiftPM build-tool plugin); trigger detection (#127); a menu-bar
    composition root (#128); a provisioning UI with a paired-device picker
-   (#143); and heartbeats (#142). Open at Login (#144) is in flight.
+   (#143); heartbeats (#142); and Open at Login (#144).
 
    **Trigger detection is deliberately narrower here than on Android**,
    and permanently so: this item previously described it as
