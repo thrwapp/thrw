@@ -1,0 +1,247 @@
+import { randomUUID } from "node:crypto";
+import { commandsTopic, eventsTopic, type EventKind, type NodeManifest } from "@thrw/protocol";
+import {
+  defaultMqttBrokerUrl,
+  RelayMqttClient,
+  type CommandPayload,
+  type Scheduler,
+} from "@thrw/relay-core";
+import mqtt, { type MqttClient } from "mqtt";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { RelayService } from "../src/relay-service";
+
+// Integration tests against a real MQTT broker, same pattern
+// packages/relay-core's own tests use (acceptance criterion 4) - CI
+// starts Mosquitto and sets MQTT_BROKER_URL; defaultMqttBrokerUrl() falls
+// back to the same address for local dev.
+const BROKER_URL = defaultMqttBrokerUrl();
+
+const REGISTRATION_KIND = "register";
+const EVENT_END_KIND = "event_end";
+
+// Deterministic, fully controllable stand-in for the injectable time
+// source - same shape as packages/relay-core/test/handoff-integration.test.ts's
+// own FakeScheduler (duplicated rather than shared - this repo's existing
+// test files don't share helpers across packages/services either).
+class FakeScheduler implements Scheduler {
+  private nextId = 1;
+  private readonly timers = new Map<number, { callback: () => void; ms: number }>();
+
+  setTimeout(callback: () => void, ms: number): unknown {
+    const id = this.nextId++;
+    this.timers.set(id, { callback, ms });
+    return id;
+  }
+
+  clearTimeout(handle: unknown): void {
+    this.timers.delete(handle as number);
+  }
+
+  /**
+   * Fires every timer pending *at the moment this is called* whose delay
+   * is `<= ms` - snapshotting the due set first, rather than
+   * handoff-integration.test.ts's simpler live-iteration version, matters
+   * here specifically: `RelayService`'s heartbeat sweep reschedules
+   * itself (`scheduler.setTimeout(...)` again) from inside its own fired
+   * callback, and iterating the same `Map` live while a callback inserts
+   * into it is exactly the recipe for an infinite loop (confirmed the
+   * hard way - a live-iteration version of this spun at 100% CPU with no
+   * output). PriorityEngine's own one-shot auto-return timer never
+   * reschedules itself, so this distinction never mattered for that
+   * existing test.
+   */
+  fire(ms: number): void {
+    const due = [...this.timers.entries()].filter(([, timer]) => timer.ms <= ms);
+    for (const [id, timer] of due) {
+      this.timers.delete(id);
+      timer.callback();
+    }
+  }
+}
+
+function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
+  return {
+    nodeId: randomUUID(),
+    platform: "android",
+    displayName: "simulated node",
+    adapterVersion: "1.0.0",
+    supportedEventKinds: ["call", "media"],
+    ...overrides,
+  };
+}
+
+function connectRawClient(): Promise<MqttClient> {
+  return new Promise((resolve, reject) => {
+    const client = mqtt.connect(BROKER_URL);
+    client.once("connect", () => resolve(client));
+    client.once("error", reject);
+  });
+}
+
+function publishJson(client: MqttClient, topic: string, payload: unknown, qos: 0 | 1 | 2 = 1): Promise<void> {
+  return new Promise((resolve, reject) => {
+    client.publish(topic, JSON.stringify(payload), { qos }, (err) => (err ? reject(err) : resolve()));
+  });
+}
+
+function publishRegistration(client: MqttClient, account: string, nodeManifest: NodeManifest): Promise<void> {
+  return publishJson(client, eventsTopic(account, nodeManifest.nodeId), {
+    kind: REGISTRATION_KIND,
+    manifest: nodeManifest,
+  });
+}
+
+function publishEventEnd(client: MqttClient, account: string, node: string, type: EventKind): Promise<void> {
+  return publishJson(client, eventsTopic(account, node), { kind: EVENT_END_KIND, type });
+}
+
+function publishEvent(client: MqttClient, account: string, node: string, type: EventKind): Promise<void> {
+  return publishJson(client, eventsTopic(account, node), { type, priority: 1 });
+}
+
+function collectCommands(client: MqttClient, account: string, node: string): CommandPayload[] {
+  const received: CommandPayload[] = [];
+  const topic = commandsTopic(account, node);
+  client.subscribe(topic, { qos: 1 });
+  client.on("message", (messageTopic, message) => {
+    if (messageTopic !== topic) return;
+    received.push(JSON.parse(message.toString()) as CommandPayload);
+  });
+  return received;
+}
+
+describe("RelayService (real broker)", () => {
+  let rawClient: MqttClient;
+
+  beforeAll(async () => {
+    rawClient = await connectRawClient();
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => rawClient.end(false, {}, () => resolve()));
+  });
+
+  const services: RelayService[] = [];
+  const clients: RelayMqttClient[] = [];
+
+  afterEach(async () => {
+    for (const service of services) service.stop();
+    services.length = 0;
+    for (const client of clients) await client.end();
+    clients.length = 0;
+    rawClient.removeAllListeners("message");
+  });
+
+  async function startService(accounts: string[], scheduler?: Scheduler, now?: () => number): Promise<RelayService> {
+    const client = await RelayMqttClient.connect(BROKER_URL);
+    clients.push(client);
+    const service = new RelayService({ client, accounts, scheduler, now, heartbeatSweepIntervalMs: 5_000 });
+    await service.start();
+    services.push(service);
+    return service;
+  }
+
+  it("registers a node from its RegistrationPayload", async () => {
+    const account = randomUUID();
+    const nodeA = manifest();
+    const service = await startService([account]);
+
+    await publishRegistration(rawClient, account, nodeA);
+
+    await expect
+      .poll(() => service.registryFor(account)?.getById(nodeA.nodeId), { timeout: 2000 })
+      .toEqual(nodeA);
+  });
+
+  it("publishes CLAIM to the first holder, then RELEASE+CLAIM on a real handoff, over the real broker", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["call"] });
+    const nodeB = manifest({ supportedEventKinds: ["call"] });
+    await startService([account]);
+
+    const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+    const commandsB = collectCommands(rawClient, account, nodeB.nodeId);
+
+    // A's call starts first -> A becomes holder. No prior holder, so only
+    // a CLAIM is published (nothing to RELEASE yet).
+    await publishEvent(rawClient, account, nodeA.nodeId, "call");
+    await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+    expect(commandsB).toEqual([]);
+
+    // B's call starts while A's is still active -> tie-break picks the
+    // more recently started signal (PriorityEngine's own documented
+    // behaviour), so B becomes the new holder. Sequential handoff means
+    // both commands go out: RELEASE to the loser, CLAIM to the winner.
+    await publishEvent(rawClient, account, nodeB.nodeId, "call");
+    await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }, { type: "release" }]);
+    await expect.poll(() => commandsB, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+
+    // B's call ends, but A's call is *still* active underneath (never
+    // ended) - the holder reverts to A immediately, another real
+    // RELEASE(B)+CLAIM(A) pair.
+    await publishEventEnd(rawClient, account, nodeB.nodeId, "call");
+    await expect
+      .poll(() => commandsA, { timeout: 2000 })
+      .toEqual([{ type: "claim" }, { type: "release" }, { type: "claim" }]);
+    await expect.poll(() => commandsB, { timeout: 2000 }).toEqual([{ type: "claim" }, { type: "release" }]);
+
+    // A's call ends too - nothing else is active, and A was already the
+    // holder (rule 5, last-claimed keeps it) - no new command.
+    await publishEventEnd(rawClient, account, nodeA.nodeId, "call");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(commandsA).toEqual([{ type: "claim" }, { type: "release" }, { type: "claim" }]);
+  });
+
+  it("keeps each account's registry and holder fully independent", async () => {
+    const accountX = randomUUID();
+    const accountY = randomUUID();
+    const nodeX = manifest();
+    const nodeY = manifest();
+    const service = await startService([accountX, accountY]);
+
+    await publishRegistration(rawClient, accountX, nodeX);
+    await publishEvent(rawClient, accountX, nodeX.nodeId, "call");
+    await expect.poll(() => service.engineFor(accountX)?.currentHolder(), { timeout: 2000 }).toBe(nodeX.nodeId);
+
+    // accountY never sees any of accountX's traffic - registry stays
+    // empty and its engine reports no holder.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(service.registryFor(accountY)?.listAll()).toEqual([]);
+    expect(service.engineFor(accountY)?.currentHolder()).toBeNull();
+    expect(service.registryFor(accountX)?.getById(nodeY.nodeId)).toBeUndefined();
+  });
+
+  it("unregisters a node once its heartbeat has been missed for the configured timeout", async () => {
+    const account = randomUUID();
+    const nodeA = manifest();
+    const scheduler = new FakeScheduler();
+    let now = 0;
+    const service = await startService([account], scheduler, () => now);
+    // Constructor default heartbeatTimeoutMs applies (90s) - only the
+    // sweep interval was overridden by startService for faster test
+    // iteration; advancing past 90s below still exercises the real
+    // default rather than a shortened one.
+
+    await publishRegistration(rawClient, account, nodeA);
+    await expect
+      .poll(() => service.registryFor(account)?.getById(nodeA.nodeId), { timeout: 2000 })
+      .toEqual(nodeA);
+
+    now += 90_001;
+    scheduler.fire(5_000);
+
+    expect(service.registryFor(account)?.getById(nodeA.nodeId)).toBeUndefined();
+  });
+
+  it("drops an unrecognized payload shape instead of throwing or registering anything", async () => {
+    const account = randomUUID();
+    const node = randomUUID();
+    const service = await startService([account]);
+
+    await publishJson(rawClient, eventsTopic(account, node), { unrelated: "shape" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(service.registryFor(account)?.listAll()).toEqual([]);
+    expect(service.engineFor(account)?.currentHolder()).toBeNull();
+  });
+});

@@ -2,7 +2,17 @@ import { PRIORITY_ORDER, type EventKind } from "@thrw/protocol";
 
 export const relayCorePackageName = "@thrw/relay-core";
 
-export { DeviceRegistry } from "./device-registry";
+// The missing ".js" here (present two lines down on mqtt-client.js's own
+// export) broke `node dist/index.js` under real Node ESM resolution -
+// found while wiring services/relay-hosted's live process (#118), the
+// first thing to ever actually run relay-core's *compiled* dist/ output
+// rather than importing its TS source directly (vitest/vite's resolver
+// tolerates an extensionless relative import; Node's real ESM loader
+// does not). Every other consumer of this package until now was either
+// a test (vitest) or another package's own TS source, neither of which
+// exercised this path. Fixed per #118 acceptance criterion 6's explicit
+// allowance ("unless you find a real bug while wiring this up").
+export { DeviceRegistry } from "./device-registry.js";
 export {
   RelayMqttClient,
   defaultMqttBrokerUrl,
