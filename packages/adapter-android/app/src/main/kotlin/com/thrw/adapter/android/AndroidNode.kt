@@ -1,5 +1,6 @@
 package com.thrw.adapter.android
 
+import android.util.Log
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.heartbeat.HeartbeatSink
 import com.thrw.adapter.android.mqtt.MqttTransport
@@ -16,6 +17,7 @@ import com.thrw.adapter.android.protocol.RegistrationPayload
 import com.thrw.adapter.android.protocol.Topics
 import com.thrw.adapter.android.protocol.TopicQos
 import com.thrw.adapter.android.triggers.EventLifecycle
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.json.Json
 
 /**
@@ -102,10 +104,31 @@ class AndroidNode(
                 val command = runCatching {
                     json.decodeFromString(CommandPayload.serializer(), payload)
                 }.getOrNull()
-                when (command?.type) {
-                    CommandType.CLAIM -> onClaim()
-                    CommandType.RELEASE -> onRelease()
-                    null -> Unit
+                // A headset that is off, out of range, busy, or simply
+                // doesn't support what we asked makes onClaim/onRelease
+                // throw. That must not tear down this subscription - the
+                // same discipline the unparseable-payload case above
+                // already follows, and for the same reason: a node that
+                // stops listening is deaf to the *next*, satisfiable
+                // claim. Before #161 this propagated all the way out and
+                // killed the whole adapter process (confirmed on real
+                // hardware - a failed AirPods connect took the service
+                // down and Android restarted it in a loop).
+                //
+                // CancellationException is deliberately not swallowed:
+                // that's the runtime shutting this coroutine down, not a
+                // Bluetooth failure, and catching it would break
+                // cancellation.
+                try {
+                    when (command?.type) {
+                        CommandType.CLAIM -> onClaim()
+                        CommandType.RELEASE -> onRelease()
+                        null -> Unit
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Command ${command?.type} failed - staying subscribed", e)
                 }
             }
     }
@@ -132,6 +155,10 @@ class AndroidNode(
             qos = TopicQos.HEARTBEAT_QOS,
             retained = false,
         )
+    }
+
+    private companion object {
+        private const val TAG = "AndroidNode"
     }
 
     private suspend fun publishToEvents(payload: String) {
