@@ -61,9 +61,21 @@ public final class MQTTNIOTransport: MqttTransport, @unchecked Sendable {
     /// (architecture.md, "MQTT topic design") key off the connecting
     /// client, so it must not be randomly generated per process - same
     /// requirement `adapter-android`'s `HiveMqttTransport.connect` notes.
-    public static func connect(config: RelayConfig, clientId: String) async throws -> MQTTNIOTransport {
+    /// `credentials` is optional because an anonymous broker is a real,
+    /// supported configuration (a local or self-hosted broker with
+    /// `allow_anonymous = true` - which is how this package's tests
+    /// connect). Passing `nil` connects anonymously; the deployed relay
+    /// runs `allow_anonymous = false` and rejects that with
+    /// `badUserNameOrPassword` (#147).
+    public static func connect(
+        config: RelayConfig,
+        clientId: String,
+        credentials: RelayCredentials? = nil
+    ) async throws -> MQTTNIOTransport {
         let configuration = MQTTClient.Configuration(
             version: .v3_1_1,
+            userName: credentials?.username,
+            password: credentials?.password,
             useSSL: config.tls,
             useWebSockets: config.webSocket,
             // MQTTNIO's WebSocketConfiguration ignores this entirely when
