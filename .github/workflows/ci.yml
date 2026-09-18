@@ -169,9 +169,20 @@ jobs:
             --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-35" "build-tools;35.0.1"
           echo "sdk.dir=$ANDROID_SDK_ROOT" > packages/adapter-android/local.properties
 
-      - name: gradlew test
+      # `assembleDebug` alongside `test`, not instead of it: they are
+      # genuinely independent task graphs that only share compiled Kotlin.
+      # `test` never exercises AGP's resource-merge step, which is how
+      # #131 (a hard `mergeDebugJavaResource` failure from duplicate Netty
+      # META-INF files) sat broken from #83 until someone happened to run
+      # `assembleDebug` by hand - CI was green that whole time.
+      #
+      # Deliberately not `bundleRelease`: that needs a real release
+      # signing config, which is #132's territory (Apple/Google developer
+      # registration), not CI's. `assembleDebug` is enough to catch this
+      # class of packaging conflict.
+      - name: gradlew test assembleDebug
         working-directory: packages/adapter-android
-        run: ./gradlew test
+        run: ./gradlew test assembleDebug
 
   mac-ipad:
     name: mac-ipad
