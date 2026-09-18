@@ -1,5 +1,6 @@
 import AdapterMac
 import AppKit
+import SwiftUI
 import os
 
 /// The composition root's untestable half (#128) - a menu-bar
@@ -30,10 +31,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem?
     private var runtimeHandle: NodeRuntimeHandle?
+    /// Held so a restart can close the old connection before opening a
+    /// new one - otherwise re-saving provisioning leaks an MQTT client
+    /// per save, each still subscribed to the old node's commands topic.
+    private var transport: MQTTNIOTransport?
+    private var provisioningWindow: NSWindow?
+    private var provisioningModel: ProvisioningViewModel?
+    /// Guards against two overlapping starts (double-click Save, or Save
+    /// racing the launch-time start) producing two live nodes.
+    private var isStarting = false
     /// #144. A protocol rather than `SMAppServiceLoginItem` directly, so
     /// the decisions around it live in the testable ``LoginItem`` type.
+    /// Handed to the provisioning window, which owns the toggle: #143
+    /// landed first, and #144's own criterion 2 says the toggle belongs
+    /// in that window once it exists rather than in a second surface.
     private let loginItem: LoginItemController = SMAppServiceLoginItem()
-    private var openAtLoginItem: NSMenuItem?
 
     static func main() {
         let app = NSApplication.shared
@@ -56,74 +68,100 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image = NSImage(systemSymbolName: "headphones", accessibilityDescription: "thrw")
 
         let menu = NSMenu()
-        // #144. Checkable menu item rather than a settings window: this
-        // is a single boolean on a menu-bar app, and it's where macOS
-        // users already look for it. The provisioning window (#143) is
-        // the right home for it once that lands; deliberately not a
-        // second window here.
-        let openAtLogin = NSMenuItem(title: "Open at Login", action: #selector(toggleOpenAtLogin), keyEquivalent: "")
-        openAtLogin.target = self
-        menu.addItem(openAtLogin)
+        let setUpItem = NSMenuItem(title: "Set Up\u{2026}", action: #selector(openProvisioning), keyEquivalent: ",")
+        setUpItem.target = self
+        menu.addItem(setUpItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit thrw", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        // Re-read the live state every time the menu opens, so a change
-        // made in System Settings is reflected rather than a stale
-        // remembered flag (#144 acceptance criterion 3).
-        menu.delegate = self
         item.menu = menu
 
-        openAtLoginItem = openAtLogin
         statusItem = item
-        refreshOpenAtLoginItem()
     }
 
-    /// Opt-in only (#144 acceptance criterion 5): registering a login
-    /// item behind the user's back is the kind of thing that makes a
-    /// utility feel hostile, so nothing here runs unless they click.
-    @objc private func toggleOpenAtLogin() {
-        let state = loginItem.currentState()
-        do {
-            switch LoginItem.action(for: state) {
-            case .register: try loginItem.register()
-            case .unregister: try loginItem.unregister()
-            }
-        } catch {
-            Self.logger.error("Open at Login change failed: \(String(describing: error), privacy: .public)")
+    /// Opens (or re-focuses) the provisioning window - #143. An
+    /// `LSUIElement` app has no Dock icon and isn't normally activated,
+    /// so this has to activate explicitly or the window opens behind
+    /// whatever the user was doing.
+    @objc private func openProvisioning() {
+        if let provisioningWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            provisioningWindow.makeKeyAndOrderFront(nil)
+            provisioningModel?.reloadDevices()
+            return
         }
-        // Re-read rather than assuming the attempt worked - a failed
-        // register must leave the checkmark showing reality.
-        refreshOpenAtLoginItem()
+
+        let model = ProvisioningViewModel(
+            deviceSource: IOBluetoothPairedDeviceSource(),
+            loginItem: loginItem,
+            onProvisioned: { [weak self] in await self?.restartNodeRuntime() }
+        )
+        provisioningModel = model
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "thrw"
+        window.contentView = NSHostingView(rootView: ProvisioningView(model: model))
+        window.isReleasedWhenClosed = false
+        window.center()
+        provisioningWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
-    private func refreshOpenAtLoginItem() {
-        let state = loginItem.currentState()
-        openAtLoginItem?.state = LoginItem.isOn(state) ? .on : .off
-        // A state the user can't fix by clicking again (needs System
-        // Settings, or the app isn't in a location macOS accepts) is
-        // surfaced rather than silently leaving a toggle that won't move.
-        openAtLoginItem?.toolTip = LoginItem.explanation(for: state)
-        if let explanation = LoginItem.explanation(for: state) {
-            Self.logger.info("Open at Login: \(explanation, privacy: .public)")
+    /// Tears the current node down and starts a fresh one from whatever
+    /// provisioning is now stored (#143 acceptance criterion 4). Cancels
+    /// the old tasks *and* closes the old transport before reconnecting -
+    /// leaving the old MQTT client open would keep a second subscriber on
+    /// the previous node's commands topic.
+    private func restartNodeRuntime() async {
+        runtimeHandle?.cancel()
+        runtimeHandle = nil
+        if let transport {
+            self.transport = nil
+            try? await transport.close()
         }
+        await startNodeRuntimeIfProvisioned()
     }
 
     /// Constructs and starts the real node, or logs why it didn't -
-    /// never connects a half-configured node. No provisioning UI exists
-    /// yet (#128's own acceptance criterion 4 excludes building one) -
-    /// see ``AdapterProvisioning``'s own kdoc for the honest gap this
-    /// leaves: today, nothing writes these `UserDefaults` keys.
+    /// never connects a half-configured node.
+    ///
+    /// The provisioned/not decision comes from ``ProvisioningStatus``
+    /// (#143) rather than being re-derived here, so this path and the
+    /// provisioning window can't disagree about what "provisioned" means.
+    /// Since #143 this is re-callable: saving in the window restarts the
+    /// node without an app relaunch.
     private func startNodeRuntimeIfProvisioned() async {
-        guard let accountId = AdapterProvisioning.accountId() else {
+        guard !isStarting else {
+            Self.logger.error("A node start is already in flight - ignoring this one")
+            return
+        }
+        isStarting = true
+        defer { isStarting = false }
+
+        let accountId: String
+        let headsetIdentifier: UUID
+        switch ProvisioningStatus.current() {
+        case .notProvisioned(.accountId):
             Self.logger.error("Not provisioned (no account id) - not starting a node")
+            provisioningModel?.nodeStopped()
             return
-        }
-        guard let headsetAddress = AdapterProvisioning.headsetAddress() else {
+        case .notProvisioned(.headsetAddress):
             Self.logger.error("Not provisioned (no headset address) - not starting a node")
+            provisioningModel?.nodeStopped()
             return
-        }
-        guard let headsetIdentifier = BluetoothDeviceIdentifier.identifier(forAddressString: headsetAddress) else {
-            Self.logger.error("Configured headset address is not a valid Bluetooth address - not starting a node")
+        case .notProvisioned(.headsetAddressUnusable(let stored)):
+            Self.logger.error("Stored headset address is unusable (\(stored, privacy: .public)) - not starting a node")
+            provisioningModel?.nodeStopped()
             return
+        case .provisioned(let account, let identifier):
+            accountId = account
+            headsetIdentifier = identifier
         }
 
         do {
@@ -132,6 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let manifest = DeviceIdentity.manifest()
 
             let transport = try await MQTTNIOTransport.connect(config: relayConfig, clientId: nodeId)
+            self.transport = transport
             let bluetooth = BluetoothConnectionManager(gateway: IOBluetoothPeripheralGateway())
             let node = MacNode(
                 accountId: accountId,
@@ -143,16 +182,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let voipMonitor = VoipTriggerMonitor(source: NSWorkspaceRunningApplicationSource(), node: node)
             runtimeHandle = NodeRuntime(node: node, voipTriggerMonitor: voipMonitor).start(manifest: manifest)
+            Self.logger.info("Node runtime started for account \(accountId, privacy: .public)")
         } catch {
             Self.logger.error("Failed to start node runtime: \(String(describing: error), privacy: .public)")
+            transport = nil
+            provisioningModel?.nodeStopped()
         }
-    }
-}
-
-/// Refreshes the Open at Login checkmark each time the menu is opened,
-/// so a change the user made in System Settings shows up (#144).
-extension AppDelegate: NSMenuDelegate {
-    func menuWillOpen(_ menu: NSMenu) {
-        refreshOpenAtLoginItem()
     }
 }

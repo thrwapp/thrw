@@ -148,6 +148,29 @@ final class MacNodeTests: XCTestCase {
         XCTAssertEqual(f.gateway.disconnectCalls, [headsetIdentifier])
     }
 
+    func testPublishHeartbeatPublishesAnEmptyPayloadOnTheHeartbeatTopicAtQoS0() async throws {
+        let f = Fixture()
+
+        try await f.node.publishHeartbeat()
+
+        let sent = try XCTUnwrap(f.transport.published.first)
+        XCTAssertEqual(sent.topic, Topics.heartbeat(account: accountId, node: nodeId))
+        XCTAssertEqual(sent.qos, TopicQos.heartbeatQos)
+        XCTAssertFalse(sent.retained)
+        // Empty on purpose - arrival is the whole signal, and
+        // relay-core's subscribeHeartbeat ignores the body (#142).
+        XCTAssertEqual(sent.payload, "")
+    }
+
+    func testTheHeartbeatDoesNotRideTheEventsTopic() async throws {
+        let f = Fixture()
+
+        try await f.node.publishHeartbeat()
+
+        let sent = try XCTUnwrap(f.transport.published.first)
+        XCTAssertNotEqual(sent.topic, eventsTopicString)
+    }
+
     func testAnUnparseableCommandIsSkippedWithoutDroppingTheSubscription() async throws {
         let f = Fixture()
         f.transport.sendCommand("not json")

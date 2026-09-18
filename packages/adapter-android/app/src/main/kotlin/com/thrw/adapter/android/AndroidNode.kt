@@ -1,6 +1,7 @@
 package com.thrw.adapter.android
 
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
+import com.thrw.adapter.android.heartbeat.HeartbeatSink
 import com.thrw.adapter.android.mqtt.MqttTransport
 import com.thrw.adapter.android.protocol.CommandPayload
 import com.thrw.adapter.android.protocol.CommandType
@@ -42,7 +43,7 @@ class AndroidNode(
     private val transport: MqttTransport,
     private val bluetooth: BluetoothConnectionManager,
     private val json: Json = ProtocolJson,
-) : NodeInterface, EventLifecycle {
+) : NodeInterface, EventLifecycle, HeartbeatSink {
 
     /**
      * Publishes this node's manifest so the relay's device registry knows
@@ -107,6 +108,30 @@ class AndroidNode(
                     null -> Unit
                 }
             }
+    }
+
+    /**
+     * [HeartbeatSink] conformance (#142) - liveness only, so the relay's
+     * `sweepHeartbeats` doesn't reap this node.
+     *
+     * Empty payload, deliberately: architecture.md's topic table
+     * specifies this topic as `QoS 0, ~30s` and says nothing about a
+     * body, and `relay-core`'s `subscribeHeartbeat` ignores the payload
+     * entirely - arrival *is* the signal. Inventing a body here would
+     * create something a future relay might start parsing, for no current
+     * benefit.
+     *
+     * QoS 0 ([TopicQos.HEARTBEAT_QOS]), also from that table: at-most-once
+     * is right for a signal that repeats every 30s and is only read as
+     * "recently alive" - redelivering a stale beat would be misleading.
+     */
+    override suspend fun publishHeartbeat() {
+        transport.publish(
+            topic = Topics.heartbeat(accountId, nodeId),
+            payload = "",
+            qos = TopicQos.HEARTBEAT_QOS,
+            retained = false,
+        )
     }
 
     private suspend fun publishToEvents(payload: String) {
