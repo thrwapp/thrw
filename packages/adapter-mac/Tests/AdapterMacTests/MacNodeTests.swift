@@ -69,6 +69,21 @@ final class MacNodeTests: XCTestCase {
         XCTAssertEqual(decoded, EventPayload(type: .call, priority: 1))
     }
 
+    func testEndEventPublishesAnEventEndEnvelopeOnTheEventsTopicAtQoS1() async throws {
+        let f = Fixture()
+
+        try await f.node.endEvent(type: .voip)
+
+        let sent = try XCTUnwrap(f.transport.published.first)
+        XCTAssertEqual(sent.topic, eventsTopicString)
+        XCTAssertEqual(sent.qos, TopicQos.eventsQos)
+        XCTAssertFalse(sent.retained)
+
+        let decoded = try JSONDecoder().decode(EventEndPayload.self, from: Data(sent.payload.utf8))
+        XCTAssertEqual(decoded, EventEndPayload(type: .voip))
+        XCTAssertEqual(decoded.kind, eventEndKind)
+    }
+
     func testEveryEventKindEmitsItsProtocolWireSpelling() async throws {
         let f = Fixture()
         let expected: [(EventKind, String)] = [

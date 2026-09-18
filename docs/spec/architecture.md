@@ -104,7 +104,9 @@ to them at all.
   **no framework can move it on iPad at all**, see "iPad's Bluetooth
   audio-route limitation" below and #115, BlueZ on Linux) and
   the local trigger APIs (TelephonyManager + NotificationListener on
-  Android, AVAudioSession + process watching on Mac, CallKit on iPad,
+  Android, **process watching only on Mac — `AVAudioSession` is an
+  iOS/tvOS/watchOS framework and doesn't exist on macOS at all, see
+  "Mac's trigger-detection gap" below and #127**, CallKit on iPad,
   PulseAudio + D-Bus on Linux).
 
 - **Relay** (packages/relay-core, deployed via services/relay-hosted):
@@ -123,6 +125,39 @@ to them at all.
   from licensing via a webhook bridge — Stripe subscription lifecycle
   events (created/updated/deleted) trigger Keygen API calls
   (create license / update policy / revoke).
+
+## Mac's trigger-detection gap (#127)
+
+Found while building `packages/adapter-mac`'s trigger detection, the
+same class of premise error #101 found at the Bluetooth-framework layer:
+this section previously listed `AVAudioSession` as one of Mac's trigger
+APIs. **`AVAudioSession` doesn't exist on macOS** — it's an iOS/tvOS/
+watchOS-only framework, confirmed against Apple's own documentation and
+developer forums. macOS's real audio-route API is Core Audio
+(`kAudioHardwarePropertyDefaultOutputDevice`), and even that only
+reports *what* the current output device is, not *why* it changed —
+there's no "a call/VoIP session started" semantic to key off the way
+iOS's route-change-reason enum has, so it isn't used as a trigger signal
+in `adapter-mac` at all.
+
+The practical consequence is a real, permanent-for-now product gap, not
+a temporary implementation shortfall: **Mac has no way to detect
+architecture.md's rule 1 ("incoming/outgoing phone call — always
+wins")**. Macs don't take cellular calls, and there is no public API for
+a third-party app to observe FaceTime's or any other app's call state.
+(CallKit has only just begun shipping on macOS, in beta, as of very
+recent Xcode 26.x releases — a single incremental `CXProvider` method as
+of this research, nowhere near a documented, stable surface worth
+building a production feature on; worth revisiting once/if that
+matures.) `packages/adapter-mac` can only detect rule 3 (VoIP session
+started), via process watching (`NSWorkspace`'s app-launch/termination
+notifications) against a set of known VoIP app bundle identifiers — and
+even that is cruder than `adapter-android`'s own notification-property-
+based heuristic, since macOS exposes no public API for "is this app
+actually in a call right now," only "is it running." Full heuristic and
+its known limitations documented in
+`packages/adapter-mac/Sources/AdapterMac/Triggers/VoipTriggerMonitor.swift`'s
+own kdoc.
 
 ## iPad's Bluetooth audio-route limitation (#115)
 

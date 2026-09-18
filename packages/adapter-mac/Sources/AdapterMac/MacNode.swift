@@ -13,15 +13,14 @@ import Foundation
 ///   ADR plus human review, not a routine agent PR. `onClaim`/`onRelease`
 ///   here are the plain side-effecting hooks the protocol declares;
 ///   nothing in this class tracks or transitions a node state.
-/// - **Trigger detection** (call/VoIP/media monitors). Nothing calls
-///   `emitEvent` yet except a caller wiring this node up directly - the
-///   Mac equivalent of `adapter-android`'s `triggers/` package (and the
-///   `endEvent`/`EventLifecycle` addition that came with it, #68) is a
-///   separate follow-up issue, mirroring how adapter-android itself
-///   split that out from #67.
 /// - **Priority rules.** Server-side in the relay, "never duplicated in
 ///   adapters" (architecture.md). This node reports; it does not decide.
-public final class MacNode: NodeInterface {
+///
+/// Conforms to ``EventLifecycle`` (#127) so ``VoipTriggerMonitor`` can
+/// report trigger start/end through it - `emitEvent`'s signature already
+/// satisfies both `NodeInterface` and `EventLifecycle` at once, so only
+/// `endEvent` needed adding.
+public final class MacNode: NodeInterface, EventLifecycle {
     private let accountId: String
     private let nodeId: String
     private let headsetIdentifier: UUID
@@ -53,6 +52,14 @@ public final class MacNode: NodeInterface {
     /// Publishes a trigger to the events topic at QoS 1 per `TopicQos`.
     public func emitEvent(type: EventKind, priority: Priority) async throws {
         try await publishToEvents(EventPayload(type: type, priority: priority))
+    }
+
+    /// The symmetric partner of ``emitEvent(type:priority:)``: the `type`
+    /// trigger this node reported has stopped. Publishes an
+    /// `EventEndPayload` on the same events topic at the same QoS -
+    /// mirrors `AndroidNode.kt`'s own `endEvent` (#68).
+    public func endEvent(type: EventKind) async throws {
+        try await publishToEvents(EventEndPayload(type: type))
     }
 
     /// Claim won: connect the headset to this device.
