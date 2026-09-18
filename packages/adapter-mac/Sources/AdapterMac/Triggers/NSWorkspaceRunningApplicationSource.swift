@@ -14,10 +14,10 @@ import Foundation
 /// ``VoipTriggerMonitor``).
 ///
 /// `#if canImport(AppKit)`, matching `IOBluetoothPeripheralGateway`'s own
-/// guard (#101): this repo's `agent-code`/`agent-eval` automation runs
-/// `swift test` on a Linux container, where AppKit doesn't exist at all -
-/// only `ci.yml`'s `mac-ipad` job (a real `macos-14` runner) compiles
-/// this file. Not exercised by this package's own tests either way - no
+/// guard (#101): AppKit is Apple-only, so this file compiles nowhere
+/// else. (An earlier version of this comment said the repo's agent
+/// automation builds this on Linux - it does not; see `Package.swift`'s
+/// `#if os(macOS)` comment.) Not exercised by this package's own tests either way - no
 /// real `NSWorkspace` notifications in a unit test, same discipline
 /// `IOBluetoothPeripheralGateway` and `MQTTNIOTransport` already follow;
 /// only ``VoipTriggerMonitor``'s own logic is tested, against a fake.

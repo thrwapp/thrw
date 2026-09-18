@@ -20,15 +20,21 @@ import NIOPosix
 /// 2. **WebSocket + TLS out of the box.** `MQTTClient.Configuration`
 ///    takes `useWebSockets`/`useSSL`/`webSocketURLPath` directly - ADR
 ///    0001's transport - with no extra glue.
-/// 3. **Pure Swift/SwiftNIO, so it's Linux-portable.** Unlike
-///    `IOBluetoothPeripheralGateway` (`#if canImport(IOBluetooth)`,
+/// 3. **Pure Swift/SwiftNIO, so it's not tied to Apple platforms.**
+///    Unlike `IOBluetoothPeripheralGateway` (`#if canImport(IOBluetooth)`,
 ///    macOS-only by necessity), nothing about talking MQTT is inherently
-///    Apple-platform-specific, and this repo's `agent-code`/`agent-eval`
-///    automation runs `swift test` on a Linux container (only
-///    `ci.yml`'s dedicated `mac-ipad` job uses a real macOS runner - see
-///    docs/handoffs/101.md). CocoaMQTT's dependency tree leans on
+///    Apple-platform-specific. CocoaMQTT's dependency tree leans on
 ///    Apple-platform assumptions in places; MQTTNIO is built for
 ///    swift-server and is exercised on Linux upstream.
+///
+///    **Correction (#128):** this reason was originally written as
+///    "Linux-portable, and the repo's agent-code/agent-eval automation
+///    runs `swift test` on a Linux container." That premise is false -
+///    agent-code.yml installs no Swift toolchain and cannot invoke
+///    `swift` at all, and per ADR 0004 Linux is the *Rust* adapter's
+///    platform. Nothing in this repo builds this package on Linux.
+///    Reasons 1 and 2 are the load-bearing ones; keep this third only as
+///    the mild tiebreaker it actually is.
 ///
 /// The trade-off, named rather than hidden: MQTTNIO pulls in the
 /// SwiftNIO stack (`swift-nio`, `swift-nio-ssl`, `swift-nio-transport-services`,
