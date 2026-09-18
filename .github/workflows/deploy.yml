@@ -83,6 +83,13 @@ jobs:
           gcloud compute scp scripts/relay-redeploy.sh "${RELAY_VM_NAME}:/tmp/relay-redeploy.sh" \
             --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap
 
+          # #119: relay-redeploy.sh now also bootstraps/reloads Caddy
+          # (TLS termination in front of EMQX) and reads its config from
+          # this file - scp'd alongside relay-redeploy.sh itself, same
+          # pattern, same destination convention (/tmp/<filename>).
+          gcloud compute scp services/relay-hosted/Caddyfile "${RELAY_VM_NAME}:/tmp/Caddyfile" \
+            --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap
+
           EMQX_USER_B64=$(printf '%s' "${{ secrets.EMQX_RELAY_USERNAME }}" | base64 -w0)
           EMQX_PASS_B64=$(printf '%s' "${{ secrets.EMQX_RELAY_PASSWORD }}" | base64 -w0)
 

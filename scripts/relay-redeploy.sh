@@ -1,7 +1,8 @@
 #!/bin/bash
-# Redeploys the relay container on the relay VM to a new image. Run via
-# SSH by deploy.yml's "Roll the relay VM" step (gcloud compute scp + ssh),
-# not meant to be run by hand except for manual recovery.
+# Redeploys the relay container on the relay VM to a new image, and
+# ensures Caddy (TLS termination in front of EMQX, #119) is running.
+# Run via SSH by deploy.yml's "Roll the relay VM" step (gcloud compute
+# scp + ssh), not meant to be run by hand except for manual recovery.
 #
 # gcloud compute instances update-container / create-with-container (the
 # Container-Optimized OS + container-startup-agent approach) is
@@ -56,3 +57,36 @@ docker run -d --name relay --restart unless-stopped \
   -p 8083:8083 -p 18083:18083 \
   --env-file "$ENV_FILE" \
   "$IMAGE_REF"
+
+# Caddy (#119): TLS termination in front of EMQX's plaintext ws:8083 -
+# see services/relay-hosted/Caddyfile's own comment for the architecture
+# choice. Deliberately NOT torn down/recreated on every redeploy the way
+# `relay` is above: this script runs on every EMQX image roll, but Caddy
+# itself only needs touching when its own config changes, and recreating
+# it needlessly would mean re-fetching/re-validating its Let's Encrypt
+# cert more often than necessary. Idempotent instead: (re)write the
+# Caddyfile at its stable path every run (cheap), then either start Caddy
+# fresh or hot-reload its config into the already-running instance.
+#
+# deploy.yml's "Roll the relay VM" step scp's services/relay-hosted/Caddyfile
+# to /tmp/Caddyfile alongside this script, the same pattern already used
+# for this script itself.
+CADDYFILE_DIR=/etc/caddy
+mkdir -p "$CADDYFILE_DIR"
+cp /tmp/Caddyfile "$CADDYFILE_DIR/Caddyfile"
+
+docker volume create caddy_data >/dev/null
+docker volume create caddy_config >/dev/null
+
+if docker ps --format '{{.Names}}' | grep -qx caddy; then
+  # Zero-downtime: Caddy natively supports reloading its config without
+  # dropping the TLS listener or an in-flight connection.
+  docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+else
+  docker run -d --name caddy --restart unless-stopped \
+    --network host \
+    -v "$CADDYFILE_DIR/Caddyfile:/etc/caddy/Caddyfile:ro" \
+    -v caddy_data:/data \
+    -v caddy_config:/config \
+    caddy:2-alpine
+fi

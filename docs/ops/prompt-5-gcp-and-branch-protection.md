@@ -311,6 +311,18 @@ gcloud compute firewall-rules create thrw-relay-emqx \
   --target-tags=thrw-relay \
   --source-ranges=0.0.0.0/0
 
+# #119 (later update, not part of the original creation above): TLS
+# landed - Caddy in front of EMQX (scripts/relay-redeploy.sh,
+# services/relay-hosted/Caddyfile) needs 80 (ACME HTTP-01 challenge) and
+# 443 (wss, Let's Encrypt-terminated) open too. Ran as an update against
+# the existing rule rather than a second rule:
+#
+#   gcloud compute firewall-rules update thrw-relay-emqx \
+#     --allow=tcp:8083,tcp:18083,tcp:80,tcp:443
+#
+# EMQX's own native TLS listener (8084) stays closed/unused - see
+# emqx.conf's own comment for why (Caddy terminates TLS, EMQX never does).
+
 # deploy.yml's rollout step SSHes into the VM via IAP (gcloud compute ssh
 # --tunnel-through-iap) rather than opening 22 to the whole internet or
 # depending on the runner's own ever-changing IP. IAP connects from a
@@ -360,15 +372,26 @@ up. Log in and change it right away - don't leave the default sitting
 on a public IP even for a few minutes.
 
 **Still deferred, not covered here:**
-- TLS (`wss://`, port 8084) - needs a domain name pointed at
-  `$RELAY_IP` and a cert (e.g. via Caddy or certbot in front of EMQX).
-  ADR 0001's actual decision is WebSocket **over TLS**; the setup above
-  is a plaintext bring-up step, not the final state.
 - Keygen CE (ADR 0009) - separate task once licensing work starts.
+
+**No longer deferred** (both were, when this section was originally
+written):
+- TLS (`wss://`) - #119. `relay.thrw.app` now points at `$RELAY_IP`
+  (Cloudflare DNS, **DNS only** - proxying breaks Caddy's ACME challenge
+  and doesn't forward the WebSocket upgrade correctly, confirmed live by
+  hitting exactly that failure mode before fixing it), and Caddy
+  terminates TLS on 443 in front of EMQX's plaintext `ws:8083` - see
+  `emqx.conf`'s own comment and `services/relay-hosted/Caddyfile`. EMQX's
+  *native* TLS listener (port 8084 - not the `8884` that had briefly, and
+  incorrectly, appeared in adapter config examples) stays disabled - it's
+  not part of this architecture, not a gap.
 - Wiring `packages/relay-core`'s `PriorityEngine`/`DeviceRegistry` into a
-  live process that actually subscribes to this broker - the Dockerfile
-  above packages EMQX itself only (issue #80/PR #81); that wiring is a
-  separate, not-yet-scoped follow-up.
+  live process that actually subscribes to this broker - #118. The code
+  (`services/relay-hosted/src/relay-service.ts`) and a standalone,
+  verified image (`Dockerfile.relay-service`) exist, but #118 deliberately
+  left *this VM* untouched - running it here, alongside `relay` and
+  `caddy`, is still a real follow-up, not done by either #118 or #119.
+  The Dockerfile above still packages EMQX only.
 
 ---
 
