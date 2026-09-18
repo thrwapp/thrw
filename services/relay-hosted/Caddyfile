@@ -1,0 +1,15 @@
+# TLS-terminating reverse proxy in front of EMQX's plaintext WebSocket
+# listener (#119). Caddy over EMQX-native TLS: Caddy's automatic HTTPS
+# (cert issuance + renewal via Let's Encrypt) needs zero coordination
+# with EMQX - no shared cert-file volume, no reload-on-renewal hook, no
+# restart cadence to get EMQX to pick up a renewed cert. EMQX keeps
+# speaking plain `ws` on 8083 exactly as it already does; Caddy is the
+# only thing that ever sees a TLS handshake.
+#
+# `localhost:8083`, not a container name: the Caddy container runs with
+# `--network host` (see scripts/relay-redeploy.sh) so it shares the VM's
+# network namespace directly - the same thing EMQX's own `-p 8083:8083`
+# publish already exposes on that host.
+relay.thrw.app {
+	reverse_proxy localhost:8083
+}
