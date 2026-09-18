@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>thrw</string>
+	<key>CFBundleDisplayName</key>
+	<string>thrw</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.thrw.mac</string>
+	<key>CFBundleExecutable</key>
+	<string>AdapterMacApp</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<!-- ADR 0004: menu bar icon only, no Dock icon and no menu bar
+	     application menu - this is the declarative equivalent of
+	     NSApplication.setActivationPolicy(.accessory). -->
+	<key>LSUIElement</key>
+	<true/>
+	<!-- Required since macOS 11 for any process calling IOBluetooth/
+	     CoreBluetooth APIs (docs/handoffs/101.md flagged this as
+	     missing, "no app bundle yet to declare it in" - #128 is that
+	     app bundle). Without this key, IOBluetoothPeripheralGateway's
+	     connect/disconnect calls fail outright with no system prompt at
+	     all, rather than degrading gracefully. -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>thrw connects to your headset over Bluetooth to switch its audio between your devices.</string>
+</dict>
+</plist>
