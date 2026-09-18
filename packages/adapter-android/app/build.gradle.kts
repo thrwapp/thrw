@@ -210,6 +210,27 @@ dependencies {
     // true.
     implementation("androidx.core:core:1.13.1")
 
+    // Netty's WebSocket implementation, required by hivemq-mqtt-client for
+    // ADR 0001's ws://-and-wss:// transport. HiveMQ treats WebSocket support
+    // as optional and does NOT declare this itself - its POM pulls in
+    // netty-buffer/codec/handler/transport but not netty-codec-http, which
+    // is where WebSocketClientHandshaker lives.
+    //
+    // Without it the app has no WebSocket implementation at all, and a
+    // connect to a ws:// or wss:// broker HANGS FOREVER rather than
+    // failing: the handshake dies inside Netty's pipeline and the connect
+    // future is never completed. That is #158, and it cost a full
+    // real-device debugging session.
+    //
+    // This was invisible because HiveMqttTransportTest runs against
+    // embedded Moquette, which depends on netty-codec-http transitively -
+    // so the test classpath had it and the app classpath never did. The
+    // WebSocket test passed for the wrong reason. Version pinned to match
+    // the other Netty modules hivemq-mqtt-client resolves (4.1.99.Final)
+    // rather than floating, since mixing Netty module versions is its own
+    // class of runtime failure.
+    implementation("io.netty:netty-codec-http:4.1.99.Final")
+
     // Per AGENTS.md: "use Kotlin coroutines for async code" - the async
     // connect/disconnect calls in the bluetooth package are suspend
     // functions backed by this.

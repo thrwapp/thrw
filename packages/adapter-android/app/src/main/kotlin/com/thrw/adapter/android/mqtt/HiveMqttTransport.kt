@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 /**
  * [MqttTransport] backed by the HiveMQ MQTT client.
@@ -76,6 +77,21 @@ class HiveMqttTransport private constructor(
          * (architecture.md, "MQTT topic design") key off the connecting
          * client, so it must not be randomly generated per process.
          */
+        /**
+         * How long to wait for a broker to complete the MQTT connect
+         * before giving up (#158).
+         *
+         * HiveMQ's blocking connect has no timeout of its own: if the
+         * transport-level handshake never completes, it waits forever.
+         * That is exactly what happened on a real device when
+         * `netty-codec-http` was missing - a foreground service with a
+         * live TLS socket and no MQTT session, indistinguishable from
+         * "still connecting", for as long as the app ran. A bounded wait
+         * turns any future variant of that into a loud, diagnosable
+         * failure instead of a silent hang.
+         */
+        private const val CONNECT_TIMEOUT_MS = 20_000L
+
         suspend fun connect(
             config: RelayConfig,
             clientId: String,
@@ -96,10 +112,17 @@ class HiveMqttTransport private constructor(
             }
 
             val client = builder.buildBlocking()
+            // withTimeout rather than a HiveMQ-level option: the blocking
+            // connect below offers none. Cancellation can't interrupt the
+            // blocking call itself, but it does free the caller and
+            // surfaces a TimeoutCancellationException the service logs,
+            // which is the difference between a diagnosable failure and
+            // an invisible one.
             // #147: null connects anonymously, which is correct for a
             // local broker with allow_anonymous on (how this module's
             // tests run). The deployed relay sets allow_anonymous=false
             // and rejects that with a NOT_AUTHORIZED connack.
+            withTimeout(CONNECT_TIMEOUT_MS) {
             if (credentials != null) {
                 client.toBlocking().connectWith()
                     .simpleAuth()
@@ -109,6 +132,7 @@ class HiveMqttTransport private constructor(
                     .send()
             } else {
                 client.connect()
+            }
             }
             HiveMqttTransport(client)
         }
