@@ -20,7 +20,7 @@
     <string name="save">Save</string>
     <!-- Deliberate: this screen doesn't start AdapterForegroundService -
          BootCompletedReceiver does, on boot. See ProvisioningActivity's kdoc. -->
-    <string name="provisioning_saved">Saved. thrw starts watching after the next device restart.</string>
+    <string name="provisioning_saved">Saved. thrw is now watching for calls.</string>
     <string name="error_account_id_blank">Enter your relay account ID</string>
     <string name="error_account_id_unsupported_characters">Use up to 64 letters, digits, dots, dashes or underscores — no spaces or slashes</string>
     <!-- #117: reworded for the picker (was "Enter the headset's Bluetooth
