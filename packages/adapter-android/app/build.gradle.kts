@@ -65,6 +65,27 @@ android {
             isReturnDefaultValues = true
         }
     }
+
+    packaging {
+        resources {
+            // hivemq-mqtt-client's Netty dependencies each ship their own
+            // copy of these two META-INF files, so AGP's resource merger
+            // can't pick one without this (#131). Neither is read by
+            // Netty's own runtime behavior:
+            // - INDEX.LIST: a JAR-indexing-era lookup optimization (pre-JPMS,
+            //   from the old java.net.URLClassLoader "Class-Path" mechanism);
+            //   the JVM falls back to normal classpath scanning when it's
+            //   absent.
+            // - io.netty.versions.properties: per-module version/commit
+            //   metadata, read only by io.netty.util.Version.identify() for
+            //   diagnostic banners - nothing in this adapter calls it.
+            // Excluded outright, not picked-first: keeping one arbitrary
+            // copy would give no benefit, since each is meaningless without
+            // the specific jar it was generated for.
+            excludes += "META-INF/INDEX.LIST"
+            excludes += "META-INF/io.netty.versions.properties"
+        }
+    }
 }
 
 repositories {
