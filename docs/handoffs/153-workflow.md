@@ -19,11 +19,11 @@ Four repository secrets. The keystore is binary, so it goes in base64:
 ```
 # from the machine holding the upload key
 base64 -i ~/Documents/thrw-upload.jks | pbcopy
-gh secret set THRW_UPLOAD_KEYSTORE_BASE64 --repo thrwapp/thrw   # paste
+gh secret set THRW_PLAY_KEYSTORE_BASE64 --repo thrwapp/thrw   # paste
 
-gh secret set THRW_UPLOAD_STORE_PASSWORD --repo thrwapp/thrw
-gh secret set THRW_UPLOAD_KEY_ALIAS      --repo thrwapp/thrw    # thrw-signing-key
-gh secret set THRW_UPLOAD_KEY_PASSWORD   --repo thrwapp/thrw
+gh secret set THRW_PLAY_KEYSTORE_PASSWORD --repo thrwapp/thrw
+gh secret set THRW_PLAY_KEY_ALIAS      --repo thrwapp/thrw    # thrw-signing-key
+gh secret set THRW_PLAY_KEY_PASSWORD   --repo thrwapp/thrw
 ```
 
 Each prompts for the value rather than taking it as an argument, so

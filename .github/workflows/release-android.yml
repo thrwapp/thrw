@@ -72,10 +72,10 @@ jobs:
 
       - name: Decode upload keystore
         env:
-          KEYSTORE_BASE64: ${{ secrets.THRW_UPLOAD_KEYSTORE_BASE64 }}
+          KEYSTORE_BASE64: ${{ secrets.THRW_PLAY_KEYSTORE_BASE64 }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "::error::THRW_UPLOAD_KEYSTORE_BASE64 is not set. Without it the build" \
+            echo "::error::THRW_PLAY_KEYSTORE_BASE64 is not set. Without it the build" \
                  "would still succeed and produce an *unsigned* bundle (by design - see" \
                  "app/build.gradle.kts), which Play rejects. Failing early instead."
             exit 1
@@ -86,10 +86,10 @@ jobs:
         working-directory: packages/adapter-android
         env:
           THRW_VERSION_CODE: ${{ steps.version.outputs.code }}
-          THRW_UPLOAD_STORE_FILE: ${{ runner.temp }}/upload.jks
-          THRW_UPLOAD_STORE_PASSWORD: ${{ secrets.THRW_UPLOAD_STORE_PASSWORD }}
-          THRW_UPLOAD_KEY_ALIAS: ${{ secrets.THRW_UPLOAD_KEY_ALIAS }}
-          THRW_UPLOAD_KEY_PASSWORD: ${{ secrets.THRW_UPLOAD_KEY_PASSWORD }}
+          THRW_PLAY_KEYSTORE_FILE: ${{ runner.temp }}/upload.jks
+          THRW_PLAY_KEYSTORE_PASSWORD: ${{ secrets.THRW_PLAY_KEYSTORE_PASSWORD }}
+          THRW_PLAY_KEY_ALIAS: ${{ secrets.THRW_PLAY_KEY_ALIAS }}
+          THRW_PLAY_KEY_PASSWORD: ${{ secrets.THRW_PLAY_KEY_PASSWORD }}
         run: ./gradlew bundleRelease
 
       # A green `bundleRelease` does NOT mean the bundle is signed: an
