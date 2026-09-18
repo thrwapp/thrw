@@ -1,0 +1,64 @@
+# Standalone image for @thrw/relay-hosted's *process* - RelayService
+# (#118), the live PriorityEngine/DeviceRegistry subscriber. This is NOT
+# the EMQX broker image (that's ./Dockerfile, unchanged by this issue).
+#
+# Deliberately a separate file, not yet wired into deploy.yml or
+# scripts/relay-redeploy.sh - see docs/handoffs/118.md's "Deployment
+# wiring" section for the full reasoning (short version: those are real
+# production deployment scripts this issue's own "paths the agent must
+# not touch" already puts .github/** off limits for, and
+# relay-redeploy.sh manages exactly one running container today - wiring
+# a second one in without being able to verify it against real GCP infra
+# isn't a safe change to make blind).
+#
+# Build from the *repo root* as context (needs the whole pnpm workspace
+# for turbo prune to read) - NOT from services/relay-hosted itself, unlike
+# the EMQX Dockerfile:
+#
+#   docker build -f services/relay-hosted/Dockerfile.relay-service -t thrw-relay-service .
+#
+# turbo prune keeps the image to just this package's actual dependency
+# subset of the monorepo (@thrw/protocol, @thrw/relay-core,
+# @thrw/relay-hosted) rather than copying every workspace.
+
+FROM node:22-slim AS pruner
+WORKDIR /repo
+RUN corepack enable
+COPY . .
+RUN npx turbo prune @thrw/relay-hosted --docker
+
+FROM node:22-slim AS installer
+WORKDIR /repo
+RUN corepack enable
+# Installs from the pruned package.json/lockfile subset only - the layer
+# most likely to be cache-hit on a rebuild where only source changed.
+COPY --from=pruner /repo/out/json/ .
+COPY --from=pruner /repo/out/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY --from=pruner /repo/out/pnpm-workspace.yaml ./pnpm-workspace.yaml
+RUN pnpm install --frozen-lockfile
+
+FROM node:22-slim AS builder
+WORKDIR /repo
+RUN corepack enable
+COPY --from=installer /repo .
+COPY --from=pruner /repo/out/full/ .
+# turbo prune only traces files reachable as actual workspace package
+# sources - tsconfig.base.json is a root-level file every package's own
+# tsconfig.json reaches via `extends: "../../tsconfig.base.json"`, which
+# turbo prune's tracer doesn't follow, so out/full/ doesn't include it
+# (confirmed the hard way: `tsc` failed with "Cannot read file
+# '/repo/tsconfig.base.json'" without this line).
+COPY --from=pruner /repo/tsconfig.base.json ./tsconfig.base.json
+RUN pnpm turbo build --filter=@thrw/relay-hosted
+
+FROM node:22-slim AS runner
+WORKDIR /repo
+RUN corepack enable
+COPY --from=builder /repo .
+WORKDIR /repo/services/relay-hosted
+ENV NODE_ENV=production
+# THRW_RELAY_ACCOUNTS (required) and MQTT_BROKER_URL/EMQX_RELAY_USERNAME/
+# EMQX_RELAY_PASSWORD (optional, see src/index.ts) are runtime env vars,
+# never baked in - same discipline as docker-entrypoint-relay.sh's own
+# EMQX credential handling.
+ENTRYPOINT ["node", "dist/index.js"]

@@ -63,7 +63,18 @@ importers:
 
   services/licensing: {}
 
-  services/relay-hosted: {}
+  services/relay-hosted:
+    dependencies:
+      '@thrw/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@thrw/relay-core':
+        specifier: workspace:*
+        version: link:../../packages/relay-core
+    devDependencies:
+      mqtt:
+        specifier: ^5.16.0
+        version: 5.16.0
 
   services/telemetry: {}
 
