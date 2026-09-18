@@ -52,6 +52,22 @@ jobs:
           docker push "${IMAGE}:${{ github.sha }}"
           docker push "${IMAGE}:latest"
 
+      # #129: relay-service (#118's live PriorityEngine/DeviceRegistry
+      # process) as its own image, separate from the EMQX image above -
+      # built with Dockerfile.relay-service (docs/handoffs/118.md/129.md
+      # explain why that's a standalone file, not folded into the EMQX
+      # Dockerfile) from the *repo root* as build context (it needs the
+      # whole pnpm workspace for `turbo prune` - see the Dockerfile's own
+      # comment), unlike the EMQX image's `services/relay-hosted`-scoped
+      # context above.
+      - name: Build and push relay-service image
+        env:
+          IMAGE: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_PROD }}/thrw/relay-service
+        run: |
+          docker build -f services/relay-hosted/Dockerfile.relay-service -t "${IMAGE}:${{ github.sha }}" -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${{ github.sha }}"
+          docker push "${IMAGE}:latest"
+
       # gcloud compute instances update-container / create-with-container
       # (Container-Optimized OS + the container-startup-agent) is
       # discontinued - confirmed live, a real create-with-container attempt
@@ -76,9 +92,18 @@ jobs:
       - name: Roll the relay VM
         env:
           IMAGE: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_PROD }}/thrw/relay
+          # #129: relay-service's own image, built above.
+          RELAY_SERVICE_IMAGE: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_PROD }}/thrw/relay-service
           ARTIFACT_HOST: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev
           RELAY_VM_NAME: ${{ vars.GCP_RELAY_VM_NAME || 'thrw-relay' }}
           RELAY_ZONE: ${{ vars.GCP_RELAY_ZONE || 'us-central1-a' }}
+          # #129: which accounts relay-service manages - not a secret
+          # (it's just a topic-namespace string, no credential), so a
+          # plain repo variable rather than a secret. Confirmed with Tom
+          # directly which value to use for now (see docs/handoffs/129.md) -
+          # matches the same value ProvisioningInput's own hint text on
+          # the Android provisioning screen already suggests.
+          THRW_RELAY_ACCOUNTS: ${{ vars.THRW_RELAY_ACCOUNTS || 'tom-personal' }}
         run: |
           gcloud compute scp scripts/relay-redeploy.sh "${RELAY_VM_NAME}:/tmp/relay-redeploy.sh" \
             --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap
@@ -92,10 +117,14 @@ jobs:
 
           EMQX_USER_B64=$(printf '%s' "${{ secrets.EMQX_RELAY_USERNAME }}" | base64 -w0)
           EMQX_PASS_B64=$(printf '%s' "${{ secrets.EMQX_RELAY_PASSWORD }}" | base64 -w0)
+          # #129: same base64-for-shell-quoting reasoning as the EMQX
+          # credential above - account ids aren't secret, but they still
+          # cross the same two layers of quoting this run block does.
+          THRW_RELAY_ACCOUNTS_B64=$(printf '%s' "$THRW_RELAY_ACCOUNTS" | base64 -w0)
 
           gcloud compute ssh "$RELAY_VM_NAME" \
             --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap \
-            --command="sudo bash /tmp/relay-redeploy.sh '${IMAGE}:${{ github.sha }}' '$ARTIFACT_HOST' '$EMQX_USER_B64' '$EMQX_PASS_B64'"
+            --command="sudo bash /tmp/relay-redeploy.sh '${IMAGE}:${{ github.sha }}' '$ARTIFACT_HOST' '$EMQX_USER_B64' '$EMQX_PASS_B64' '${RELAY_SERVICE_IMAGE}:${{ github.sha }}' '$THRW_RELAY_ACCOUNTS_B64'"
 
       # A fully-configured EMQX boot (auth bootstrap file, ACL, disabled
       # listeners per emqx.conf) is slower than the bare default image the
