@@ -119,6 +119,7 @@ const title = "thrw — One headset. Every device you actually use.";
 
     <footer class="site-footer">
       <p>thrw — built for the devices you actually own, not the ones in one company's lineup.</p>
+      <p class="footer-links"><a href="/privacy">Privacy</a></p>
     </footer>
 
     <script>
@@ -499,6 +500,23 @@ const title = "thrw — One headset. Every device you actually use.";
         margin: 0;
         font-size: 0.875rem;
         color: var(--color-text-muted);
+      }
+
+      .footer-links {
+        margin-top: var(--space-3);
+      }
+
+      .footer-links a {
+        color: var(--color-text-muted);
+      }
+
+      .footer-links a:hover {
+        color: var(--color-accent);
+      }
+
+      .footer-links a:focus-visible {
+        outline: 2px solid var(--color-focus-ring);
+        outline-offset: 3px;
       }
 
       @media (max-width: 375px) {

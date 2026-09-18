@@ -1,0 +1,363 @@
+---
+// Privacy policy. Both the App Store and Play Console require a reachable
+// privacy policy URL at submission (see issue #132), so this page is a
+// prerequisite for shipping either adapter, not just good practice.
+//
+// Every claim below is written against what the adapters actually do in
+// this repo, not boilerplate — specifically:
+//   - packages/adapter-android/app/src/main/AndroidManifest.xml (permissions)
+//   - .../triggers/NotificationSource.kt (the exact notification fields read)
+//   - .../protocol/Payloads.kt (what is actually sent to the relay)
+//   - .../identity/DeviceIdentity.kt (how the node id is generated)
+// If any of those change, this page must change with them — Play Console's
+// Data Safety declaration is asserted against this same behaviour.
+const title = "Privacy — thrw";
+const lastUpdated = "18 September 2026";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta
+      name="description"
+      content="What thrw collects, what it never collects, and where your data goes."
+    />
+  </head>
+  <body>
+    <div class="glow" aria-hidden="true"></div>
+
+    <header class="site-header">
+      <a class="wordmark" href="/">thrw</a>
+    </header>
+
+    <main>
+      <h1>Privacy</h1>
+      <p class="updated">Last updated {lastUpdated}</p>
+
+      <p class="lede">
+        thrw switches your headset between your devices. To do that it needs to know when
+        a call or meeting starts, and it needs to talk to a relay so your other devices
+        find out. This page describes exactly what that involves — what leaves your
+        device, what never does, and what you can turn off.
+      </p>
+
+      <h2>What thrw sends to the relay</h2>
+      <p>
+        Each device running a thrw adapter connects to a relay server and publishes only
+        the following:
+      </p>
+      <ul>
+        <li>
+          <strong>A node identifier</strong> — a random identifier generated on your
+          device the first time the app runs, and stored only on that device. It is not
+          derived from your hardware, your advertising ID, or any account you hold
+          elsewhere.
+        </li>
+        <li>
+          <strong>Your device model name</strong> (for example "Pixel 10 Pro"), so the
+          app can show you which device currently holds the headset.
+        </li>
+        <li>
+          <strong>The adapter version and platform</strong>, so the relay knows what the
+          device supports.
+        </li>
+        <li>
+          <strong>Trigger events</strong> — that a call, VoIP session, or media playback
+          started or ended on that device, and nothing about its content.
+        </li>
+        <li>
+          <strong>An account identifier you supply</strong> when setting up the app, used
+          to group your own devices together and to keep them separate from everyone
+          else's.
+        </li>
+      </ul>
+      <p>
+        The relay holds nothing about a device beyond what that device declared above. It
+        uses this to decide which device should hold the headset, and sends back a single
+        instruction: claim it, or release it.
+      </p>
+
+      <h2>What thrw never collects</h2>
+      <ul>
+        <li>
+          <strong>No audio, ever.</strong> thrw routes which device your headset is
+          connected to. It does not record, access, or transmit audio.
+        </li>
+        <li>
+          <strong>No phone numbers, contacts, or call history.</strong> The app reads
+          only whether a call is ringing, active, or ended — never who is calling.
+        </li>
+        <li>
+          <strong>No notification content.</strong> See below.
+        </li>
+        <li>
+          <strong>No advertising identifiers, no analytics SDKs, no third-party
+          trackers.</strong>
+        </li>
+        <li><strong>No location data.</strong></li>
+        <li>
+          <strong>Nothing is sold or shared with third parties.</strong>
+        </li>
+      </ul>
+
+      <h2>Notification access, specifically</h2>
+      <p>
+        On Android, thrw asks for notification access. This is a powerful permission and
+        it deserves a precise explanation rather than a vague one.
+      </p>
+      <p>
+        thrw uses it for one purpose: detecting that a VoIP call (Zoom, Meet, Teams,
+        WhatsApp and similar) has started or ended, because Android provides no other
+        reliable signal for that. From each notification, the app reads only these
+        structural fields:
+      </p>
+      <ul>
+        <li>which app posted it;</li>
+        <li>
+          its category and style — specifically whether the system has tagged it as a
+          call notification;
+        </li>
+        <li>whether it is an ongoing notification;</li>
+        <li>whether it represents an incoming, ongoing, or screening call;</li>
+        <li>an identifier used to tell when that same notification is dismissed.</li>
+      </ul>
+      <p>
+        It does not read notification titles, message text, sender names, or any other
+        content — those fields are never accessed. Nothing derived from your
+        notifications is stored, logged, or sent to the relay; the only thing that leaves
+        your device is the fact that "a VoIP call started on this device."
+      </p>
+      <p>
+        You can revoke notification access at any time in Android Settings. thrw keeps
+        working; it just stops detecting VoIP calls.
+      </p>
+
+      <h2>Other permissions</h2>
+      <ul>
+        <li>
+          <strong>Bluetooth</strong> — to connect and disconnect a headset you have
+          already paired. thrw only manages headsets you have explicitly registered with
+          it, and never acts on your other Bluetooth devices.
+        </li>
+        <li>
+          <strong>Phone state</strong> — to detect that a call started or ended, as
+          described above.
+        </li>
+        <li>
+          <strong>Notifications</strong> — to show its own persistent status
+          notification, which Android requires for an app that runs in the background.
+        </li>
+        <li>
+          <strong>Start on boot</strong> — so switching works after a restart without you
+          opening the app.
+        </li>
+      </ul>
+
+      <h2>Running your own relay</h2>
+      <p>
+        thrw is designed so you do not have to use ours. Every adapter reads its relay
+        address from build-time configuration, so you can point it at a relay you host
+        yourself and no data reaches our infrastructure at all. The source is public.
+      </p>
+
+      <h2>Retention</h2>
+      <p>
+        Trigger events are used to make an immediate switching decision and are not
+        stored as a history. Your registered devices remain known to the relay while they
+        are actively connected; a device that stops sending heartbeats is dropped.
+      </p>
+
+      <h2>Contact</h2>
+      <p>
+        thrw is operated by Barhatch Limited, registered in the United Kingdom. For any
+        privacy question, or to ask us to delete data associated with your account
+        identifier, contact <a href="mailto:privacy@thrw.app">privacy@thrw.app</a>.
+      </p>
+    </main>
+
+    <footer class="site-footer">
+      <p>
+        <a href="/">Back to thrw</a>
+      </p>
+    </footer>
+
+    <style>
+      :root {
+        color-scheme: light dark;
+
+        --color-bg: #f7f6f3;
+        --color-surface: #ffffff;
+        --color-text: #16181d;
+        --color-text-muted: #4a4e57;
+        --color-border: #e6e3dc;
+        --color-accent: #e0522a;
+        --color-accent-contrast: #fffaf6;
+        --color-focus-ring: #e0522a;
+        --color-glow: rgb(224 82 42 / 16%);
+
+        --space-2: 0.5rem;
+        --space-3: 0.75rem;
+        --space-4: 1rem;
+        --space-6: 1.5rem;
+        --space-8: 2rem;
+        --space-12: 3rem;
+
+        --font-size-wordmark: 0.9375rem;
+        --font-size-body: clamp(1rem, 0.95rem + 0.2vw, 1.125rem);
+        --font-size-h1: clamp(2rem, 1.6rem + 1.75vw, 2.75rem);
+        --font-size-h2: clamp(1.25rem, 1.15rem + 0.5vw, 1.5rem);
+
+        --measure: 38rem;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --color-bg: #14161a;
+          --color-surface: #1c1f24;
+          --color-text: #f1efe9;
+          --color-text-muted: #a9adb6;
+          --color-border: #2a2d33;
+          --color-accent: #ff7d54;
+          --color-accent-contrast: #1a0d08;
+          --color-focus-ring: #ff7d54;
+          --color-glow: rgb(255 125 84 / 14%);
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        position: relative;
+        margin: 0;
+        min-height: 100dvh;
+        background: var(--color-bg);
+        color: var(--color-text);
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+        line-height: 1.6;
+        overflow-x: hidden;
+      }
+
+      .glow {
+        position: absolute;
+        top: -12rem;
+        left: 50%;
+        width: 60rem;
+        height: 34rem;
+        transform: translateX(-50%);
+        background: radial-gradient(closest-side, var(--color-glow), transparent);
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      .site-header,
+      main,
+      .site-footer {
+        position: relative;
+        z-index: 1;
+      }
+
+      .site-header {
+        display: flex;
+        justify-content: center;
+        padding: var(--space-8) var(--space-6) 0;
+      }
+
+      .wordmark {
+        margin: 0;
+        font-size: var(--font-size-wordmark);
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--color-accent);
+        text-decoration: none;
+      }
+
+      .wordmark:focus-visible,
+      a:focus-visible {
+        outline: 2px solid var(--color-focus-ring);
+        outline-offset: 3px;
+      }
+
+      main {
+        max-width: var(--measure);
+        margin: 0 auto;
+        padding: var(--space-12) var(--space-6) var(--space-8);
+      }
+
+      h1 {
+        margin: 0 0 var(--space-2);
+        font-size: var(--font-size-h1);
+        line-height: 1.1;
+        letter-spacing: -0.03em;
+      }
+
+      .updated {
+        margin: 0 0 var(--space-8);
+        font-size: 0.875rem;
+        color: var(--color-text-muted);
+      }
+
+      .lede {
+        margin: 0 0 var(--space-12);
+        font-size: var(--font-size-body);
+        color: var(--color-text-muted);
+      }
+
+      h2 {
+        margin: var(--space-12) 0 var(--space-4);
+        font-size: var(--font-size-h2);
+        line-height: 1.2;
+        letter-spacing: -0.02em;
+      }
+
+      p,
+      li {
+        font-size: var(--font-size-body);
+        color: var(--color-text-muted);
+      }
+
+      p {
+        margin: 0 0 var(--space-4);
+      }
+
+      ul {
+        margin: 0 0 var(--space-4);
+        padding-left: var(--space-6);
+      }
+
+      li {
+        margin-bottom: var(--space-3);
+      }
+
+      strong {
+        color: var(--color-text);
+        font-weight: 600;
+      }
+
+      a {
+        color: var(--color-accent);
+      }
+
+      .site-footer {
+        border-top: 1px solid var(--color-border);
+        margin-top: var(--space-12);
+        padding: var(--space-8) var(--space-6) var(--space-12);
+        text-align: center;
+      }
+
+      .site-footer p {
+        margin: 0;
+        font-size: 0.875rem;
+      }
+    </style>
+  </body>
+</html>
