@@ -13,6 +13,48 @@ plugins {
     kotlin("plugin.serialization")
 }
 
+// Upload-key material for Play Store releases (#132). Never committed: it
+// comes from a gitignored keystore.properties next to config/, or from
+// environment variables so CI can supply it from secrets instead of a file.
+//
+// Play App Signing means this is the *upload* key, not the app signing key
+// Google holds - losing it is recoverable through Play Console, but it still
+// must not end up in the repo.
+//
+// Absent entirely (the normal case: CI, a fresh clone, the agent pipeline),
+// release builds stay unsigned rather than failing - `bundleRelease` is
+// expected to work without it, and an unsigned bundle is a perfectly valid
+// thing to produce locally. Only an *incomplete* configuration is an error,
+// since that silently yields an artifact Play would reject.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+fun uploadKeyValue(propertyName: String, environmentName: String): String? =
+    keystoreProperties.getProperty(propertyName) ?: System.getenv(environmentName)
+
+val uploadStoreFile = uploadKeyValue("storeFile", "THRW_UPLOAD_STORE_FILE")
+val uploadStorePassword = uploadKeyValue("storePassword", "THRW_UPLOAD_STORE_PASSWORD")
+val uploadKeyAlias = uploadKeyValue("keyAlias", "THRW_UPLOAD_KEY_ALIAS")
+val uploadKeyPassword = uploadKeyValue("keyPassword", "THRW_UPLOAD_KEY_PASSWORD")
+
+val uploadKeyConfigured = uploadStoreFile != null
+
+if (uploadKeyConfigured) {
+    val missing = buildList {
+        if (uploadStorePassword == null) add("storePassword/THRW_UPLOAD_STORE_PASSWORD")
+        if (uploadKeyAlias == null) add("keyAlias/THRW_UPLOAD_KEY_ALIAS")
+        if (uploadKeyPassword == null) add("keyPassword/THRW_UPLOAD_KEY_PASSWORD")
+    }
+    require(missing.isEmpty()) {
+        "Upload key is partially configured - missing ${missing.joinToString(", ")}. " +
+            "Set all four (see docs/handoffs/148.md), or none to build unsigned."
+    }
+}
+
 android {
     namespace = "com.thrw.adapter.android"
     compileSdk = 35
@@ -59,6 +101,29 @@ android {
         // hand-generated com.thrw.adapter.android.config.BuildConfig
         // below (ADR 0005's RELAY_URL/LICENSING_URL/SELF_HOSTED).
         buildConfig = true
+    }
+
+    signingConfigs {
+        if (uploadKeyConfigured) {
+            create("upload") {
+                storeFile = file(uploadStoreFile!!)
+                storePassword = uploadStorePassword
+                keyAlias = uploadKeyAlias
+                keyPassword = uploadKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // Only wired up when the upload key is actually available (see
+            // the block above the `android {}` block). Left null otherwise,
+            // which produces an unsigned release bundle rather than failing
+            // the build - `signingConfig = signingConfigs.getByName("debug")`
+            // would be worse than useless here, since a debug-signed AAB
+            // looks publishable right up until Play rejects it.
+            signingConfig = if (uploadKeyConfigured) signingConfigs.getByName("upload") else null
+        }
     }
 
     testOptions {
