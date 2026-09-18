@@ -15,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationManagerCompat
 import com.thrw.adapter.android.R
+import com.thrw.adapter.android.AdapterForegroundService
 import com.thrw.adapter.android.identity.AdapterProvisioning
 import com.thrw.adapter.android.identity.FieldError
 import com.thrw.adapter.android.identity.FieldResult
@@ -35,15 +36,22 @@ import com.thrw.adapter.android.identity.ProvisioningInput
  *    is also what shows the system's own rationale handling, rather than a
  *    hand-rolled dialog.
  *
- * Deliberately does **not** start [com.thrw.adapter.android.AdapterForegroundService]
- * on save (#102 acceptance criterion 4). [com.thrw.adapter.android.BootCompletedReceiver]
- * is the one start path, and keeping it the only one means there's exactly
- * one answer to "what started this service". The cost is real and worth
- * stating plainly: freshly saved provisioning doesn't take effect until the
- * next reboot, and the screen says so ([R.string.provisioning_saved]) rather
- * than implying the adapter is now live. Changing that is a one-line
- * `startForegroundService` here if the reboot wait proves unacceptable on
- * real hardware - see docs/handoffs/102.md.
+ * Starts [com.thrw.adapter.android.AdapterForegroundService] on a
+ * successful save, alongside [com.thrw.adapter.android.BootCompletedReceiver]
+ * which still starts it on boot.
+ *
+ * #102 acceptance criterion 4 originally left the boot receiver as the
+ * *only* start path, so there was exactly one answer to "what started this
+ * service", and accepted that freshly saved provisioning wouldn't take
+ * effect until the next reboot. This class's kdoc named the condition for
+ * revisiting that - "if the reboot wait proves unacceptable on real
+ * hardware" - and it did, during the first real-device test: saving
+ * provisioning on a Pixel 10 Pro left the adapter inert, with no way to
+ * bring it up short of a reboot. Asking for a restart after every
+ * configuration change isn't reasonable, so there are now two start paths.
+ * Both funnel through the same `onStartCommand`, which re-reads
+ * provisioning from `SharedPreferences` either way - see
+ * docs/handoffs/102.md for the original reasoning.
  *
  * Note this screen covers *runtime* permissions only. Notification-listener
  * access (below, #107) and pairing the headset itself in Android's
@@ -167,6 +175,24 @@ class ProvisioningActivity : ComponentActivity() {
         // normalize/redisplay there the way the old free-text field
         // needed (address upper-casing).
         accountIdField.setText(accountId.value)
+
+        // Start the service now rather than waiting for the next reboot.
+        //
+        // #102 acceptance criterion 4 deliberately left BootCompletedReceiver
+        // as the only start path, and this class's kdoc named the exact
+        // condition for revisiting: "if the reboot wait proves unacceptable
+        // on real hardware". It did - on a real Pixel 10 Pro, saving
+        // provisioning left the adapter inert with no way to bring it up
+        // short of rebooting, which is not a reasonable thing to ask after
+        // every configuration change.
+        //
+        // startForegroundService (not startService): the service calls
+        // startForeground() immediately in onStartCommand, which is what
+        // Android requires of a background-initiated foreground service.
+        // Starting an already-running service is harmless - onStartCommand
+        // re-reads provisioning from SharedPreferences, so this doubles as
+        // "apply the new settings".
+        startForegroundService(Intent(this, AdapterForegroundService::class.java))
 
         Toast.makeText(this, R.string.provisioning_saved, Toast.LENGTH_LONG).show()
     }

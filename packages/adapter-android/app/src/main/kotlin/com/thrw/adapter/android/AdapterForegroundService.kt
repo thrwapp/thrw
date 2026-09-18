@@ -83,7 +83,23 @@ class AdapterForegroundService : Service() {
             if (credentials == null) {
                 Log.e(TAG, "No relay credential configured - see config/adapter.properties (#147)")
             }
-            val hiveTransport = HiveMqttTransport.connect(relayConfig, clientId = nodeId, credentials = credentials)
+            // Wrapped in try/catch with real logging: HiveMQ has no SLF4J
+            // binding on Android, so a failed connect (bad credential,
+            // refused WebSocket upgrade, unreachable host) produces no
+            // output at all and the adapter just sits there looking
+            // healthy - a foreground service with a notification and no
+            // MQTT session. Found during the first real-device test,
+            // where exactly that happened and there was nothing to debug
+            // from. Logging the outcome either way is the minimum.
+            Log.i(TAG, "Connecting to ${relayConfig.host}:${relayConfig.port} (ws=${relayConfig.webSocket}, tls=${relayConfig.tls}, path=${relayConfig.webSocketPath}) as $nodeId, credentials=${credentials != null}")
+            val hiveTransport = try {
+                HiveMqttTransport.connect(relayConfig, clientId = nodeId, credentials = credentials)
+            } catch (e: Exception) {
+                Log.e(TAG, "MQTT connect FAILED", e)
+                stopSelf()
+                return@launch
+            }
+            Log.i(TAG, "MQTT connected; registering node $nodeId on account $accountId")
             transport = hiveTransport
 
             val bluetooth = BluetoothConnectionManager(AndroidBluetoothClassicGateway(this@AdapterForegroundService))
