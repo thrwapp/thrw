@@ -289,6 +289,36 @@ class AndroidNodeTest {
         assertEquals(listOf(HEADSET), f.gateway.disconnectCalls)
     }
 
+    /**
+     * #161: a headset that is off, out of range or busy makes the
+     * gateway throw. Before this, that propagated out of
+     * listenForCommands and killed the whole adapter process on real
+     * hardware. It must be logged and skipped, exactly like an
+     * unparseable payload.
+     */
+    @Test
+    fun `a failing claim does not tear down the commands subscription`() = runTest {
+        val transport = FakeMqttTransport()
+        val gateway = object : BluetoothClassicGateway {
+            var connectAttempts = 0
+            override suspend fun connect(deviceAddress: String) {
+                connectAttempts++
+                throw java.io.IOException("read failed, socket might closed or timeout, read ret: -1")
+            }
+            override suspend fun disconnect(deviceAddress: String) = Unit
+        }
+        val node = AndroidNode(ACCOUNT, NODE, HEADSET, transport, BluetoothConnectionManager(gateway))
+
+        transport.commands.send("""{"type":"claim"}""")
+        // The second claim only arrives if the first didn't end the flow.
+        transport.commands.send("""{"type":"claim"}""")
+        transport.commands.close()
+
+        node.listenForCommands()
+
+        assertEquals(2, gateway.connectAttempts, "the subscription must survive a failed claim")
+    }
+
     @Test
     fun `an unparseable command is skipped without dropping the subscription`() = runTest {
         val f = Fixture()

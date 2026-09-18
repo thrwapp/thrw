@@ -19,6 +19,7 @@ import com.thrw.adapter.android.triggers.AndroidCallStateSource
 import com.thrw.adapter.android.triggers.AndroidNotificationSource
 import com.thrw.adapter.android.triggers.CallTriggerMonitor
 import com.thrw.adapter.android.triggers.VoipTriggerMonitor
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -44,7 +45,29 @@ import kotlinx.coroutines.launch
  */
 class AdapterForegroundService : Service() {
     private val job = SupervisorJob()
-    private val scope = CoroutineScope(job)
+
+    /**
+     * Last line of defence (#161): without this, *any* unhandled
+     * exception in a coroutine launched below reaches the thread's
+     * default uncaught handler, which on Android kills the process.
+     *
+     * A `SupervisorJob` alone is not enough and it's an easy thing to
+     * assume otherwise - it stops a failing child cancelling its
+     * siblings, but it does not handle the exception. Found the hard way
+     * on real hardware: a failed AirPods connect during a genuine relay
+     * handoff crashed the whole adapter, and Android restarted it in a
+     * loop (`Scheduling restart of crashed service ... in 11000ms`),
+     * tearing down and rebuilding the MQTT session each time.
+     *
+     * Individual failures should still be handled where they're
+     * actionable - `AndroidNode.listenForCommands` catches a failed
+     * claim so the subscription survives. This exists so that anything
+     * missed degrades to a log line instead of process death.
+     */
+    private val exceptionHandler = CoroutineExceptionHandler { _, e ->
+        Log.e(TAG, "Unhandled exception in the node runtime - the adapter stays up", e)
+    }
+    private val scope = CoroutineScope(job + exceptionHandler)
     private var transport: HiveMqttTransport? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
