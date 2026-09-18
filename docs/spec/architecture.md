@@ -101,7 +101,8 @@ to them at all.
   on_claim(), on_release(). Each adapter wraps the local Bluetooth API
   (LibrePods on Android, IOBluetooth on Mac — classic Bluetooth, since
   CoreBluetooth is BLE-only and can't move the audio route, see #101 —
-  CoreBluetooth on iPad, BlueZ on Linux) and
+  **no framework can move it on iPad at all**, see "iPad's Bluetooth
+  audio-route limitation" below and #115, BlueZ on Linux) and
   the local trigger APIs (TelephonyManager + NotificationListener on
   Android, AVAudioSession + process watching on Mac, CallKit on iPad,
   PulseAudio + D-Bus on Linux).
@@ -122,6 +123,77 @@ to them at all.
   from licensing via a webhook bridge — Stripe subscription lifecycle
   events (created/updated/deleted) trigger Keygen API calls
   (create license / update policy / revoke).
+
+## iPad's Bluetooth audio-route limitation (#115)
+
+Researched before any `adapter-ipad` bootstrap work, specifically to
+avoid repeating #101's mistake at the platform level instead of the
+framework level: #101 corrected Mac's line above from CoreBluetooth to
+IOBluetooth because CoreBluetooth is BLE-only and can't move a classic-
+profile audio connection. iPadOS has no IOBluetooth equivalent — no
+public framework of any kind gives a third-party app classic-Bluetooth
+(BR/EDR) connection control. This is a real platform ceiling, not an
+implementation gap `adapter-ipad` can code its way around.
+
+**What was checked:**
+
+- `AVAudioSession`'s route APIs (`currentRoute`, `availableInputs`,
+  `preferredInput`, `overrideOutputAudioPort`) let an app *observe* the
+  active route and choose among *already-connected* inputs, or force a
+  fallback to the built-in speaker/mic. None of them initiate a new
+  Bluetooth connection to a specific paired-but-not-connected device —
+  the OS alone decides which Bluetooth profile is active, and multiple
+  Apple Developer Forums threads report `preferredInput`/
+  `overrideOutputAudioPort` not reliably even reordering
+  *already-connected* routes on recent iOS versions ("AVAudioSession,
+  setPrefferedInput and switching between multiple Bluetooth Devices",
+  https://developer.apple.com/forums/thread/62954).
+- `AVRoutePickerView` (the modern replacement for `MPVolumeView`'s route
+  button) only presents the system's own route-picker UI for the *user*
+  to tap — there is no programmatic way to drive a selection through it
+  without user interaction.
+- `CoreBluetooth` is GATT-only. An Apple DTS engineer's answer on the
+  Developer Forums is the clearest single citation: "iOS apps can do
+  Bluetooth Classic (aka BR/EDR), but there are some limitations. If
+  your device can support GATT over Bluetooth Classic, then you can use
+  CoreBluetooth. Otherwise, to connect and communicate with a Bluetooth
+  Classic device over something like the Serial Port profile, you need
+  to join the MFi Program after which you can use the External
+  Accessory framework to do the job."
+  (https://developer.apple.com/forums/thread/769197). AirPods' audio
+  path is a system-managed classic A2DP/HFP connection, not a
+  GATT-over-classic service, and AirPods aren't a third-party MFi
+  accessory an app can register against — so neither of the DTS
+  engineer's two escape hatches applies here. (iOS 13 quietly added an
+  undocumented "BR/EDR Transport Bridging Key" that can bridge some
+  classic profiles through a CoreBluetooth LE proximity relationship —
+  forum thread https://developer.apple.com/forums/thread/122732 — but
+  Apple has published no documentation for it, and nothing here should
+  be built on an undocumented mechanism.)
+- Apple's own AirPods-to-AirPods automatic switching (the behavior thrw
+  is trying to approximate cross-ecosystem, per "Positioning" above)
+  works via private iCloud/Apple-ID-linked signaling over the H1/H2
+  chip, not any public API — it is not a capability third-party apps
+  can invoke or replicate.
+
+**Conclusion**: no public iPadOS API lets a third-party app force which
+device a classic-profile Bluetooth audio accessory is connected to.
+`adapter-ipad` can *observe* the current audio route
+(`AVAudioSession.routeChangeNotification`/`currentRoute`) and detect
+thrw's own priority-trigger events (call start, VoIP start) exactly like
+the other adapters, but it cannot execute the `on_claim`/`on_release`
+side of the node interface automatically. The M4 product fallback is
+prompting the user to switch manually — e.g. a local notification or UI
+state pointing at Control Center's audio route picker when thrw's relay
+decides the iPad should hold the claim — rather than the automatic
+handoff Android/Mac/Linux achieve. This is a real product-scope
+narrowing for the iPad adapter, not just a technical footnote: M4's
+acceptance criteria need to be written against "prompt and observe,"
+never against "connect and disconnect."
+
+Reference hardware for iPad is still unspecified (see "Reference
+hardware" below) — unaffected by this finding, but worth remembering as
+a separate, still-open gap.
 
 ## Connection state machine
 
