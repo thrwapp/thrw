@@ -1,5 +1,7 @@
 package com.thrw.adapter.android
 
+import com.thrw.adapter.android.heartbeat.HeartbeatPublisher
+import com.thrw.adapter.android.heartbeat.HeartbeatRunner
 import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.triggers.CallTriggerMonitor
 import com.thrw.adapter.android.triggers.VoipTriggerMonitor
@@ -23,6 +25,7 @@ class NodeRuntime(
     private val node: AndroidNode,
     private val callTriggerMonitor: CallTriggerMonitor,
     private val voipTriggerMonitor: VoipTriggerMonitor,
+    private val heartbeatRunner: HeartbeatRunner = HeartbeatPublisher(node),
 ) {
     /**
      * Registers [manifest], starts listening for relay commands, and
@@ -32,9 +35,24 @@ class NodeRuntime(
      * every launched coroutine keeps running until [scope] is cancelled.
      */
     fun start(scope: CoroutineScope, manifest: NodeManifest) {
-        scope.launch { node.register(manifest) }
+        val registration = scope.launch { node.register(manifest) }
         scope.launch { node.listenForCommands() }
         scope.launch { callTriggerMonitor.run() }
         scope.launch { voipTriggerMonitor.run() }
+        // #142: without this the relay reaps this node ~90s after it
+        // registers - and, since #130, publishes a RELEASE to it on the
+        // way out, dropping the headset mid-call.
+        //
+        // Joins `registration` first rather than beating straight away:
+        // the relay only subscribes to a node's heartbeat topic when it
+        // sees that node's *registration* (`relay-service.ts`'s
+        // `handleEvent` -> `trackHeartbeat`), so a beat published before
+        // then lands on a topic nothing is listening to. Registration
+        // also stamps liveness relay-side, so there's no gap to cover by
+        // racing it.
+        scope.launch {
+            registration.join()
+            heartbeatRunner.run()
+        }
     }
 }

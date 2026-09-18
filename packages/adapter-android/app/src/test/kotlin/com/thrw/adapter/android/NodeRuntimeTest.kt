@@ -4,6 +4,7 @@ package com.thrw.adapter.android
 
 import com.thrw.adapter.android.bluetooth.BluetoothClassicGateway
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
+import com.thrw.adapter.android.heartbeat.HeartbeatRunner
 import com.thrw.adapter.android.mqtt.MqttTransport
 import com.thrw.adapter.android.protocol.EventKind
 import com.thrw.adapter.android.protocol.NodeManifest
@@ -60,6 +61,7 @@ private const val NODE = "node-1"
 private const val HEADSET = "AA:BB:CC:DD:EE:FF"
 private const val EVENTS_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/events"
 private const val COMMANDS_TOPIC = "thrw/$ACCOUNT/commands/$NODE"
+private const val HEARTBEAT_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/heartbeat"
 
 private val MANIFEST = NodeManifest(
     nodeId = NODE,
@@ -85,6 +87,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            heartbeatRunner = noHeartbeat(),
         )
 
         runtime.start(this, MANIFEST)
@@ -105,6 +108,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            heartbeatRunner = noHeartbeat(),
         )
 
         runtime.start(this, MANIFEST)
@@ -126,6 +130,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(callSource, node),
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            heartbeatRunner = noHeartbeat(),
         )
 
         runtime.start(this, MANIFEST)
@@ -156,6 +161,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
             voipTriggerMonitor = VoipTriggerMonitor(notificationSource, node),
+            heartbeatRunner = noHeartbeat(),
         )
 
         runtime.start(this, MANIFEST)
@@ -179,6 +185,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(callSource, node),
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            heartbeatRunner = noHeartbeat(),
         )
 
         // The commands subscription (from listenForCommands) never
@@ -192,6 +199,64 @@ class NodeRuntimeTest {
 
         assertTrue(transport.published.any { it.payload.contains("\"call\"") })
     }
+
+    /**
+     * #142: the relay only subscribes to a node's heartbeat topic once it
+     * has seen that node register (`relay-service.ts`'s `handleEvent` ->
+     * `trackHeartbeat`), so a beat published before registration goes to a
+     * topic nothing is listening to. This ordering is a correctness
+     * property, not a test convenience.
+     */
+    @Test
+    fun `the first heartbeat is not published before registration`() = runTest {
+        val transport = RuntimeFakeMqttTransport()
+        val node = AndroidNode(ACCOUNT, NODE, HEADSET, transport, BluetoothConnectionManager(RuntimeRecordingGateway()))
+        val runtime = NodeRuntime(
+            node = node,
+            callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
+            voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            // Beats once and returns, so advanceUntilIdle() terminates.
+            heartbeatRunner = { node.publishHeartbeat() },
+        )
+
+        runtime.start(this, MANIFEST)
+        transport.commands.close()
+        advanceUntilIdle()
+
+        val topics = transport.published.map { it.topic }
+        assertTrue(topics.contains(HEARTBEAT_TOPIC), "expected a heartbeat to be published")
+        assertTrue(
+            topics.indexOf(EVENTS_TOPIC) < topics.indexOf(HEARTBEAT_TOPIC),
+            "the registration must be published before the first heartbeat, got $topics",
+        )
+    }
+
+    @Test
+    fun `the heartbeat runner is actually started by start`() = runTest {
+        val transport = RuntimeFakeMqttTransport()
+        val node = AndroidNode(ACCOUNT, NODE, HEADSET, transport, BluetoothConnectionManager(RuntimeRecordingGateway()))
+        var beats = 0
+        val runtime = NodeRuntime(
+            node = node,
+            callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
+            voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            heartbeatRunner = { beats++ },
+        )
+
+        runtime.start(this, MANIFEST)
+        transport.commands.close()
+        advanceUntilIdle()
+
+        assertEquals(1, beats)
+    }
+
+    /**
+     * A runner that returns immediately. `HeartbeatPublisher.run()` never
+     * returns on its own, so using the real one here would leave
+     * `advanceUntilIdle()` with a `delay` always scheduled and hang the
+     * test forever - see [com.thrw.adapter.android.heartbeat.HeartbeatRunner].
+     */
+    private fun noHeartbeat() = HeartbeatRunner {}
 
     private fun emptyCallStateSource() = object : CallStateSource {
         override fun callStates(): Flow<PhoneCallState> = emptyList<PhoneCallState>().asFlow()

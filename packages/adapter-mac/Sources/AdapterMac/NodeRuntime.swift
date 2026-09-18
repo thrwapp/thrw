@@ -44,14 +44,23 @@ import os
 public final class NodeRuntime {
     private let node: MacNode
     private let voipTriggerMonitor: VoipTriggerMonitor
+    private let heartbeatPublisher: HeartbeatPublisher
 
     #if canImport(os)
     private static let logger = Logger(subsystem: "app.thrw.mac", category: "NodeRuntime")
     #endif
 
-    public init(node: MacNode, voipTriggerMonitor: VoipTriggerMonitor) {
+    /// `heartbeatPublisher` defaults to one beating `node` itself at the
+    /// spec'd interval - callers only pass one explicitly to control
+    /// timing in tests.
+    public init(
+        node: MacNode,
+        voipTriggerMonitor: VoipTriggerMonitor,
+        heartbeatPublisher: HeartbeatPublisher? = nil
+    ) {
         self.node = node
         self.voipTriggerMonitor = voipTriggerMonitor
+        self.heartbeatPublisher = heartbeatPublisher ?? HeartbeatPublisher(sink: node)
     }
 
     /// Registers `manifest`, starts listening for relay commands, and
@@ -76,7 +85,22 @@ public final class NodeRuntime {
         let voipTask = Task {
             await Self.logErrors(from: "voipTriggerMonitor") { try await self.voipTriggerMonitor.run() }
         }
-        return NodeRuntimeHandle(tasks: [registerTask, commandsTask, voipTask])
+        // #142: without this the relay reaps this node ~90s after it
+        // registers - and, since #130, publishes a RELEASE to it on the
+        // way out, dropping the headset mid-call.
+        //
+        // Waits for `registerTask` first, rather than beating straight
+        // away: the relay only subscribes to a node's heartbeat topic
+        // when it sees that node's *registration*
+        // (`relay-service.ts`'s `handleEvent` -> `trackHeartbeat`), so a
+        // beat published before then lands on a topic nothing is
+        // listening to. Registration also stamps the node's liveness on
+        // the relay side, so there is no gap to cover by racing it.
+        let heartbeatTask = Task {
+            _ = await registerTask.result
+            await Self.logErrors(from: "heartbeatPublisher") { try await self.heartbeatPublisher.run() }
+        }
+        return NodeRuntimeHandle(tasks: [registerTask, commandsTask, voipTask, heartbeatTask])
     }
 
     private static func logErrors(from label: String, _ body: () async throws -> Void) async {
