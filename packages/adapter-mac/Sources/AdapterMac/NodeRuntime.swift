@@ -1,0 +1,93 @@
+import Foundation
+import os
+
+/// The composition root's testable half (#128's acceptance criterion 5,
+/// mirroring `adapter-android`'s #96 acceptance criterion 4 - "a
+/// testable factory function or dependency-injection seam"). Plain
+/// Swift, no `AppKit`/`NSApplication` types - tested the same way
+/// `MacNodeTests` already tests ``MacNode``: against fakes, with
+/// `async`/`await`, no host app or run loop required.
+///
+/// The app's `AppDelegate` is the untestable half: it constructs the
+/// *real* dependencies (``MacNode`` wired to ``MQTTNIOTransport``/
+/// ``BluetoothConnectionManager``, a ``VoipTriggerMonitor`` wired to
+/// ``NSWorkspaceRunningApplicationSource``) and hands them to this
+/// class. This class knows nothing about where they came from - Swift
+/// mirror of `adapter-android`'s `NodeRuntime.kt`.
+///
+/// Unlike Kotlin's `CoroutineScope.launch` (an already-existing
+/// structured-concurrency scope every caller has), Swift has no
+/// ambient equivalent - ``start(manifest:)`` creates its own unstructured
+/// `Task`s directly and returns a ``NodeRuntimeHandle`` the caller uses
+/// to cancel them together (the same role `AdapterForegroundService`'s
+/// `job.cancel()` plays for the Kotlin `SupervisorJob`).
+/// `@MainActor`-isolated rather than `Sendable`: ``VoipTriggerMonitor``
+/// (#127) is a plain class with mutable state (`activeBundleIdentifiers`)
+/// and is genuinely not `Sendable`, so a `Sendable` `NodeRuntime` holding
+/// one is an error in the Swift 6 language mode. Main-actor isolation
+/// protects that state instead - and is what this composition root wants
+/// anyway, since ``IOBluetoothPeripheralGateway`` already requires the
+/// main run loop (`docs/handoffs/101.md`). Not an AppKit dependency:
+/// `@MainActor` is plain Swift concurrency, so this type still tests
+/// without a host app (see `NodeRuntimeTests`).
+@MainActor
+public final class NodeRuntime {
+    private let node: MacNode
+    private let voipTriggerMonitor: VoipTriggerMonitor
+    private static let logger = Logger(subsystem: "app.thrw.mac", category: "NodeRuntime")
+
+    public init(node: MacNode, voipTriggerMonitor: VoipTriggerMonitor) {
+        self.node = node
+        self.voipTriggerMonitor = voipTriggerMonitor
+    }
+
+    /// Registers `manifest`, starts listening for relay commands, and
+    /// starts the VoIP trigger monitor - each its own `Task`, so one
+    /// throwing (or, for the monitor, its source stream simply
+    /// completing) doesn't take the others down. Returns immediately;
+    /// every launched task keeps running until cancelled via the
+    /// returned handle.
+    ///
+    /// A task that throws is logged, not silently swallowed and not
+    /// propagated - there's no Android-style OS-level service restart to
+    /// fall back on here if an uncaught error were instead left to crash
+    /// the whole process.
+    @discardableResult
+    public func start(manifest: NodeManifest) -> NodeRuntimeHandle {
+        let registerTask = Task {
+            await Self.logErrors(from: "register") { try await self.node.register(manifest: manifest) }
+        }
+        let commandsTask = Task {
+            await Self.logErrors(from: "listenForCommands") { try await self.node.listenForCommands() }
+        }
+        let voipTask = Task {
+            await Self.logErrors(from: "voipTriggerMonitor") { try await self.voipTriggerMonitor.run() }
+        }
+        return NodeRuntimeHandle(tasks: [registerTask, commandsTask, voipTask])
+    }
+
+    private static func logErrors(from label: String, _ body: () async throws -> Void) async {
+        do {
+            try await body()
+        } catch is CancellationError {
+            // Expected on NodeRuntimeHandle.cancel() / app quit - not an error.
+        } catch {
+            logger.error("\(label, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+}
+
+/// Cancellation handle for the tasks ``NodeRuntime/start(manifest:)``
+/// launches - the composition root's equivalent of cancelling
+/// `AdapterForegroundService`'s `SupervisorJob` on `onDestroy()`.
+public struct NodeRuntimeHandle: Sendable {
+    private let tasks: [Task<Void, Never>]
+
+    init(tasks: [Task<Void, Never>]) {
+        self.tasks = tasks
+    }
+
+    public func cancel() {
+        for task in tasks { task.cancel() }
+    }
+}
