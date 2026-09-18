@@ -4,6 +4,7 @@ import com.thrw.adapter.android.heartbeat.HeartbeatPublisher
 import com.thrw.adapter.android.heartbeat.HeartbeatRunner
 import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.triggers.CallTriggerMonitor
+import com.thrw.adapter.android.triggers.MediaTriggerMonitor
 import com.thrw.adapter.android.triggers.VoipTriggerMonitor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -25,6 +26,7 @@ class NodeRuntime(
     private val node: AndroidNode,
     private val callTriggerMonitor: CallTriggerMonitor,
     private val voipTriggerMonitor: VoipTriggerMonitor,
+    private val mediaTriggerMonitor: MediaTriggerMonitor,
     private val heartbeatRunner: HeartbeatRunner = HeartbeatPublisher(node),
 ) {
     /**
@@ -39,6 +41,7 @@ class NodeRuntime(
         scope.launch { node.listenForCommands() }
         scope.launch { callTriggerMonitor.run() }
         scope.launch { voipTriggerMonitor.run() }
+        scope.launch { mediaTriggerMonitor.run() }
         // #142: without this the relay reaps this node ~90s after it
         // registers - and, since #130, publishes a RELEASE to it on the
         // way out, dropping the headset mid-call.

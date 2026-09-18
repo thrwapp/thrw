@@ -16,7 +16,11 @@ import com.thrw.adapter.android.identity.AdapterProvisioning
 import com.thrw.adapter.android.identity.DeviceIdentity
 import com.thrw.adapter.android.mqtt.HiveMqttTransport
 import com.thrw.adapter.android.triggers.AndroidCallStateSource
+import android.content.ComponentName
+import com.thrw.adapter.android.triggers.AndroidMediaSessionSource
+import com.thrw.adapter.android.triggers.AndroidNotificationListenerService
 import com.thrw.adapter.android.triggers.AndroidNotificationSource
+import com.thrw.adapter.android.triggers.MediaTriggerMonitor
 import com.thrw.adapter.android.triggers.CallTriggerMonitor
 import com.thrw.adapter.android.triggers.VoipTriggerMonitor
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -130,8 +134,17 @@ class AdapterForegroundService : Service() {
 
             val callMonitor = CallTriggerMonitor(AndroidCallStateSource(this@AdapterForegroundService), node)
             val voipMonitor = VoipTriggerMonitor(AndroidNotificationSource(), node)
+            // #165: media (rule 4). Uses the notification-listener access
+            // the VoIP trigger already required, so no new permission.
+            val mediaMonitor = MediaTriggerMonitor(
+                AndroidMediaSessionSource(
+                    this@AdapterForegroundService,
+                    ComponentName(this@AdapterForegroundService, AndroidNotificationListenerService::class.java),
+                ),
+                node,
+            )
 
-            NodeRuntime(node, callMonitor, voipMonitor).start(scope, manifest)
+            NodeRuntime(node, callMonitor, voipMonitor, mediaMonitor).start(scope, manifest)
         }
 
         // Provisioning is re-read from SharedPreferences on every call
