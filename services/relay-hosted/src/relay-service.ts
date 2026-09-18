@@ -234,19 +234,28 @@ export class RelayService {
 
   private sweepHeartbeats(state: AccountState): void {
     const cutoff = this.now() - this.heartbeatTimeoutMs;
+    let forgotAny = false;
     for (const [node, lastSeenAt] of state.lastHeartbeatAt) {
       if (lastSeenAt < cutoff) {
         // Acceptance criterion 2's "gone" definition: three missed
-        // heartbeat intervals. DeviceRegistry.unregister is the one part
-        // of this cleanup PriorityEngine/DeviceRegistry's existing API
-        // actually supports - see docs/handoffs/118.md's "Known gaps" for
-        // why any signal this node had active in PriorityEngine is *not*
-        // cleared here.
+        // heartbeat intervals. Previously only DeviceRegistry.unregister
+        // ran here - PriorityEngine had no equivalent, so a node that
+        // went silent mid-call could keep currentHolder() reporting it
+        // as the winner forever (docs/handoffs/118.md's "Known gaps").
+        // PriorityEngine.forgetNode (#130) is that equivalent.
         state.registry.unregister(node);
+        state.engine.forgetNode(node);
         state.lastHeartbeatAt.delete(node);
         state.heartbeatSubscribed.delete(node);
+        forgotAny = true;
       }
     }
+    // forgetNode can change currentHolder() synchronously (no auto-return
+    // timer involved - see its own kdoc), unlike a normal recordEvent/
+    // endEvent whose holder-change notification already rides
+    // observingScheduler's wrapped timer callback. Nothing else calls
+    // syncHolder after a sweep, so this is the one place that needs to.
+    if (forgotAny) this.syncHolder(state.account);
     state.sweepHandle = this.scheduler.setTimeout(
       () => this.sweepHeartbeats(state),
       this.heartbeatSweepIntervalMs,

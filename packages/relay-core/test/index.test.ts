@@ -180,4 +180,96 @@ describe("@thrw/relay-core", () => {
     scheduler.fire(5_000);
     expect(engine.currentHolder()).toBe("node-a");
   });
+
+  describe("forgetNode (#130)", () => {
+    it("is a no-op for a node with no active signals", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "media");
+      expect(engine.currentHolder()).toBe("node-a");
+
+      engine.forgetNode("node-never-seen");
+
+      expect(engine.currentHolder()).toBe("node-a");
+    });
+
+    it("changes the holder when the forgotten node held it via an active (non-call) signal, falling back to another active node", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "manual_claim");
+      engine.recordEvent("node-b", "media");
+      expect(engine.currentHolder()).toBe("node-a");
+
+      engine.forgetNode("node-a");
+
+      expect(engine.currentHolder()).toBe("node-b");
+    });
+
+    it("falls back to null when the forgotten node was the only active holder, with nothing else to fall back to", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "manual_claim");
+      expect(engine.currentHolder()).toBe("node-a");
+
+      engine.forgetNode("node-a");
+
+      expect(engine.currentHolder()).toBeNull();
+    });
+
+    it("has no visible effect on currentHolder() when forgetting a node that wasn't the holder", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "call");
+      engine.recordEvent("node-b", "media");
+      expect(engine.currentHolder()).toBe("node-a");
+
+      engine.forgetNode("node-b");
+
+      expect(engine.currentHolder()).toBe("node-a");
+    });
+
+    it("mid-call: immediately returns the claim to the previous holder, without waiting for the auto-return timeout", () => {
+      const scheduler = new FakeScheduler();
+      const engine = new PriorityEngine({ scheduler });
+
+      engine.recordEvent("node-a", "media");
+      engine.endEvent("node-a", "media");
+      expect(engine.currentHolder()).toBe("node-a");
+
+      engine.recordEvent("node-b", "call");
+      expect(engine.currentHolder()).toBe("node-b");
+
+      engine.forgetNode("node-b");
+
+      // Immediate, unlike a graceful endEvent("node-b", "call") - see
+      // forgetNode's own kdoc for why no auto-return grace period
+      // applies to a node that went silent.
+      expect(engine.currentHolder()).toBe("node-a");
+      expect(scheduler.pendingCount()).toBe(0);
+    });
+
+    it("mid-call with no previous holder: falls back to null immediately", () => {
+      const scheduler = new FakeScheduler();
+      const engine = new PriorityEngine({ scheduler });
+
+      engine.recordEvent("node-a", "call");
+      expect(engine.currentHolder()).toBe("node-a");
+
+      engine.forgetNode("node-a");
+
+      expect(engine.currentHolder()).toBeNull();
+      expect(scheduler.pendingCount()).toBe(0);
+    });
+
+    it("mid-call with another node still on the call: does not resolve the call early", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "media");
+      engine.endEvent("node-a", "media");
+      engine.recordEvent("node-b", "call");
+      engine.recordEvent("node-c", "call");
+      expect(engine.currentHolder()).toBe("node-c");
+
+      engine.forgetNode("node-c");
+
+      // node-b's call is still active - the overall call session hasn't
+      // ended, so no fallback/auto-return logic should fire at all.
+      expect(engine.currentHolder()).toBe("node-b");
+    });
+  });
 });
