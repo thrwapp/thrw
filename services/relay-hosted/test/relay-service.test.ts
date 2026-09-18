@@ -233,6 +233,33 @@ describe("RelayService (real broker)", () => {
     expect(service.registryFor(account)?.getById(nodeA.nodeId)).toBeUndefined();
   });
 
+  it("forgets a silent node's PriorityEngine signals too (#130), publishing a real RELEASE when it was mid-call", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["call"] });
+    const scheduler = new FakeScheduler();
+    let now = 0;
+    const service = await startService([account], scheduler, () => now);
+
+    const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+    // A holds the claim via an ordinary call, then goes silent mid-call -
+    // never sends event_end. Before #130, PriorityEngine kept reporting A
+    // as the winner forever (docs/handoffs/118.md's "Known gaps").
+    await publishRegistration(rawClient, account, nodeA);
+    await publishEvent(rawClient, account, nodeA.nodeId, "call");
+    await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+    expect(service.engineFor(account)?.currentHolder()).toBe(nodeA.nodeId);
+
+    now += 90_001;
+    scheduler.fire(5_000);
+
+    // forgetNode's own "no auto-return grace period for a silently-gone
+    // node" judgment call means this is immediate - no second sweep or
+    // timer fire needed.
+    expect(service.engineFor(account)?.currentHolder()).toBeNull();
+    await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }, { type: "release" }]);
+  });
+
   it("drops an unrecognized payload shape instead of throwing or registering anything", async () => {
     const account = randomUUID();
     const node = randomUUID();

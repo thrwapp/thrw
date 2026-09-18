@@ -110,6 +110,55 @@ export class PriorityEngine {
     return this.computeActiveHolder() ?? this.lastClaimed;
   }
 
+  /**
+   * Removes `nodeId` entirely from tracked signals - for a node that has
+   * gone silent (missed heartbeats) rather than sent a normal
+   * `event_end` for whatever it had active (#130, closing the gap
+   * `docs/handoffs/118.md`'s "Known gaps" flagged: nothing else here
+   * ever stops reporting a vanished node as the winner).
+   *
+   * Unlike `endEvent`, which clears one signal kind on a node the relay
+   * still expects to hear from again, this treats the node as gone from
+   * the system altogether: it can no longer be reported as the current
+   * holder by any means, including the rule-5 last-claimed fallback -
+   * `syncLastClaimed` alone would leave that fallback stale here, since
+   * it only ever *sets* `lastClaimed`, never clears it (see its own
+   * implementation below).
+   *
+   * Judgment call (acceptance criterion 3): a node going silent mid-call
+   * is *not* treated the same as a normal call end. The 90s auto-return
+   * grace period (`recordEvent`/`endEvent`'s `scheduleReturn`) exists to
+   * avoid yanking a claim away right after a *graceful* end, in case the
+   * same node reclaims it again almost immediately. A silently-departed
+   * node has no session left to protect, so the previous holder gets the
+   * claim back immediately here rather than waiting out
+   * `DEFAULT_AUTO_RETURN_MS` for no reason.
+   */
+  forgetNode(nodeId: string): void {
+    const nodeSignals = this.signals.get(nodeId);
+    if (!nodeSignals) return;
+
+    const hadActiveCall = nodeSignals.has("call");
+    this.signals.delete(nodeId);
+
+    let immediateFallback: string | null = null;
+    if (hadActiveCall && !this.hasActiveCallSomewhere()) {
+      immediateFallback = this.previousHolderBeforeCall;
+      this.previousHolderBeforeCall = null;
+    }
+
+    this.syncLastClaimed();
+
+    // syncLastClaimed only ever *sets* lastClaimed when there's an active
+    // holder (see its own implementation) - it was never meant to detect
+    // "the thing it's currently pointing at no longer exists". That's
+    // this method's own job: only forgetNode (not endEvent) means the
+    // node itself is gone, not just one of its signals.
+    if (this.lastClaimed === nodeId) {
+      this.lastClaimed = this.computeActiveHolder() ?? immediateFallback;
+    }
+  }
+
   private hasActiveCallSomewhere(): boolean {
     for (const nodeSignals of this.signals.values()) {
       if (nodeSignals.has("call")) return true;
