@@ -1,5 +1,15 @@
 import Foundation
+
+// `os` (and `os.Logger`) is an Apple-platform module - it does not exist
+// on Linux, where this repo's agent-code/agent-eval automation runs
+// `swift test` (see Package.swift's own comment on the same constraint).
+// Unlike AppKit, which is confined to the macOS-only AdapterMacApp
+// target, this file is part of the AdapterMac *library* target, which
+// does build on Linux - so the import has to be conditional and needs a
+// real fallback, not an empty one.
+#if canImport(os)
 import os
+#endif
 
 /// The composition root's testable half (#128's acceptance criterion 5,
 /// mirroring `adapter-android`'s #96 acceptance criterion 4 - "a
@@ -34,7 +44,10 @@ import os
 public final class NodeRuntime {
     private let node: MacNode
     private let voipTriggerMonitor: VoipTriggerMonitor
+
+    #if canImport(os)
     private static let logger = Logger(subsystem: "app.thrw.mac", category: "NodeRuntime")
+    #endif
 
     public init(node: MacNode, voipTriggerMonitor: VoipTriggerMonitor) {
         self.node = node
@@ -72,8 +85,21 @@ public final class NodeRuntime {
         } catch is CancellationError {
             // Expected on NodeRuntimeHandle.cancel() / app quit - not an error.
         } catch {
-            logger.error("\(label, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            logError("\(label) failed: \(String(describing: error))")
         }
+    }
+
+    /// `os.Logger` on Apple platforms (what `log stream`/Console.app
+    /// pick up from the real menu-bar app), stderr on Linux, where that
+    /// module doesn't exist. Not silently dropped on the non-Apple path:
+    /// a swallowed error here would make a failing node look like an
+    /// idle one.
+    private static func logError(_ message: String) {
+        #if canImport(os)
+        logger.error("\(message, privacy: .public)")
+        #else
+        FileHandle.standardError.write(Data("NodeRuntime: \(message)\n".utf8))
+        #endif
     }
 }
 
