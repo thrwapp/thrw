@@ -1,12 +1,12 @@
 import Foundation
 
-// `os` (and `os.Logger`) is an Apple-platform module - it does not exist
-// on Linux, where this repo's agent-code/agent-eval automation runs
-// `swift test` (see Package.swift's own comment on the same constraint).
-// Unlike AppKit, which is confined to the macOS-only AdapterMacApp
-// target, this file is part of the AdapterMac *library* target, which
-// does build on Linux - so the import has to be conditional and needs a
-// real fallback, not an empty one.
+// `os` (and `os.Logger`) is an Apple-platform module that does not exist
+// on Linux. Unlike AppKit, which is confined to the macOS-only
+// AdapterMacApp target, this file is part of the AdapterMac *library*
+// target, which does build on Linux - so the import has to be
+// conditional and needs a real fallback, not an empty one. See
+// Package.swift's `#if os(macOS)` comment for who actually builds this
+// on Linux today (nothing in this repo does).
 #if canImport(os)
 import os
 #endif
