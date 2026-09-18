@@ -13,6 +13,14 @@ packages/adapter-android/.gradle/
 packages/adapter-android/**/build/
 packages/adapter-android/local.properties
 
+# Play Store upload key (#132). Deliberately broad and repo-wide rather than
+# scoped to adapter-android: a keystore accidentally saved anywhere in this
+# tree must not be committable. Losing the upload key is recoverable via Play
+# Console; publishing one is not.
+keystore.properties
+*.jks
+*.keystore
+
 # Swift
 packages/adapter-mac/.build/
 packages/adapter-mac/.swiftpm/
