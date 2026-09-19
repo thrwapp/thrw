@@ -16,3 +16,6 @@
 | [0012](./0012-proactive-conflict-resolution.md) | Proactively detect and help resolve competing connection managers | Accepted |
 | [0013](./0013-connection-state-machine-reconciliation.md) | Connection state machine — cooldown is adapter-local, not a node-interface state | Accepted |
 | [0014](./0014-manual-claim-node-capability.md) | `claimMode` capability in the node manifest, for platforms with no programmatic Bluetooth control | Proposed |
+| [0015](./0015-typed-resources.md) | Typed resources — audio and HID share claim/release, not priority rules | Accepted |
+| [0016](./0016-ambient-focus-tracking.md) | Ambient focus tracking as the default-holder layer | Accepted |
+| [0017](./0017-ai-scope.md) | AI scope — local classification for decisions, LLM for explanation only | Accepted |
