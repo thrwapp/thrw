@@ -265,6 +265,103 @@ live server-side in the relay, never duplicated in adapters, so two
 adapters can never disagree about the current rule version after a
 partial rollout.
 
+## Resource types
+
+thrw manages **typed resources**, not just audio (ADR 0015). Two exist:
+
+- **`audio`** — the headset connection. Governed by the interrupt-driven
+  priority rules below (call > manual claim > VoIP > media >
+  last-claimed).
+- **`hid`** — keyboard/mouse peripherals. Governed by the focus-driven
+  stack instead: ambient focus score (ADR 0016) > manual claim. No
+  interrupt-layer logic, because "a call is ringing" has no sensible
+  bearing on which device should have the keyboard.
+
+The claim/release, cooldown and conflict-detection machinery (ADR 0010)
+is identical across resource types; only the priority-rule *profile*
+differs. Each adapter's manifest declares which resource types it can
+control — a Linux desktop adapter might support `hid` but not `audio`.
+
+Unlike AirPods, most modern peripherals (Logitech Bolt/Unifying, Apple
+Magic Keyboard/Trackpad) already support multi-host pairing in firmware
+over a standard Bluetooth HID profile, so `hid` needs no reverse
+engineering. HID also connects faster than audio, having no codec
+negotiation step.
+
+### ⚠️ Breaking change to the topic structure
+
+ADR 0015 adds a resource-type segment to the topics frozen by ADR 0001:
+
+    thrw/{account}/nodes/{node}/{resource_type}/events
+    thrw/{account}/commands/{node}/{resource_type}
+    thrw/{account}/state/{resource_type}
+
+**This is not yet implemented, and the running system predates it.** The
+Mac and Pixel adapters are deployed against the pre-0015 topics
+documented under "MQTT topic design" above. Old and new structures are
+mutually incompatible, so `packages/protocol`, `packages/relay-core`,
+`services/relay-hosted`, both adapters and the deployed relay change
+together.
+
+With **no customers and two devices**, that is a flag day, not a
+project: update, redeploy, reinstall. No compatibility window or staged
+rollout is needed. It should be done before more adapters exist to
+migrate — which is the actual reason to do it early.
+
+## Focus tracking
+
+Beneath the interrupt-driven priority rules sits an **ambient layer**
+(ADR 0016). Each adapter computes a local focus score (0.0–1.0, decaying
+since the last positive signal) from whatever attention signals its
+platform exposes — input activity, foreground app, screen/lid state,
+Bluetooth RSSI trend, idle time — and publishes it on:
+
+    thrw/{account}/nodes/{node}/focus
+
+Adapters publish on meaningful transitions (idle↔active) or at most
+every 5–10 seconds during sustained activity, never per keystroke.
+
+The relay derives a per-account, per-resource-type **ambient holder**
+from the highest current score, and uses it as the default when no
+interrupt rule or manual claim applies. This *replaces* "last-claimed
+node keeps it" as the fallback with a signal that actually reflects
+where the user is. For `hid` it is normally the entire mechanism.
+
+This sits beneath the existing stack rather than replacing it: ADR
+0002's interrupt rules and ADR 0011's pre-claim are unchanged for audio.
+
+## AI scope
+
+AI is deliberately split three ways (ADR 0017), because "add AI" spans
+problems with very different latency and reliability needs:
+
+1. **Focus-score calibration** — combining each adapter's raw signal
+   vector into one score. A small per-user classifier (logistic
+   regression / small decision tree), retrained periodically in
+   `services/ai-engine`. **Explicitly not an LLM**: it must evaluate in
+   milliseconds with no network variance.
+2. **Pre-claim confidence** — learning per user which early signals
+   reliably precede a real switch, extending ADR 0011 beyond its
+   conservative ringing-call-only scope. Same technique, same locality
+   constraint.
+3. **Explanation and recommendation** — in-app insights and ADR 0012's
+   misconfiguration advice. This *is* LLM work: not latency-sensitive,
+   and language quality is the point. Routed via Vertex per ADR 0008,
+   Sonnet-tier.
+
+The switching decision itself must be fast, debuggable and
+offline-capable — none of which an LLM call provides. The classifier
+should be invisible and simply correct; the insights surface is where
+the intelligence becomes visible.
+
+Both classifier roles depend on per-user history, so
+`services/telemetry` (M8) must exist as a collection path first —
+though dogfooding can generate real switch events quickly, so this is a
+build-it constraint rather than a wait-for-it one. The heuristic
+fallback is still the first thing to build: it is what every new user
+runs until they have their own history, so it stays on the critical
+path permanently.
+
 ## Priority rules (current, server-side, editable without redeploying
 adapters)
 

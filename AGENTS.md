@@ -78,6 +78,26 @@ The node interface's connection state machine (idle / pre-claim / claim
 defined in ADR 0010 and ADR 0011 is a frozen contract in the same way.
 Changes require an ADR and human review, not a routine agent PR.
 
+The **resource-type segment** in MQTT topics (ADR 0015) and the
+**focus topic** (ADR 0016) are part of that same frozen contract:
+
+    thrw/{account}/nodes/{node}/{resource_type}/events
+    thrw/{account}/commands/{node}/{resource_type}
+    thrw/{account}/state/{resource_type}
+    thrw/{account}/nodes/{node}/focus
+
+Changes require an ADR and human review.
+
+**Note for whoever picks this up:** the currently-running Mac/Pixel
+implementation was built against the pre-ADR-0015 topic structure, with
+no resource-type segment, and is deployed and working against the live
+relay. Adopting ADR 0015 requires a migration — `packages/protocol`'s
+topic builders, `packages/relay-core`, `services/relay-hosted` and both
+adapters, changed together, since the two structures are mutually
+incompatible. With no customers and two devices this is a flag day
+rather than a staged rollout, and it should land **before** any
+peripheral (hid) adapter work is built on the old structure.
+
 ## Build-time configuration, not hardcoded endpoints
 
 Per ADR 0005, every adapter must read its relay URL and licensing
