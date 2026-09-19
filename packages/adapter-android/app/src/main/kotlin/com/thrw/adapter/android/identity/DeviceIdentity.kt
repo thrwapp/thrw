@@ -38,7 +38,8 @@ object DeviceIdentity {
      * [NodeManifest.supportedEventKinds] lists only [EventKind.CALL] and
      * [EventKind.VOIP] - the two triggers this adapter actually has a
      * `triggers/` monitor for ([CallTriggerMonitor]/[VoipTriggerMonitor]).
-     * [EventKind.MEDIA] has no detector anywhere in this codebase yet, and
+     * [EventKind.MEDIA] is detected by [com.thrw.adapter.android.triggers.MediaTriggerMonitor]
+     * as of #165, so it is advertised too. Previously it had no detector, and
      * [EventKind.MANUAL_CLAIM] isn't something this node spontaneously
      * emits (there's no UI to trigger it) - so neither is claimed here,
      * rather than advertising a capability nothing produces.
@@ -48,6 +49,6 @@ object DeviceIdentity {
         platform = Platform.ANDROID,
         displayName = Build.MODEL,
         adapterVersion = BuildConfig.VERSION_NAME,
-        supportedEventKinds = listOf(EventKind.CALL, EventKind.VOIP),
+        supportedEventKinds = listOf(EventKind.CALL, EventKind.VOIP, EventKind.MEDIA),
     )
 }

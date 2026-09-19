@@ -11,6 +11,9 @@ import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.protocol.Platform
 import com.thrw.adapter.android.protocol.ProtocolJson
 import com.thrw.adapter.android.triggers.CallStateSource
+import com.thrw.adapter.android.triggers.MediaSessionEvent
+import com.thrw.adapter.android.triggers.MediaSessionSource
+import com.thrw.adapter.android.triggers.MediaTriggerMonitor
 import com.thrw.adapter.android.triggers.CallTriggerMonitor
 import com.thrw.adapter.android.triggers.NotificationEvent
 import com.thrw.adapter.android.triggers.NotificationSource
@@ -87,6 +90,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = noHeartbeat(),
         )
 
@@ -108,6 +112,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = noHeartbeat(),
         )
 
@@ -130,6 +135,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(callSource, node),
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = noHeartbeat(),
         )
 
@@ -161,6 +167,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
             voipTriggerMonitor = VoipTriggerMonitor(notificationSource, node),
+            mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = noHeartbeat(),
         )
 
@@ -185,6 +192,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(callSource, node),
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = noHeartbeat(),
         )
 
@@ -216,6 +224,7 @@ class NodeRuntimeTest {
             callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
             // Beats once and returns, so advanceUntilIdle() terminates.
+            mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = { node.publishHeartbeat() },
         )
 
@@ -240,6 +249,7 @@ class NodeRuntimeTest {
             node = node,
             callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = { beats++ },
         )
 
@@ -257,6 +267,10 @@ class NodeRuntimeTest {
      * test forever - see [com.thrw.adapter.android.heartbeat.HeartbeatRunner].
      */
     private fun noHeartbeat() = HeartbeatRunner {}
+
+    private fun emptyMediaSessionSource() = object : MediaSessionSource {
+        override fun sessions(): Flow<MediaSessionEvent> = emptyList<MediaSessionEvent>().asFlow()
+    }
 
     private fun emptyCallStateSource() = object : CallStateSource {
         override fun callStates(): Flow<PhoneCallState> = emptyList<PhoneCallState>().asFlow()
