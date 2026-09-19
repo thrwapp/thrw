@@ -354,10 +354,13 @@ offline-capable — none of which an LLM call provides. The classifier
 should be invisible and simply correct; the insights surface is where
 the intelligence becomes visible.
 
-Both classifier roles depend on per-user history, which needs
-`services/telemetry` (M8) collecting first — so the heuristic fallback
-is the first thing to build, not the last, and is what every new user
-runs on indefinitely.
+Both classifier roles depend on per-user history, so
+`services/telemetry` (M8) must exist as a collection path first —
+though dogfooding can generate real switch events quickly, so this is a
+build-it constraint rather than a wait-for-it one. The heuristic
+fallback is still the first thing to build: it is what every new user
+runs until they have their own history, so it stays on the critical
+path permanently.
 
 ## Priority rules (current, server-side, editable without redeploying
 adapters)

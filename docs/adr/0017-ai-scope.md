@@ -74,9 +74,15 @@ personalization pattern should be called out explicitly in
 services/ai-engine's own README so it isn't lost as a "TODO" that
 never gets built.
 
-**Training data does not exist yet.** Per-user classifiers need that
-user's historical switch events, which means `services/telemetry` (M8)
-must exist and have been collecting for some time before role #1 or #2
-can do anything but fall back. The fallback path is therefore the
-*first* thing to build, not the last — and will be the only thing
-running for every new user indefinitely.
+**Training data has to be collected before either classifier is real,
+but not waited for.** Roles #1 and #2 need per-user switch history, so
+`services/telemetry` (M8) must exist as a collection path first. What
+that does *not* require is waiting out organic usage: dogfooding on the
+developer's own devices can generate a meaningful volume of real switch
+events in a single session, so the constraint is building the collection
+path, not calendar time.
+
+The fallback heuristic is still the *first* thing to build, for a
+different reason than scarcity: it is what every genuinely new user runs
+until they have accumulated their own history, so it is permanently on
+the critical path rather than a temporary scaffold.
