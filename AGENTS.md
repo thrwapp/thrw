@@ -93,9 +93,10 @@ implementation was built against the pre-ADR-0015 topic structure, with
 no resource-type segment, and is deployed and working against the live
 relay. Adopting ADR 0015 requires a migration — `packages/protocol`'s
 topic builders, `packages/relay-core`, `services/relay-hosted` and both
-adapters, cut over together, since the two structures are mutually
-incompatible. That migration must land **before** any peripheral (hid)
-adapter work is built on the old structure.
+adapters, changed together, since the two structures are mutually
+incompatible. With no customers and two devices this is a flag day
+rather than a staged rollout, and it should land **before** any
+peripheral (hid) adapter work is built on the old structure.
 
 ## Build-time configuration, not hardcoded endpoints
 

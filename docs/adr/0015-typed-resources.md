@@ -69,11 +69,16 @@ Mac/Pixel audio implementation is built, since retrofitting a resource
 type segment into an already-deployed topic structure would require a
 migration.
 
-**Migration is not hypothetical.** As of this ADR the Mac and Pixel
-adapters are running against the pre-0015 topics, authenticated to the
-live relay, and have been verified end-to-end on real hardware. The
-migration issue must cover `packages/protocol`'s topic builders,
-`packages/relay-core`, `services/relay-hosted`, both adapters, and the
-deployed relay — and the deployed `relay-service` and any running
-adapter will be incompatible across the change, so it is a coordinated
-cutover rather than a rolling one.
+**Migration is real but cheap, and should be done now.** As of this ADR
+the Mac and Pixel adapters run against the pre-0015 topics against the
+live relay, verified end-to-end on real hardware. Old and new topic
+structures are mutually incompatible, so `packages/protocol`'s topic
+builders, `packages/relay-core`, `services/relay-hosted`, both adapters
+and the deployed relay all change together.
+
+That sounds heavier than it is: there are **no customers and exactly two
+devices**, both the developer's own. A flag-day change — update the code,
+redeploy the relay, reinstall both apps — is entirely acceptable and
+needs no compatibility window, dual-subscription shim, or staged
+rollout. The only real cost is doing it before more adapters exist to
+migrate, which is why this ADR says to do it first.

@@ -298,13 +298,15 @@ ADR 0015 adds a resource-type segment to the topics frozen by ADR 0001:
 
 **This is not yet implemented, and the running system predates it.** The
 Mac and Pixel adapters are deployed against the pre-0015 topics
-documented under "MQTT topic design" above, authenticated to the live
-relay and verified end-to-end on real hardware. Migrating means changing
-`packages/protocol`'s topic builders, `packages/relay-core`,
-`services/relay-hosted`, both adapters and the deployed relay together —
-old and new topic structures are mutually incompatible, so it is a
-coordinated cutover, not a rolling one. That migration must land before
-any `hid` adapter work is built on the old structure.
+documented under "MQTT topic design" above. Old and new structures are
+mutually incompatible, so `packages/protocol`, `packages/relay-core`,
+`services/relay-hosted`, both adapters and the deployed relay change
+together.
+
+With **no customers and two devices**, that is a flag day, not a
+project: update, redeploy, reinstall. No compatibility window or staged
+rollout is needed. It should be done before more adapters exist to
+migrate — which is the actual reason to do it early.
 
 ## Focus tracking
 
