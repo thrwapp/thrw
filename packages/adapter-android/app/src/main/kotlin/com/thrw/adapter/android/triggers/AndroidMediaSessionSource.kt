@@ -5,6 +5,8 @@ import android.content.Context
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.os.Handler
+import android.os.Looper
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -41,6 +43,22 @@ class AndroidMediaSessionSource(
             return@callbackFlow
         }
 
+        // Every registration below must happen on a thread with a Looper:
+        // both `addOnActiveSessionsChangedListener` and
+        // `MediaController.registerCallback` build a `Handler` from the
+        // *calling* thread when they aren't given one, and this flow is
+        // collected on `Dispatchers.Default`, whose workers have no Looper.
+        // On a real device that threw `Can't create handler inside thread
+        // ... that has not called Looper.prepare()` and took the whole
+        // media trigger out - see #174. The framework offers no Executor
+        // overload here (checked against android-35), so an explicit
+        // main-looper Handler is the fix.
+        //
+        // Doing all of it on one thread also makes `callbacks` below
+        // single-threaded: it was previously reachable from both the
+        // collecting coroutine and the listener callback at once.
+        val handler = Handler(Looper.getMainLooper())
+
         // One callback per controller, tracked so they can be
         // unregistered when the controller set changes or the flow ends -
         // a leaked callback keeps a dead controller alive and reports
@@ -61,17 +79,37 @@ class AndroidMediaSessionSource(
             }
 
             for ((key, controller) in live) {
-                if (callbacks.containsKey(key)) continue
+                // Identity is the *session token*, not the package (#175).
+                // A package is stable across controller instances, which is
+                // precisely why "this package is already in the map" cannot
+                // tell us the session was replaced. An app that destroys and
+                // recreates its session - relaunching, or Spotify moving
+                // between local and Connect playback - keeps its package in
+                // `live`, so the `callbacks - live.keys` pass above removes
+                // nothing and a package check would skip the new controller
+                // forever, leaving this bound to a dead one and deaf to that
+                // app. `MediaSession.Token` has value equality, so it is the
+                // right test here.
+                val existing = callbacks[key]
+                if (existing != null && existing.first.sessionToken == controller.sessionToken) continue
+                if (existing != null) {
+                    existing.first.unregisterCallback(existing.second)
+                    callbacks.remove(key)
+                }
                 val cb = object : MediaController.Callback() {
                     override fun onPlaybackStateChanged(state: PlaybackState?) {
                         trySend(MediaSessionEvent.Changed(MediaSessionState(key, playing(state))))
                     }
 
                     override fun onSessionDestroyed() {
+                        // Drop the entry as well as reporting it: leaving a
+                        // destroyed controller in the map is what made this
+                        // deaf to the app's next session (#175).
+                        callbacks.remove(key)
                         trySend(MediaSessionEvent.Gone(key))
                     }
                 }
-                controller.registerCallback(cb)
+                controller.registerCallback(cb, handler)
                 callbacks[key] = controller to cb
                 // Emit the current state immediately: registerCallback does
                 // not replay, so a session already playing when this starts
@@ -83,13 +121,29 @@ class AndroidMediaSessionSource(
         val onActiveSessionsChanged =
             MediaSessionManager.OnActiveSessionsChangedListener { controllers -> rebind(controllers.orEmpty()) }
 
-        manager.addOnActiveSessionsChangedListener(onActiveSessionsChanged, listenerComponent)
-        rebind(manager.getActiveSessions(listenerComponent))
+        handler.post {
+            // Anything thrown here is on the main looper, outside the node
+            // runtime's CoroutineExceptionHandler (#161) - uncaught, it
+            // kills the process rather than degrading one trigger. So it
+            // closes the flow instead: `getActiveSessions` throws
+            // SecurityException if notification-listener access is revoked
+            // while running, which is a survivable loss of this trigger.
+            try {
+                manager.addOnActiveSessionsChangedListener(onActiveSessionsChanged, listenerComponent, handler)
+                rebind(manager.getActiveSessions(listenerComponent))
+            } catch (e: Exception) {
+                close(e)
+            }
+        }
 
         awaitClose {
-            manager.removeOnActiveSessionsChangedListener(onActiveSessionsChanged)
-            callbacks.values.forEach { (controller, cb) -> controller.unregisterCallback(cb) }
-            callbacks.clear()
+            // Also on the handler, so unregistering can't race a callback
+            // that is mid-flight on the main looper.
+            handler.post {
+                manager.removeOnActiveSessionsChangedListener(onActiveSessionsChanged)
+                callbacks.values.forEach { (controller, cb) -> controller.unregisterCallback(cb) }
+                callbacks.clear()
+            }
         }
     }
 }
