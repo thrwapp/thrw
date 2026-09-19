@@ -135,6 +135,34 @@ export class PriorityEngine {
    * `DEFAULT_AUTO_RETURN_MS` for no reason.
    */
   forgetNode(nodeId: string): void {
+    this.dropSignals(nodeId, { nodeIsGone: true });
+  }
+
+  /**
+   * Clears everything `nodeId` had active because its adapter **restarted**
+   * - as opposed to `forgetNode`'s "it went silent and is gone" (#173).
+   *
+   * A registration is the signal: a node registers once per node-runtime
+   * start (`NodeRuntime`), never on an MQTT reconnect, so a registration
+   * from a node the relay already knows about means a fresh process. A
+   * fresh process has no active triggers - whatever it had recorded here
+   * can never be ended by an `event_end`, because the monitor that would
+   * have sent one no longer exists. Left in place, a stale signal pins
+   * the route to that node permanently.
+   *
+   * The one difference from `forgetNode`, and the whole reason this
+   * exists separately: **`lastClaimed` is preserved**. The node is still
+   * here. Clearing the rule-5 fallback would move the headset away from
+   * the device you are actually using every time its app restarted;
+   * keeping it means the relay still considers this node the holder and
+   * can re-assert the claim, which is what
+   * `RelayService.handleEvent` does on the back of this.
+   */
+  restartNode(nodeId: string): void {
+    this.dropSignals(nodeId, { nodeIsGone: false });
+  }
+
+  private dropSignals(nodeId: string, { nodeIsGone }: { nodeIsGone: boolean }): void {
     const nodeSignals = this.signals.get(nodeId);
     if (!nodeSignals) return;
 
@@ -154,7 +182,10 @@ export class PriorityEngine {
     // "the thing it's currently pointing at no longer exists". That's
     // this method's own job: only forgetNode (not endEvent) means the
     // node itself is gone, not just one of its signals.
-    if (this.lastClaimed === nodeId) {
+    //
+    // A restart is precisely the case where it is *not* gone, so the
+    // fallback is left pointing at it - see restartNode's own doc.
+    if (nodeIsGone && this.lastClaimed === nodeId) {
       this.lastClaimed = this.computeActiveHolder() ?? immediateFallback;
     }
   }

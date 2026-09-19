@@ -330,4 +330,58 @@ describe("RelayService (real broker)", () => {
     expect(service.registryFor(account)?.listAll()).toEqual([]);
     expect(service.engineFor(account)?.currentHolder()).toBeNull();
   });
+  // #173. Both of these reproduce what a Pixel and a Mac actually did
+  // against the deployed relay on 2026-09-19: the phone emitted a real
+  // media event and the relay published nothing at all, because it still
+  // believed the phone held the headset from a session before the app
+  // restarted.
+  it("re-publishes CLAIM to a node that restarts while it is still the holder", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["media"] });
+    await startService([account]);
+
+    const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+    await publishRegistration(rawClient, account, nodeA);
+    await publishEvent(rawClient, account, nodeA.nodeId, "media");
+    await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+
+    // Media stops normally. A is still the holder by rule 5 (last
+    // claimed), which is correct and is not the bug.
+    await publishEventEnd(rawClient, account, nodeA.nodeId, "media");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(commandsA).toEqual([{ type: "claim" }]);
+
+    // A's adapter restarts: a fresh process, holding no Bluetooth
+    // connection, that registers again. The relay's holder has not
+    // changed, so syncHolder alone says nothing - and A would sit there
+    // believing it holds nothing while the relay believes it holds the
+    // headset, with no way out. It must be told again.
+    await publishRegistration(rawClient, account, nodeA);
+    await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }, { type: "claim" }]);
+  });
+
+  it("clears a restarted node's stale signals so another node can take the route", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["call"] });
+    const nodeB = manifest({ supportedEventKinds: ["media"] });
+    await startService([account]);
+
+    const commandsB = collectCommands(rawClient, account, nodeB.nodeId);
+
+    // A takes a call and its adapter dies mid-call, so no event_end is
+    // ever sent for it. `call` outranks everything.
+    await publishRegistration(rawClient, account, nodeA);
+    await publishEvent(rawClient, account, nodeA.nodeId, "call");
+
+    // A comes back. The call is over - the monitor that would have ended
+    // it no longer exists - so the signal must not survive the restart,
+    // or it pins the route to A permanently.
+    await publishRegistration(rawClient, account, nodeA);
+
+    await publishRegistration(rawClient, account, nodeB);
+    await publishEvent(rawClient, account, nodeB.nodeId, "media");
+
+    await expect.poll(() => commandsB, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+  });
 });

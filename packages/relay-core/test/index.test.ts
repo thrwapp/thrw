@@ -181,6 +181,56 @@ describe("@thrw/relay-core", () => {
     expect(engine.currentHolder()).toBe("node-a");
   });
 
+  describe("restartNode (#173)", () => {
+    it("keeps the restarted node as holder, unlike forgetNode which drops it", () => {
+      const restarted = new PriorityEngine();
+      restarted.recordEvent("node-a", "media");
+      restarted.endEvent("node-a", "media");
+      expect(restarted.currentHolder()).toBe("node-a");
+
+      restarted.restartNode("node-a");
+
+      // The node is still here - it just came back holding nothing. Rule
+      // 5 must keep pointing at it, or the headset would be taken away
+      // from the device in use every time its app restarted.
+      expect(restarted.currentHolder()).toBe("node-a");
+
+      // Same setup, but the node went silent instead: then it must stop
+      // being reported as the holder. This contrast is the whole reason
+      // the two methods exist separately.
+      const gone = new PriorityEngine();
+      gone.recordEvent("node-a", "media");
+      gone.endEvent("node-a", "media");
+      gone.forgetNode("node-a");
+      expect(gone.currentHolder()).toBeNull();
+    });
+
+    it("clears a stale signal the restarted node can never end itself", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "call");
+      engine.recordEvent("node-b", "media");
+      // `call` outranks `media`, so A holds it.
+      expect(engine.currentHolder()).toBe("node-a");
+
+      // A's adapter died mid-call and came back. The monitor that would
+      // have sent event_end for that call no longer exists, so if the
+      // signal survived, A would outrank everything forever.
+      engine.restartNode("node-a");
+
+      expect(engine.currentHolder()).toBe("node-b");
+    });
+
+    it("is a no-op for a node with no active signals", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "media");
+      expect(engine.currentHolder()).toBe("node-a");
+
+      engine.restartNode("node-never-seen");
+
+      expect(engine.currentHolder()).toBe("node-a");
+    });
+  });
+
   describe("forgetNode (#130)", () => {
     it("is a no-op for a node with no active signals", () => {
       const engine = new PriorityEngine();

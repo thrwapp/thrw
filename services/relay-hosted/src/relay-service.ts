@@ -195,8 +195,36 @@ export class RelayService {
 
   private handleEvent(state: AccountState, node: string, payload: unknown): void {
     if (isRegistrationPayload(payload)) {
+      const holderBefore = state.lastHolder;
       state.registry.register(payload.manifest);
       this.trackHeartbeat(state, node);
+
+      // A registration means a fresh adapter process (#173). Two things
+      // follow, and both are needed.
+      //
+      // First, anything this node had active is stale: the monitor that
+      // would send the matching `event_end` no longer exists, so the
+      // signal would otherwise pin the route to this node forever.
+      state.engine.restartNode(node);
+      this.syncHolder(state.account);
+
+      // Second - the bug that made this visible - the relay's holder
+      // state is durable but the node's actual Bluetooth connection is
+      // not. A node that restarts while it is the holder comes back
+      // holding nothing, and `syncHolder` above says nothing to it
+      // because from the relay's point of view the holder never changed.
+      // The node is then stuck: it never connects, and nothing can take
+      // the route from it short of outranking it.
+      //
+      // So when the holder is unchanged *and* it is this node, re-assert
+      // the claim. `claim` is idempotent for a node that really is
+      // connected, which is what makes this safe to send unconditionally
+      // here rather than trying to guess the device's true state.
+      if (state.lastHolder === node && holderBefore === node) {
+        this.client.publishCommand(state.account, node, { type: "claim" }).catch((error: unknown) => {
+          console.error(`relay-hosted: failed to re-publish claim to ${state.account}/${node}`, error);
+        });
+      }
       return;
     }
     if (isEventEndPayload(payload)) {
