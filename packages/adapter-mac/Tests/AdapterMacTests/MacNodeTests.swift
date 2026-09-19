@@ -1,5 +1,10 @@
 import XCTest
 
+private final class CooldownClock: @unchecked Sendable {
+    var instant = ContinuousClock.now
+    func read() -> ContinuousClock.Instant { instant }
+}
+
 @testable import AdapterMac
 
 private let accountId = "acct-1"
@@ -169,6 +174,59 @@ final class MacNodeTests: XCTestCase {
 
         let sent = try XCTUnwrap(f.transport.published.first)
         XCTAssertNotEqual(sent.topic, eventsTopicString)
+    }
+
+    /// #167 / ADR 0010 point 1: the audio-routing change thrw's own
+    /// claim caused must not come straight back as a new trigger.
+    func testATriggerReportedInsideTheSelfCooldownWindowIsSuppressed() async throws {
+        let clock = CooldownClock()
+        let transport = FakeMqttTransport()
+        let node = MacNode(
+            accountId: accountId, nodeId: nodeId, headsetIdentifier: headsetIdentifier,
+            transport: transport, bluetooth: BluetoothConnectionManager(gateway: FakeBluetoothPeripheralGateway()),
+            selfCooldown: SelfCooldown(window: .seconds(3), now: clock.read)
+        )
+
+        try await node.onClaim()
+        try await node.emitEvent(type: .media, priority: 0)
+
+        XCTAssertTrue(transport.published.isEmpty, "the self-inflicted trigger must not reach the relay")
+    }
+
+    func testTheSameTriggerIsReportedOnceTheWindowHasElapsed() async throws {
+        let clock = CooldownClock()
+        let transport = FakeMqttTransport()
+        let node = MacNode(
+            accountId: accountId, nodeId: nodeId, headsetIdentifier: headsetIdentifier,
+            transport: transport, bluetooth: BluetoothConnectionManager(gateway: FakeBluetoothPeripheralGateway()),
+            selfCooldown: SelfCooldown(window: .seconds(3), now: clock.read)
+        )
+
+        try await node.onClaim()
+        clock.instant = clock.instant.advanced(by: .seconds(3))
+        try await node.emitEvent(type: .media, priority: 0)
+
+        XCTAssertEqual(transport.published.count, 1)
+    }
+
+    /// The cooldown stops thrw talking to itself; it must not make the
+    /// node deaf to the relay.
+    func testARelayCommandInsideTheWindowIsStillHonoured() async throws {
+        let clock = CooldownClock()
+        let transport = FakeMqttTransport()
+        let gateway = FakeBluetoothPeripheralGateway()
+        let node = MacNode(
+            accountId: accountId, nodeId: nodeId, headsetIdentifier: headsetIdentifier,
+            transport: transport, bluetooth: BluetoothConnectionManager(gateway: gateway),
+            selfCooldown: SelfCooldown(window: .seconds(3), now: clock.read)
+        )
+
+        try await node.onRelease()
+        transport.sendCommand(#"{"type":"claim"}"#)
+        transport.finishCommands()
+        try await node.listenForCommands()
+
+        XCTAssertEqual(gateway.connectCalls, [headsetIdentifier], "a relay CLAIM must still connect during cooldown")
     }
 
     func testAnUnparseableCommandIsSkippedWithoutDroppingTheSubscription() async throws {
