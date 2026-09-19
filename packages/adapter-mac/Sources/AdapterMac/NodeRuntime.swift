@@ -44,6 +44,7 @@ import os
 public final class NodeRuntime {
     private let node: MacNode
     private let voipTriggerMonitor: VoipTriggerMonitor
+    private let mediaTriggerMonitor: MediaTriggerMonitor
     private let heartbeatPublisher: HeartbeatPublisher
 
     #if canImport(os)
@@ -56,10 +57,12 @@ public final class NodeRuntime {
     public init(
         node: MacNode,
         voipTriggerMonitor: VoipTriggerMonitor,
+        mediaTriggerMonitor: MediaTriggerMonitor,
         heartbeatPublisher: HeartbeatPublisher? = nil
     ) {
         self.node = node
         self.voipTriggerMonitor = voipTriggerMonitor
+        self.mediaTriggerMonitor = mediaTriggerMonitor
         self.heartbeatPublisher = heartbeatPublisher ?? HeartbeatPublisher(sink: node)
     }
 
@@ -96,11 +99,14 @@ public final class NodeRuntime {
         // beat published before then lands on a topic nothing is
         // listening to. Registration also stamps the node's liveness on
         // the relay side, so there is no gap to cover by racing it.
+        let mediaTask = Task {
+            await Self.logErrors(from: "mediaTriggerMonitor") { try await self.mediaTriggerMonitor.run() }
+        }
         let heartbeatTask = Task {
             _ = await registerTask.result
             await Self.logErrors(from: "heartbeatPublisher") { try await self.heartbeatPublisher.run() }
         }
-        return NodeRuntimeHandle(tasks: [registerTask, commandsTask, voipTask, heartbeatTask])
+        return NodeRuntimeHandle(tasks: [registerTask, commandsTask, voipTask, mediaTask, heartbeatTask])
     }
 
     private static func logErrors(from label: String, _ body: () async throws -> Void) async {

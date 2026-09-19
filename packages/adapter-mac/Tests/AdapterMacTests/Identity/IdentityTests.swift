@@ -40,15 +40,16 @@ final class IdentityTests: XCTestCase {
         XCTAssertEqual(DeviceIdentity.nodeId(defaults: reopened), generated)
     }
 
-    func testManifestReportsMacAndOnlyTheVoipEventKindThisAdapterCanActuallyDetect() {
+    func testManifestReportsMacAndOnlyTheEventKindsThisAdapterCanActuallyDetect() {
         let manifest = DeviceIdentity.manifest(defaults: defaults)
 
         XCTAssertEqual(manifest.platform, .mac)
         XCTAssertEqual(manifest.nodeId, DeviceIdentity.nodeId(defaults: defaults))
         XCTAssertEqual(manifest.adapterVersion, DeviceIdentity.adapterVersion)
-        // Not `.call`: macOS has no call-detection API at all (#127) -
-        // see DeviceIdentity.manifest's own kdoc.
-        XCTAssertEqual(manifest.supportedEventKinds, [.voip])
+        // `.voip` (#127) and `.media` (#166). Not `.call`: macOS has no
+        // call-detection API at all (#127) - see DeviceIdentity.manifest's
+        // own kdoc. Not `.manual_claim`: nothing emits it, there's no UI.
+        XCTAssertEqual(manifest.supportedEventKinds, [.voip, .media])
         XCTAssertFalse(manifest.displayName.isEmpty)
     }
 
