@@ -18,6 +18,7 @@ import com.thrw.adapter.android.triggers.NotificationFlags
 import com.thrw.adapter.android.triggers.NotificationSource
 import com.thrw.adapter.android.triggers.PhoneCallState
 import com.thrw.adapter.android.triggers.PostedNotification
+import com.thrw.adapter.android.triggers.SelfCooldown
 import com.thrw.adapter.android.triggers.UNRANKED_PRIORITY
 import com.thrw.adapter.android.triggers.VoipTriggerMonitor
 import kotlinx.coroutines.channels.Channel
@@ -296,6 +297,67 @@ class AndroidNodeTest {
      * hardware. It must be logged and skipped, exactly like an
      * unparseable payload.
      */
+    /**
+     * #167 / ADR 0010 point 1: after thrw claims, the audio routing
+     * change it caused must not come straight back as a new trigger.
+     */
+    @Test
+    fun `a trigger reported inside the self-cooldown window is suppressed`() = runTest {
+        var millis = 0L
+        val transport = FakeMqttTransport()
+        val node = AndroidNode(
+            ACCOUNT, NODE, HEADSET, transport,
+            BluetoothConnectionManager(RecordingGateway()),
+            selfCooldown = SelfCooldown(windowMs = 3_000) { millis },
+        )
+
+        node.onClaim()
+        node.emitEvent(EventKind.MEDIA, 0)
+
+        assertTrue(transport.published.isEmpty(), "the self-inflicted trigger must not reach the relay")
+    }
+
+    @Test
+    fun `the same trigger is reported once the window has elapsed`() = runTest {
+        var millis = 0L
+        val transport = FakeMqttTransport()
+        val node = AndroidNode(
+            ACCOUNT, NODE, HEADSET, transport,
+            BluetoothConnectionManager(RecordingGateway()),
+            selfCooldown = SelfCooldown(windowMs = 3_000) { millis },
+        )
+
+        node.onClaim()
+        millis = 3_000
+        node.emitEvent(EventKind.MEDIA, 0)
+
+        assertEquals(1, transport.published.size)
+    }
+
+    /**
+     * Criterion 2: the cooldown stops thrw talking to itself, it must not
+     * make the node deaf to the relay. A CLAIM arriving inside the window
+     * is still honoured.
+     */
+    @Test
+    fun `a relay command inside the window is still honoured`() = runTest {
+        var millis = 0L
+        val transport = FakeMqttTransport()
+        val gateway = RecordingGateway()
+        val node = AndroidNode(
+            ACCOUNT, NODE, HEADSET, transport,
+            BluetoothConnectionManager(gateway),
+            selfCooldown = SelfCooldown(windowMs = 3_000) { millis },
+        )
+
+        node.onRelease()
+        transport.commands.send("""{"type":"claim"}""")
+        transport.commands.close()
+        node.listenForCommands()
+
+        assertEquals(listOf(HEADSET), gateway.connectCalls, "a relay CLAIM must still connect during cooldown")
+    }
+
     @Test
     fun `a failing claim does not tear down the commands subscription`() = runTest {
         val transport = FakeMqttTransport()

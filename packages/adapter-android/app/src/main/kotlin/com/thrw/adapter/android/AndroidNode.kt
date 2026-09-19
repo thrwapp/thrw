@@ -17,6 +17,7 @@ import com.thrw.adapter.android.protocol.RegistrationPayload
 import com.thrw.adapter.android.protocol.Topics
 import com.thrw.adapter.android.protocol.TopicQos
 import com.thrw.adapter.android.triggers.EventLifecycle
+import com.thrw.adapter.android.triggers.SelfCooldown
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.json.Json
 
@@ -45,6 +46,13 @@ class AndroidNode(
     private val transport: MqttTransport,
     private val bluetooth: BluetoothConnectionManager,
     private val json: Json = ProtocolJson,
+    /**
+     * ADR 0010 point 1 (#167). Armed by [onClaim]/[onRelease]; while
+     * active, trigger reports from the monitors are suppressed so thrw
+     * doesn't misread its own Bluetooth side effects as new triggers.
+     * Injectable so tests don't wait on wall time.
+     */
+    private val selfCooldown: SelfCooldown = SelfCooldown(),
 ) : NodeInterface, EventLifecycle, HeartbeatSink {
 
     /**
@@ -61,6 +69,7 @@ class AndroidNode(
 
     /** Publishes a trigger to the events topic at QoS 1 per `TopicQos`. */
     override suspend fun emitEvent(type: EventKind, priority: Priority) {
+        if (suppressedBySelfCooldown("emitEvent($type)")) return
         publishToEvents(json.encodeToString(EventPayload.serializer(), EventPayload(type, priority)))
     }
 
@@ -76,17 +85,35 @@ class AndroidNode(
      * argument, and docs/handoffs/68.md.
      */
     override suspend fun endEvent(type: EventKind) {
+        if (suppressedBySelfCooldown("endEvent($type)")) return
         publishToEvents(json.encodeToString(EventEndPayload.serializer(), EventEndPayload(type = type)))
     }
 
-    /** Claim won: connect the headset to this device. */
+    /**
+     * Claim won: connect the headset to this device.
+     *
+     * Arms the self-cooldown afterwards (#167): connecting the headset
+     * changes this device's audio routing, which the media monitor would
+     * otherwise report as a fresh trigger.
+     */
     override suspend fun onClaim() {
         bluetooth.connect(headsetAddress)
+        selfCooldown.arm()
     }
 
-    /** Claim lost (or released): disconnect the headset from this device. */
+    /**
+     * Claim lost (or released): disconnect the headset from this device.
+     *
+     * Armed on the way out even if the disconnect threw: the headset may
+     * well have gone anyway, and a failed release is exactly when a
+     * spurious self-triggered event is most likely.
+     */
     override suspend fun onRelease() {
-        bluetooth.disconnect(headsetAddress)
+        try {
+            bluetooth.disconnect(headsetAddress)
+        } finally {
+            selfCooldown.arm()
+        }
     }
 
     /**
@@ -155,6 +182,18 @@ class AndroidNode(
             qos = TopicQos.HEARTBEAT_QOS,
             retained = false,
         )
+    }
+
+    /**
+     * Suppression applies to *trigger reporting only*. Relay commands are
+     * unaffected - [listenForCommands] still honours a CLAIM arriving
+     * inside the window, because the cooldown exists to stop thrw talking
+     * to itself, not to make it deaf (#167 acceptance criterion 2).
+     */
+    private fun suppressedBySelfCooldown(what: String): Boolean {
+        if (!selfCooldown.isActive()) return false
+        Log.i(TAG, "Self-cooldown active - suppressing $what (ADR 0010)")
+        return true
     }
 
     private companion object {

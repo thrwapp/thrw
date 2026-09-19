@@ -26,19 +26,23 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     private let headsetIdentifier: UUID
     private let transport: MqttTransport
     private let bluetooth: BluetoothConnectionManager
+    /// ADR 0010 point 1 (#167) - armed by ``onClaim()``/``onRelease()``.
+    private let selfCooldown: SelfCooldown
 
     public init(
         accountId: String,
         nodeId: String,
         headsetIdentifier: UUID,
         transport: MqttTransport,
-        bluetooth: BluetoothConnectionManager
+        bluetooth: BluetoothConnectionManager,
+        selfCooldown: SelfCooldown = SelfCooldown()
     ) {
         self.accountId = accountId
         self.nodeId = nodeId
         self.headsetIdentifier = headsetIdentifier
         self.transport = transport
         self.bluetooth = bluetooth
+        self.selfCooldown = selfCooldown
     }
 
     /// Publishes this node's manifest so the relay's device registry
@@ -51,6 +55,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
 
     /// Publishes a trigger to the events topic at QoS 1 per `TopicQos`.
     public func emitEvent(type: EventKind, priority: Priority) async throws {
+        if selfCooldown.isActive() { return }
         try await publishToEvents(EventPayload(type: type, priority: priority))
     }
 
@@ -59,16 +64,19 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// `EventEndPayload` on the same events topic at the same QoS -
     /// mirrors `AndroidNode.kt`'s own `endEvent` (#68).
     public func endEvent(type: EventKind) async throws {
+        if selfCooldown.isActive() { return }
         try await publishToEvents(EventEndPayload(type: type))
     }
 
     /// Claim won: connect the headset to this device.
     public func onClaim() async throws {
+        defer { selfCooldown.arm() }
         try await bluetooth.connect(deviceIdentifier: headsetIdentifier)
     }
 
     /// Claim lost (or released): disconnect the headset from this device.
     public func onRelease() async throws {
+        defer { selfCooldown.arm() }
         try await bluetooth.disconnect(deviceIdentifier: headsetIdentifier)
     }
 
