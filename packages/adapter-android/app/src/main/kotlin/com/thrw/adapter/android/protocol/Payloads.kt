@@ -64,7 +64,27 @@ data class RegistrationPayload(
      * Sent on every registration, including the first, where it is empty.
      */
     val activeEvents: List<EventKind> = emptyList(),
+    /**
+     * This node's observed **audio route** per resource type (#191),
+     * keyed by ADR 0015's resource-type vocabulary - only [RESOURCE_AUDIO]
+     * exists today.
+     *
+     * Keyed rather than a bare boolean so it survives the ADR 0015
+     * migration (#171) without a second payload change; that ADR is
+     * accepted, so this is following it rather than speculating.
+     *
+     * A resource is **absent** when its route cannot be determined, or
+     * while a claim or release is still settling. Absent means "no
+     * information" and leaves the relay's record alone; `false` asserts
+     * this node does not hold the resource and is grounds for corrective
+     * action. Reporting a guess as `false` would hand the relay a
+     * fabricated disagreement.
+     */
+    val observedRoutes: Map<String, Boolean> = emptyMap(),
 )
+
+/** ADR 0015's resource type for the headset audio connection. */
+const val RESOURCE_AUDIO: String = "audio"
 
 const val REGISTRATION_KIND: String = "register"
 

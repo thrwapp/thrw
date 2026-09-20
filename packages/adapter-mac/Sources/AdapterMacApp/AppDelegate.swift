@@ -182,12 +182,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             self.transport = transport
             let bluetooth = BluetoothConnectionManager(gateway: IOBluetoothPeripheralGateway())
+            // #191: the route observer needs the headset's Bluetooth
+            // address, not the UUID the rest of the node uses - CoreAudio
+            // spells a Bluetooth device's UID with its MAC. Read from
+            // provisioning rather than derived from the UUID, because
+            // that mapping is one-way.
+            let routeObserver = AdapterProvisioning.headsetAddress().map(CoreAudioRouteObserver.init)
+            if routeObserver == nil {
+                Self.logger.error("No headset address for the route observer - route reconciliation is off (#191)")
+            }
             let node = MacNode(
                 accountId: accountId,
                 nodeId: nodeId,
                 headsetIdentifier: headsetIdentifier,
                 transport: transport,
-                bluetooth: bluetooth
+                bluetooth: bluetooth,
+                routeObserver: routeObserver
             )
 
             let voipMonitor = VoipTriggerMonitor(source: NSWorkspaceRunningApplicationSource(), node: node)

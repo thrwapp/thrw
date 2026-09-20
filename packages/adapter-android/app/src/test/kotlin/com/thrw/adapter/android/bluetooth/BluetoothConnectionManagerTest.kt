@@ -17,6 +17,11 @@ private class FakeBluetoothClassicGateway : BluetoothClassicGateway {
     var failNextConnect = false
     var failNextDisconnect = false
 
+    /** What [isAudioRouteActive] reports; null means "cannot tell". */
+    var routeActive: Boolean? = null
+
+    override suspend fun isAudioRouteActive(deviceAddress: String): Boolean? = routeActive
+
     override suspend fun connect(deviceAddress: String) {
         connectCalls += deviceAddress
         if (failNextConnect) {
@@ -38,6 +43,65 @@ private const val ADDRESS = "AA:BB:CC:DD:EE:FF"
 private const val OTHER_ADDRESS = "11:22:33:44:55:66"
 
 class BluetoothConnectionManagerTest {
+    /**
+     * ADR 0018 decision 3, corrected by #186. A multipoint headset can
+     * keep its Bluetooth link to this device while the route moves to
+     * another, so the cached CONNECTED state is not evidence that a claim
+     * is unnecessary. Skipping on it silently drops a claim that was
+     * genuinely needed - no log, no retry, no audio.
+     */
+    @Test
+    fun `a claim is re-issued when the cached state says connected but the route is elsewhere`() = runTest {
+        val gateway = FakeBluetoothClassicGateway()
+        val manager = BluetoothConnectionManager(gateway)
+
+        manager.connect(ADDRESS)
+        assertEquals(listOf(ADDRESS), gateway.connectCalls)
+
+        // Same device, still believed connected - but the route has gone.
+        gateway.routeActive = false
+        manager.connect(ADDRESS)
+
+        assertEquals(
+            listOf(ADDRESS, ADDRESS),
+            gateway.connectCalls,
+            "the claim must be re-issued when the route is not actually here",
+        )
+    }
+
+    /**
+     * The other direction: when the route really is here, a repeat claim
+     * must still be skipped, or every reconciliation would pointlessly
+     * tear the connection down and rebuild it.
+     */
+    @Test
+    fun `a claim is still skipped when the route really is here`() = runTest {
+        val gateway = FakeBluetoothClassicGateway()
+        val manager = BluetoothConnectionManager(gateway)
+
+        manager.connect(ADDRESS)
+        gateway.routeActive = true
+        manager.connect(ADDRESS)
+
+        assertEquals(listOf(ADDRESS), gateway.connectCalls)
+    }
+
+    /**
+     * `null` is "cannot tell", not "no". An unreadable route must not
+     * override a cached state that may well be correct.
+     */
+    @Test
+    fun `an unknown route does not override the cached state`() = runTest {
+        val gateway = FakeBluetoothClassicGateway()
+        val manager = BluetoothConnectionManager(gateway)
+
+        manager.connect(ADDRESS)
+        gateway.routeActive = null
+        manager.connect(ADDRESS)
+
+        assertEquals(listOf(ADDRESS), gateway.connectCalls)
+    }
+
     @Test
     fun `unknown device reports disconnected`() = runTest {
         val manager = BluetoothConnectionManager(FakeBluetoothClassicGateway())

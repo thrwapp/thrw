@@ -13,10 +13,12 @@ import com.thrw.adapter.android.protocol.NodeInterface
 import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.protocol.Priority
 import com.thrw.adapter.android.protocol.ProtocolJson
+import com.thrw.adapter.android.protocol.RESOURCE_AUDIO
 import com.thrw.adapter.android.protocol.RegistrationPayload
 import com.thrw.adapter.android.protocol.Topics
 import com.thrw.adapter.android.protocol.TopicQos
 import com.thrw.adapter.android.triggers.EventLifecycle
+import com.thrw.adapter.android.triggers.RouteTransition
 import com.thrw.adapter.android.triggers.SelfCooldown
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.json.Json
@@ -53,6 +55,8 @@ class AndroidNode(
      * Injectable so tests don't wait on wall time.
      */
     private val selfCooldown: SelfCooldown = SelfCooldown(),
+    /** #191 - suppresses route observations taken mid-transition. */
+    private val routeTransition: RouteTransition = RouteTransition(),
 ) : NodeInterface, EventLifecycle, HeartbeatSink {
 
     /**
@@ -65,7 +69,11 @@ class AndroidNode(
         publishToEvents(
             json.encodeToString(
                 RegistrationPayload.serializer(),
-                RegistrationPayload(manifest = manifest, activeEvents = activeEventsSnapshot()),
+                RegistrationPayload(
+                    manifest = manifest,
+                    activeEvents = activeEventsSnapshot(),
+                    observedRoutes = observedRoutes(),
+                ),
             ),
         )
     }
@@ -87,6 +95,23 @@ class AndroidNode(
      */
     fun onReconnected(handler: () -> Unit) {
         transport.onReconnected(handler)
+    }
+
+    /**
+     * This node's observed audio route (#191), or an empty map when it
+     * cannot honestly be reported.
+     *
+     * Omitted in two cases, both meaning "no information" rather than
+     * "no": the gateway cannot read the route, or a claim/release is
+     * still settling. A snapshot taken mid-transition reports "I do not
+     * hold this" while the relay correctly believes this node does, and
+     * the relay would then correct a transition that was simply still
+     * happening - on a 2-minute cadence, forever.
+     */
+    private suspend fun observedRoutes(): Map<String, Boolean> {
+        if (routeTransition.isSettling()) return emptyMap()
+        val holds = bluetooth.isAudioRouteActive(headsetAddress) ?: return emptyMap()
+        return mapOf(RESOURCE_AUDIO to holds)
     }
 
     private fun activeEventsSnapshot(): List<EventKind> =
@@ -124,7 +149,12 @@ class AndroidNode(
      * otherwise report as a fresh trigger.
      */
     override suspend fun onClaim() {
-        bluetooth.connect(headsetAddress)
+        routeTransition.begin()
+        try {
+            bluetooth.connect(headsetAddress)
+        } finally {
+            routeTransition.end()
+        }
         selfCooldown.arm()
     }
 
@@ -136,9 +166,11 @@ class AndroidNode(
      * spurious self-triggered event is most likely.
      */
     override suspend fun onRelease() {
+        routeTransition.begin()
         try {
             bluetooth.disconnect(headsetAddress)
         } finally {
+            routeTransition.end()
             selfCooldown.arm()
         }
     }

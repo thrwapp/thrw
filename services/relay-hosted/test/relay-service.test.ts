@@ -8,7 +8,7 @@ import {
 } from "@thrw/relay-core";
 import mqtt, { type MqttClient } from "mqtt";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { RelayService } from "../src/relay-service";
+import { RelayService, type RouteDrift } from "../src/relay-service";
 
 // Integration tests against a real MQTT broker, same pattern
 // packages/relay-core's own tests use (acceptance criterion 4) - CI
@@ -89,11 +89,13 @@ function publishRegistration(
   account: string,
   nodeManifest: NodeManifest,
   activeEvents?: EventKind[],
+  observedRoutes?: Record<string, boolean>,
 ): Promise<void> {
   return publishJson(client, eventsTopic(account, nodeManifest.nodeId), {
     kind: REGISTRATION_KIND,
     manifest: nodeManifest,
     ...(activeEvents ? { activeEvents } : {}),
+    ...(observedRoutes ? { observedRoutes } : {}),
   });
 }
 
@@ -147,10 +149,22 @@ describe("RelayService (real broker)", () => {
     rawClient.removeAllListeners("message");
   });
 
-  async function startService(accounts: string[], scheduler?: Scheduler, now?: () => number): Promise<RelayService> {
+  async function startService(
+    accounts: string[],
+    scheduler?: Scheduler,
+    now?: () => number,
+    onRouteDrift?: (drift: RouteDrift) => void,
+  ): Promise<RelayService> {
     const client = await RelayMqttClient.connect(BROKER_URL);
     clients.push(client);
-    const service = new RelayService({ client, accounts, scheduler, now, heartbeatSweepIntervalMs: 5_000 });
+    const service = new RelayService({
+      client,
+      accounts,
+      scheduler,
+      now,
+      onRouteDrift,
+      heartbeatSweepIntervalMs: 5_000,
+    });
     await service.start();
     services.push(service);
     return service;
@@ -433,5 +447,75 @@ describe("RelayService (real broker)", () => {
     await publishRegistration(rawClient, account, nodeA, []);
 
     await expect.poll(() => commandsB, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+  });
+  // #191 / ADR 0018 decision 2. Detection, not correction: the repair for
+  // a holder whose route has gone already happens via the re-asserted
+  // claim plus the adapter's route-aware skip.
+  it("reports drift when the recorded holder says it does not hold the route", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["media"] });
+    const drifts: RouteDrift[] = [];
+    await startService([account], undefined, undefined, (d) => drifts.push(d));
+
+    await publishRegistration(rawClient, account, nodeA);
+    await publishEvent(rawClient, account, nodeA.nodeId, "media");
+    await expect.poll(() => drifts.length === 0, { timeout: 1000 }).toBe(true);
+
+    // A periodic registration from the holder saying the route is gone.
+    await publishRegistration(rawClient, account, nodeA, ["media"], { audio: false });
+
+    await expect.poll(() => drifts, { timeout: 2000 }).toEqual([
+      { account, node: nodeA.nodeId, nodeHoldsRoute: false, believedHolder: nodeA.nodeId },
+    ]);
+  });
+
+  it("reports drift when a node that is not the holder says it does hold the route", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["media"] });
+    const nodeB = manifest({ supportedEventKinds: ["media"] });
+    const drifts: RouteDrift[] = [];
+    await startService([account], undefined, undefined, (d) => drifts.push(d));
+
+    await publishRegistration(rawClient, account, nodeA);
+    await publishEvent(rawClient, account, nodeA.nodeId, "media");
+    await publishRegistration(rawClient, account, nodeB, [], { audio: true });
+
+    await expect.poll(() => drifts, { timeout: 2000 }).toEqual([
+      { account, node: nodeB.nodeId, nodeHoldsRoute: true, believedHolder: nodeA.nodeId },
+    ]);
+  });
+
+  /**
+   * An absent observation is "no information", not "no". A node that
+   * cannot read its route, or is mid-transition, must not be reported as
+   * disagreeing - that would make every such registration look like a bug.
+   */
+  it("reports no drift when the node makes no route observation", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["media"] });
+    const drifts: RouteDrift[] = [];
+    await startService([account], undefined, undefined, (d) => drifts.push(d));
+
+    await publishRegistration(rawClient, account, nodeA);
+    await publishEvent(rawClient, account, nodeA.nodeId, "media");
+    await publishRegistration(rawClient, account, nodeA, ["media"]);
+    await publishRegistration(rawClient, account, nodeA, ["media"], {});
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(drifts).toEqual([]);
+  });
+
+  it("agreement is not reported as drift", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["media"] });
+    const drifts: RouteDrift[] = [];
+    await startService([account], undefined, undefined, (d) => drifts.push(d));
+
+    await publishRegistration(rawClient, account, nodeA);
+    await publishEvent(rawClient, account, nodeA.nodeId, "media");
+    await publishRegistration(rawClient, account, nodeA, ["media"], { audio: true });
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(drifts).toEqual([]);
   });
 });

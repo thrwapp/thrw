@@ -141,6 +141,41 @@ class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway
         }
     }
 
+    /**
+     * Reads A2DP's *active* device - the one media audio is actually
+     * routed to (#191).
+     *
+     * `getActiveDevice()` is hidden, reached the same way and for the
+     * same reason as `connect`/`disconnect` above: there is no public
+     * equivalent. Unlike those, a failure here is **not** an error -
+     * returning `null` means "cannot tell", which the relay treats as no
+     * information rather than as a disagreement. So a future Android
+     * blocking this degrades reconciliation to nothing, instead of
+     * feeding the relay a fabricated `false`.
+     *
+     * A2DP only: it carries media, and it is A2DP's active device that
+     * `dumpsys bluetooth_manager` reports as `mActiveDevice`. HFP has its
+     * own active device for call audio; tracking both is only meaningful
+     * once resources are typed (ADR 0015 / #171), and conflating them
+     * would report "I hold the headset" for a device that only has the
+     * call channel.
+     */
+    override suspend fun isAudioRouteActive(deviceAddress: String): Boolean? {
+        val proxy = proxyLock.withLock {
+            if (a2dp == null) a2dp = awaitProxy(BluetoothProfile.A2DP) as BluetoothA2dp?
+            a2dp
+        } ?: return null
+
+        return try {
+            val method = proxy.javaClass.getMethod("getActiveDevice")
+            val active = method.invoke(proxy) as BluetoothDevice?
+            active?.address?.equals(deviceAddress, ignoreCase = true) ?: false
+        } catch (e: Exception) {
+            Log.w(TAG, "getActiveDevice is not reachable - route state is unknown (#191)", e)
+            null
+        }
+    }
+
     /** Cached proxies, acquired once. Empty entries are simply absent. */
     private suspend fun audioProfileProxies(): List<Pair<String, BluetoothProfile>> = proxyLock.withLock {
         if (a2dp == null) a2dp = awaitProxy(BluetoothProfile.A2DP) as BluetoothA2dp?
