@@ -188,6 +188,26 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// Unparseable payloads are skipped rather than thrown: a malformed
     /// message from a newer relay must not tear down the subscription
     /// and leave this node deaf to the *next*, valid, claim.
+    ///
+    /// **A command that fails is skipped for the same reason** (#223). A
+    /// headset that is off, out of range, busy, or simply does not
+    /// support what was asked makes `onClaim`/`onRelease` throw, and
+    /// before #223 that propagated out of here and ended the loop for
+    /// good - `NodeRuntime` logged it and the task finished, nothing
+    /// resubscribed, and `onReconnected` only re-registers. One failed
+    /// claim left this Mac silently deaf to every later command until
+    /// the app was relaunched, while its menu bar still said
+    /// "Connected".
+    ///
+    /// `adapter-android` has had this since #161, where the unhandled
+    /// version was worse still: it took the whole adapter process down
+    /// on real hardware and Android restarted it in a loop. macOS fails
+    /// more quietly, which is most likely why it went unnoticed.
+    ///
+    /// `CancellationError` is deliberately not swallowed: that is the
+    /// runtime shutting this task down (`NodeRuntimeHandle.cancel()`, or
+    /// app quit), not a Bluetooth failure, and catching it would break
+    /// cancellation.
     public func listenForCommands() async throws {
         let commands = transport.subscribe(
             topic: Topics.commands(account: accountId, node: nodeId, resource: Self.resource),
@@ -202,13 +222,27 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
             // a redelivered claim that arrives after a newer release
             // would take the headset back from whoever now holds it.
             guard sequenceGate.accepts(command) else { continue }
-            switch command.type {
-            case .claim: try await onClaim()
-            case .release: try await onRelease()
+            do {
+                switch command.type {
+                case .claim: try await onClaim()
+                case .release: try await onRelease()
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // #223. Logged, not swallowed silently, and the mark is
+                // deliberately left where it is: the command did not
+                // happen, so the broker's QoS 1 redelivery must be free
+                // to retry it (#210).
+                logAdapterError(
+                    category: "MacNode",
+                    "command \(command.type) failed - staying subscribed: \(String(describing: error))"
+                )
+                continue
             }
-            // Only after the command actually succeeded - a `try` that
-            // throws above skips this, so the mark stays where it is
-            // and the broker's redelivery gets to retry.
+            // Only after the command actually succeeded - the `continue`
+            // above skips this, so the mark stays where it is and the
+            // broker's redelivery gets to retry.
             sequenceGate.record(command)
         }
     }
