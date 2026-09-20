@@ -269,4 +269,30 @@ final class NodeRuntimeTests: XCTestCase {
 
         XCTAssertEqual(transport.published.count, countAfterCancel)
     }
+
+    /// #182. Reconnecting restores the connection, not the relay's memory
+    /// of this node - the relay learns of a node only from a registration
+    /// and holds it in memory. A node that reconnects without registering
+    /// is connected but invisible, and waiting out the 2-minute periodic
+    /// timer leaves a window where the headset cannot be arbitrated.
+    func testReconnectingReRegistersTheNode() async throws {
+        let transport = FakeMqttTransport()
+        let node = makeNode(transport: transport, gateway: FakeBluetoothPeripheralGateway())
+        let runtime = NodeRuntime(
+            node: node,
+            voipTriggerMonitor: VoipTriggerMonitor(source: FakeRunningApplicationSource(), node: node),
+            mediaTriggerMonitor: MediaTriggerMonitor(source: SilentAudioSource(), node: node)
+        )
+
+        let handle = runtime.start(manifest: runtimeManifest)
+        defer { handle.cancel() }
+
+        await waitUntil("the first registration") { transport.published.count >= 1 }
+        let before = transport.published.count
+
+        transport.simulateReconnect()
+
+        await waitUntil("the re-registration") { transport.published.count > before }
+        XCTAssertGreaterThan(transport.published.count, before)
+    }
 }

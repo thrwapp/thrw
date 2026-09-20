@@ -81,6 +81,14 @@ class AndroidNode(
     private val activeEvents = linkedSetOf<EventKind>()
     private val activeEventsLock = Any()
 
+    /**
+     * Runs [handler] whenever the transport re-establishes a dropped
+     * connection (#182) - see [MqttTransport.onReconnected].
+     */
+    fun onReconnected(handler: () -> Unit) {
+        transport.onReconnected(handler)
+    }
+
     private fun activeEventsSnapshot(): List<EventKind> =
         synchronized(activeEventsLock) { activeEvents.toList() }
 

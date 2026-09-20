@@ -24,4 +24,20 @@ interface MqttTransport {
     fun subscribe(topic: String, qos: Int): Flow<String>
 
     suspend fun close()
+
+    /**
+     * Registers [handler] to run whenever the transport **re-establishes**
+     * a dropped connection - not on the first connect (#182).
+     *
+     * The node uses this to re-register, because the relay learns of a
+     * node only from a registration and holds that in memory: a node that
+     * silently reconnects is connected but invisible, which is #178 by
+     * another route. Reconnect is also precisely when the relay's picture
+     * is most likely to be stale, and #178 made registration a safe,
+     * repeatable statement of current state rather than an edge.
+     *
+     * Default no-op so the fakes in this module's tests, and any
+     * transport without a reconnect story, need no change.
+     */
+    fun onReconnected(handler: () -> Unit) {}
 }

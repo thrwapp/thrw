@@ -29,6 +29,12 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// ADR 0010 point 1 (#167) - armed by ``onClaim()``/``onRelease()``.
     private let selfCooldown: SelfCooldown
 
+    /// Runs `handler` whenever the transport re-establishes a dropped
+    /// connection (#182) - see ``MqttTransport/onReconnected(_:)``.
+    public func onReconnected(_ handler: @escaping @Sendable () -> Void) {
+        transport.onReconnected(handler)
+    }
+
     /// What this node has reported as active and not yet ended (#178),
     /// sent with every registration so the relay can reconcile rather
     /// than infer.

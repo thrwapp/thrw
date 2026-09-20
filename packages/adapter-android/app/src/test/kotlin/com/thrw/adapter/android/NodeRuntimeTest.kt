@@ -51,6 +51,16 @@ private class RuntimeFakeMqttTransport : MqttTransport {
         return commands.consumeAsFlow()
     }
 
+    /** Set by the node under test; fired by [simulateReconnect]. */
+    private var reconnectHandler: (() -> Unit)? = null
+
+    override fun onReconnected(handler: () -> Unit) {
+        reconnectHandler = handler
+    }
+
+    /** Stands in for the transport re-establishing a dropped connection. */
+    fun simulateReconnect() = reconnectHandler?.invoke()
+
     override suspend fun close() = Unit
 }
 
@@ -244,6 +254,41 @@ class NodeRuntimeTest {
         assertTrue(
             topics.indexOf(EVENTS_TOPIC) < topics.indexOf(HEARTBEAT_TOPIC),
             "the registration must be published before the first heartbeat, got $topics",
+        )
+    }
+
+    /**
+     * #182. Reconnecting restores the connection, not the relay's memory
+     * of this node - the relay learns of a node only from a registration
+     * and holds it in memory. A node that reconnects without registering
+     * is connected but invisible, and waiting out the 2-minute periodic
+     * timer leaves a window where the headset cannot be arbitrated.
+     */
+    @Test
+    fun `reconnecting re-registers the node`() = runTest {
+        val transport = RuntimeFakeMqttTransport()
+        val node = AndroidNode(ACCOUNT, NODE, HEADSET, transport, BluetoothConnectionManager(RuntimeRecordingGateway()))
+        val runtime = NodeRuntime(
+            node = node,
+            callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
+            voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
+            heartbeatRunner = noHeartbeat(),
+            registrationRunner = noReregistration(),
+        )
+
+        runtime.start(this, MANIFEST)
+        advanceUntilIdle()
+        val beforeReconnect = transport.published.count { it.topic == EVENTS_TOPIC }
+
+        transport.simulateReconnect()
+        transport.commands.close()
+        advanceUntilIdle()
+
+        assertEquals(
+            beforeReconnect + 1,
+            transport.published.count { it.topic == EVENTS_TOPIC },
+            "a reconnect must produce a fresh registration",
         )
     }
 

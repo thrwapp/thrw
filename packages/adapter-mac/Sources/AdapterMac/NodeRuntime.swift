@@ -123,6 +123,24 @@ public final class NodeRuntime {
                 }
             }
         }
+        // #182. Reconnecting restores the connection, not the relay's
+        // memory of this node - the relay learns of a node only from a
+        // registration and holds that in memory, so a node that silently
+        // reconnects is connected but invisible, which is #178 by another
+        // route. Waiting out the 2-minute timer would leave a window
+        // where the headset cannot be arbitrated at all.
+        //
+        // Safe on every reconnect because #178 made registration a
+        // statement of current state rather than an edge: it carries the
+        // node's active triggers, so the relay reconciles rather than
+        // being told something started.
+        node.onReconnected {
+            Task { @MainActor in
+                await Self.logErrors(from: "reregisterOnReconnect") {
+                    try await self.node.register(manifest: manifest)
+                }
+            }
+        }
         return NodeRuntimeHandle(
             tasks: [registerTask, commandsTask, voipTask, mediaTask, heartbeatTask, reregisterTask]
         )
