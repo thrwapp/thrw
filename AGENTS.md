@@ -66,6 +66,43 @@ A task is not done until all of the following are true:
 - Android: use Kotlin coroutines for async code.
 - No new dependency without justification in the PR description.
 
+## Concurrent sessions and worktrees
+
+More than one agent session can be running against this repo at once,
+and git gives no warning when they collide — a `checkout` that moves
+HEAD out from under another session reports success exactly like a
+normal one. This section is the convention that prevents that. It was
+written after a real incident: a session opening an unrelated docs
+branch ran `git checkout -b` in the shared checkout while another
+session was mid-task on `agent/178-periodic-reregistration`. Nothing
+was lost, because the in-flight work was uncommitted and followed the
+checkout, but a commit in that window would have landed #178's work on
+the docs branch.
+
+- **The shared checkout at the repo root belongs to whoever is already
+  working in it.** If you did not start there, never run `checkout`,
+  `switch` or `checkout -b` in it.
+- **A new branch means a new worktree, created before any edits:**
+
+      git worktree add ../thrw-wt-<topic> -b <branch>
+
+  Put it outside the repo root. `.claude/` is not in `.gitignore`, so
+  an in-tree worktree shows up as untracked noise in every other
+  session's `git status`.
+- **Never bare `git stash` / `git stash pop`.** The stash stack is
+  shared across all worktrees, so a `pop` can take a different
+  session's work. Use a throwaway WIP commit to set work aside
+  instead; if you must stash, tag it (`git stash push -u -m "<tag>"`)
+  and restore with `git stash apply <sha>`, never `pop`.
+- **Don't reach into another worktree with `git -C`.** Run git from
+  the worktree you own. Operate on your own branch only.
+- **`git push` and `gh pr create` are still shared state.** Worktrees
+  isolate the working tree, not the remote — check `git branch
+  --show-current` before pushing, and never push a branch you didn't
+  create.
+- Worktrees do not share `node_modules`, `.build` or `.gradle`, so a
+  fresh worktree needs its own `pnpm install` before it can run tests.
+
 ## Protocol invariants
 
 The MQTT topic structure and the node interface in `packages/protocol`
