@@ -105,14 +105,27 @@ jobs:
           # the Android provisioning screen already suggests.
           THRW_RELAY_ACCOUNTS: ${{ vars.THRW_RELAY_ACCOUNTS || 'tom-personal' }}
         run: |
-          gcloud compute scp scripts/relay-redeploy.sh "${RELAY_VM_NAME}:/tmp/relay-redeploy.sh" \
+          # Uploaded to the SSH user's home directory, not a fixed path
+          # under /tmp (#180). /tmp is sticky: only the owner may
+          # overwrite a file there. A single manual deploy left
+          # /tmp/relay-redeploy.sh and /tmp/Caddyfile owned by a human,
+          # after which every CI deploy - running as `runner` - failed
+          # with `scp: dest open … Permission denied` and could never
+          # recover on its own. It failed that way for two days, silently,
+          # while merged fixes sat undeployed believing themselves live.
+          #
+          # The home directory is per-user and always writable by whoever
+          # is connecting, so CI and a human deploying by hand can no
+          # longer collide. It also fails one file at a time, so clearing
+          # only the first just moved the error to the second.
+          gcloud compute scp scripts/relay-redeploy.sh "${RELAY_VM_NAME}:~/relay-redeploy.sh" \
             --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap
 
-          # #119: relay-redeploy.sh now also bootstraps/reloads Caddy
-          # (TLS termination in front of EMQX) and reads its config from
-          # this file - scp'd alongside relay-redeploy.sh itself, same
-          # pattern, same destination convention (/tmp/<filename>).
-          gcloud compute scp services/relay-hosted/Caddyfile "${RELAY_VM_NAME}:/tmp/Caddyfile" \
+          # #119: relay-redeploy.sh also bootstraps/reloads Caddy (TLS
+          # termination in front of EMQX) and reads its config from this
+          # file. It is uploaded *beside* the script, which resolves it
+          # relative to its own location rather than a fixed path.
+          gcloud compute scp services/relay-hosted/Caddyfile "${RELAY_VM_NAME}:~/Caddyfile" \
             --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap
 
           EMQX_USER_B64=$(printf '%s' "${{ secrets.EMQX_RELAY_USERNAME }}" | base64 -w0)
@@ -124,7 +137,46 @@ jobs:
 
           gcloud compute ssh "$RELAY_VM_NAME" \
             --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap \
-            --command="sudo bash /tmp/relay-redeploy.sh '${IMAGE}:${{ github.sha }}' '$ARTIFACT_HOST' '$EMQX_USER_B64' '$EMQX_PASS_B64' '${RELAY_SERVICE_IMAGE}:${{ github.sha }}' '$THRW_RELAY_ACCOUNTS_B64'"
+            --command="sudo bash ~/relay-redeploy.sh '${IMAGE}:${{ github.sha }}' '$ARTIFACT_HOST' '$EMQX_USER_B64' '$EMQX_PASS_B64' '${RELAY_SERVICE_IMAGE}:${{ github.sha }}' '$THRW_RELAY_ACCOUNTS_B64'"
+
+      # A green deploy does not prove the new code is running (#180). The
+      # health check below asks the relay whether it is up, which it
+      # answers identically whether or not this deploy changed anything -
+      # so a roll that silently failed to replace the container would
+      # still report success. That is the same failure shape as the bug
+      # this issue is about: everything green, nothing actually deployed.
+      #
+      # Compares the running container's image against the one this run
+      # built, which is the cheapest thing that distinguishes "deployed"
+      # from "still whatever was there before".
+      - name: Verify the running containers are this build
+        # Mirrors "Roll the relay VM"'s env exactly. These are
+        # *step*-scoped, not job-scoped, so leaving any of them out would
+        # compare against an empty string and fail every deploy - and the
+        # wrong `vars.` name would silently fall back to the default,
+        # ignoring a configured override.
+        env:
+          IMAGE: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_PROD }}/thrw/relay
+          RELAY_SERVICE_IMAGE: ${{ vars.GCP_ARTIFACT_REGISTRY_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_PROD }}/thrw/relay-service
+          RELAY_VM_NAME: ${{ vars.GCP_RELAY_VM_NAME || 'thrw-relay' }}
+          RELAY_ZONE: ${{ vars.GCP_RELAY_ZONE || 'us-central1-a' }}
+        run: |
+          expected_relay="${IMAGE}:${{ github.sha }}"
+          expected_service="${RELAY_SERVICE_IMAGE}:${{ github.sha }}"
+          actual=$(gcloud compute ssh "$RELAY_VM_NAME" \
+            --zone="$RELAY_ZONE" --project="${{ secrets.GCP_PROJECT_PROD }}" --tunnel-through-iap \
+            --command="sudo docker inspect relay --format '{{.Config.Image}}'; sudo docker inspect relay-service --format '{{.Config.Image}}'" \
+            2>/dev/null | tr -d '\r')
+          echo "running images:"
+          echo "$actual" | sed 's/^/  /'
+          for expected in "$expected_relay" "$expected_service"; do
+            if ! grep -qxF "$expected" <<<"$actual"; then
+              echo "::error::Expected $expected to be running, but it is not." \
+                   "The deploy reported success without replacing the container (#180)."
+              exit 1
+            fi
+          done
+          echo "Both containers are running this build."
 
       # A fully-configured EMQX boot (auth bootstrap file, ACL, disabled
       # listeners per emqx.conf) is slower than the bare default image the
