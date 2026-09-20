@@ -256,7 +256,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 credentials: credentials
             )
             self.transport = transport
-            let bluetooth = BluetoothConnectionManager(gateway: IOBluetoothPeripheralGateway())
             // #191: the route observer needs the headset's Bluetooth
             // address, not the UUID the rest of the node uses - CoreAudio
             // spells a Bluetooth device's UID with its MAC. Read from
@@ -266,6 +265,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if routeObserver == nil {
                 Self.logger.error("No headset address for the route observer - route reconciliation is off (#191)")
             }
+            // #225: the same observation, handed to the connection
+            // manager as well, so a claim is not skipped on a cached
+            // `.connected` that multipoint has already invalidated (ADR
+            // 0018 decision 3). Built here rather than inside the
+            // manager because this is the only place that knows both
+            // halves - the headset's UUID and its Bluetooth address.
+            let routeSource = routeObserver.map {
+                HeadsetAudioRouteSource(headsetIdentifier: headsetIdentifier, observer: $0)
+            }
+            let bluetooth = BluetoothConnectionManager(
+                gateway: IOBluetoothPeripheralGateway(),
+                routeSource: routeSource
+            )
             let node = MacNode(
                 accountId: accountId,
                 nodeId: nodeId,

@@ -1,16 +1,5 @@
 import Foundation
 
-// `os` (and `os.Logger`) is an Apple-platform module that does not exist
-// on Linux. Unlike AppKit, which is confined to the macOS-only
-// AdapterMacApp target, this file is part of the AdapterMac *library*
-// target, which does build on Linux - so the import has to be
-// conditional and needs a real fallback, not an empty one. See
-// Package.swift's `#if os(macOS)` comment for who actually builds this
-// on Linux today (nothing in this repo does).
-#if canImport(os)
-import os
-#endif
-
 /// The composition root's testable half (#128's acceptance criterion 5,
 /// mirroring `adapter-android`'s #96 acceptance criterion 4 - "a
 /// testable factory function or dependency-injection seam"). Plain
@@ -47,10 +36,6 @@ public final class NodeRuntime {
     private let mediaTriggerMonitor: MediaTriggerMonitor
     private let heartbeatPublisher: HeartbeatPublisher
     private let registrationPublisher: RegistrationPublisher
-
-    #if canImport(os)
-    private static let logger = Logger(subsystem: "app.thrw.mac", category: "NodeRuntime")
-    #endif
 
     /// `heartbeatPublisher` defaults to one beating `node` itself at the
     /// spec'd interval - callers only pass one explicitly to control
@@ -156,17 +141,10 @@ public final class NodeRuntime {
         }
     }
 
-    /// `os.Logger` on Apple platforms (what `log stream`/Console.app
-    /// pick up from the real menu-bar app), stderr on Linux, where that
-    /// module doesn't exist. Not silently dropped on the non-Apple path:
-    /// a swallowed error here would make a failing node look like an
-    /// idle one.
+    /// Delegates to ``logAdapterError(category:_:)`` - extracted when
+    /// ``MacNode`` needed the same `canImport(os)` shim (#223).
     private static func logError(_ message: String) {
-        #if canImport(os)
-        logger.error("\(message, privacy: .public)")
-        #else
-        FileHandle.standardError.write(Data("NodeRuntime: \(message)\n".utf8))
-        #endif
+        logAdapterError(category: "NodeRuntime", message)
     }
 }
 
