@@ -62,7 +62,7 @@ describe("RelayMqttClient (real broker)", () => {
   it("publishes events at QoS 1 to @thrw/protocol's eventsTopic", async () => {
     const account = randomUUID();
     const node = randomUUID();
-    const topic = eventsTopic(account, node);
+    const topic = eventsTopic(account, node, "audio");
     const payload: EventPayload = { type: "call", priority: 1 };
 
     await new Promise<void>((resolve, reject) => {
@@ -70,7 +70,7 @@ describe("RelayMqttClient (real broker)", () => {
     });
     const received = waitForMessage(verifier, topic);
 
-    await relayClient.publishEvent(account, node, payload);
+    await relayClient.publishEvent(account, node, "audio", payload);
 
     const { payload: receivedPayload, packet } = await received;
     expect(receivedPayload).toEqual(payload);
@@ -80,7 +80,7 @@ describe("RelayMqttClient (real broker)", () => {
   it("publishes commands at QoS 1 to @thrw/protocol's commandsTopic", async () => {
     const account = randomUUID();
     const node = randomUUID();
-    const topic = commandsTopic(account, node);
+    const topic = commandsTopic(account, node, "audio");
     const payload: CommandPayload = { type: "claim" };
 
     await new Promise<void>((resolve, reject) => {
@@ -88,7 +88,7 @@ describe("RelayMqttClient (real broker)", () => {
     });
     const received = waitForMessage(verifier, topic);
 
-    await relayClient.publishCommand(account, node, payload);
+    await relayClient.publishCommand(account, node, "audio", payload);
 
     const { payload: receivedPayload, packet } = await received;
     // #210: the wire payload is the caller's, stamped with seq/epoch.
@@ -101,18 +101,18 @@ describe("RelayMqttClient (real broker)", () => {
   it("stamps every command with a sequence number and an epoch", async () => {
     const account = randomUUID();
     const node = randomUUID();
-    const topic = commandsTopic(account, node);
+    const topic = commandsTopic(account, node, "audio");
 
     await new Promise<void>((resolve, reject) => {
       verifier.subscribe(topic, { qos: 2 }, (err) => (err ? reject(err) : resolve()));
     });
 
     const first = waitForMessage(verifier, topic);
-    await relayClient.publishCommand(account, node, { type: "claim" });
+    await relayClient.publishCommand(account, node, "audio", { type: "claim" });
     const a = (await first).payload as { seq: number; epoch: string };
 
     const second = waitForMessage(verifier, topic);
-    await relayClient.publishCommand(account, node, { type: "release" });
+    await relayClient.publishCommand(account, node, "audio", { type: "release" });
     const b = (await second).payload as { seq: number; epoch: string };
 
     expect(b.seq).toBeGreaterThan(a.seq);
@@ -131,8 +131,8 @@ describe("RelayMqttClient (real broker)", () => {
     const account = randomUUID();
     const nodeA = randomUUID();
     const nodeB = randomUUID();
-    const topicA = commandsTopic(account, nodeA);
-    const topicB = commandsTopic(account, nodeB);
+    const topicA = commandsTopic(account, nodeA, "audio");
+    const topicB = commandsTopic(account, nodeB, "audio");
 
     for (const topic of [topicA, topicB]) {
       await new Promise<void>((resolve, reject) => {
@@ -141,25 +141,25 @@ describe("RelayMqttClient (real broker)", () => {
     }
 
     const firstA = waitForMessage(verifier, topicA);
-    await relayClient.publishCommand(account, nodeA, { type: "claim" });
+    await relayClient.publishCommand(account, nodeA, "audio", { type: "claim" });
     expect(((await firstA).payload as { seq: number }).seq).toBe(1);
 
     const secondA = waitForMessage(verifier, topicA);
-    await relayClient.publishCommand(account, nodeA, { type: "release" });
+    await relayClient.publishCommand(account, nodeA, "audio", { type: "release" });
     expect(((await secondA).payload as { seq: number }).seq).toBe(2);
 
     // B has had nothing, so it starts at 1 rather than continuing A's run.
     const firstB = waitForMessage(verifier, topicB);
-    await relayClient.publishCommand(account, nodeB, { type: "claim" });
+    await relayClient.publishCommand(account, nodeB, "audio", { type: "claim" });
     expect(((await firstB).payload as { seq: number }).seq).toBe(1);
   });
 
   it("publishes state retained to @thrw/protocol's stateTopic", async () => {
     const account = randomUUID();
-    const topic = stateTopic(account);
+    const topic = stateTopic(account, "audio");
     const payload: StatePayload = { holder: "node-a" };
 
-    await relayClient.publishState(account, payload);
+    await relayClient.publishState(account, "audio", payload);
 
     // Prove retention, not just the live packet's flag: a client that
     // subscribes *after* the publish must still get it immediately.
@@ -214,7 +214,7 @@ describe("RelayMqttClient (real broker)", () => {
     });
 
     expect(granted).toEqual([
-      { topic: eventsTopic(account, "+"), qos: TopicQos.events.qos },
+      { topic: eventsTopic(account, "+", "+" as never), qos: TopicQos.events.qos },
     ]);
 
     const payloadA: EventPayload = { type: "call", priority: 1 };
@@ -223,17 +223,17 @@ describe("RelayMqttClient (real broker)", () => {
 
     await Promise.all([
       new Promise<void>((resolve, reject) => {
-        verifier.publish(eventsTopic(account, nodeA), JSON.stringify(payloadA), { qos: 1 }, (err) =>
+        verifier.publish(eventsTopic(account, nodeA, "audio"), JSON.stringify(payloadA), { qos: 1 }, (err) =>
           err ? reject(err) : resolve(),
         );
       }),
       new Promise<void>((resolve, reject) => {
-        verifier.publish(eventsTopic(account, nodeB), JSON.stringify(payloadB), { qos: 1 }, (err) =>
+        verifier.publish(eventsTopic(account, nodeB, "audio"), JSON.stringify(payloadB), { qos: 1 }, (err) =>
           err ? reject(err) : resolve(),
         );
       }),
       new Promise<void>((resolve, reject) => {
-        verifier.publish(eventsTopic(account, nodeC), JSON.stringify(payloadC), { qos: 1 }, (err) =>
+        verifier.publish(eventsTopic(account, nodeC, "audio"), JSON.stringify(payloadC), { qos: 1 }, (err) =>
           err ? reject(err) : resolve(),
         );
       }),
@@ -265,15 +265,15 @@ describe("RelayMqttClient (real broker)", () => {
     // itself, not relayClient, receives this - proving isolation doesn't
     // depend on nobody else being subscribed to the other account's topic.
     await new Promise<void>((resolve, reject) => {
-      verifier.subscribe(eventsTopic(otherAccount, node), { qos: 1 }, (err) =>
+      verifier.subscribe(eventsTopic(otherAccount, node, "audio"), { qos: 1 }, (err) =>
         err ? reject(err) : resolve(),
       );
     });
 
-    await relayClient.publishEvent(otherAccount, node, { type: "call", priority: 1 });
-    await relayClient.publishState(account, { holder: node });
+    await relayClient.publishEvent(otherAccount, node, "audio", { type: "call", priority: 1 });
+    await relayClient.publishState(account, "audio", { holder: node });
     const matchingPayload: EventPayload = { type: "call", priority: 1 };
-    await relayClient.publishEvent(account, node, matchingPayload);
+    await relayClient.publishEvent(account, node, "audio", matchingPayload);
 
     await expect
       .poll(() => received, { timeout: 2000 })

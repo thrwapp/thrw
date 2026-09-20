@@ -1,0 +1,34 @@
+{
+  "$comment": [
+    "The MQTT topic contract, as data (#171).",
+    "",
+    "There are three independent topic-builder implementations - TypeScript",
+    "here in packages/protocol, Swift in adapter-mac's Topics.swift, and",
+    "Kotlin in adapter-android's Topics.kt. Each had its own tests and",
+    "NOTHING asserted they agreed. They could drift apart silently, and the",
+    "only symptom would be a node going quiet on real hardware - which is",
+    "exactly the failure mode that produced #174, #175 and #182.",
+    "",
+    "That risk peaks during the ADR 0015 migration, because all three move",
+    "at once. So all three test suites now assert against these strings.",
+    "A typo in one mirror fails that platform's tests instead of shipping.",
+    "",
+    "Heartbeat deliberately has NO resource segment: ADR 0015 lists exactly",
+    "three topics that gain one, and liveness is per-node, not per-resource."
+  ],
+  "account": "acct-1",
+  "node": "node-1",
+  "resourceType": "audio",
+  "topics": {
+    "events": "thrw/acct-1/nodes/node-1/audio/events",
+    "commands": "thrw/acct-1/commands/node-1/audio",
+    "state": "thrw/acct-1/state/audio",
+    "heartbeat": "thrw/acct-1/nodes/node-1/heartbeat"
+  },
+  "hid": {
+    "$comment": "ADR 0015's second resource type. No adapter implements it yet; included so the shape is pinned before one does.",
+    "events": "thrw/acct-1/nodes/node-1/hid/events",
+    "commands": "thrw/acct-1/commands/node-1/hid",
+    "state": "thrw/acct-1/state/hid"
+  }
+}

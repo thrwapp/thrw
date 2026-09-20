@@ -12,17 +12,23 @@ import kotlin.test.assertEquals
 class TopicsTest {
     @Test
     fun `events topic matches the frozen shape`() {
-        assertEquals("thrw/acct-1/nodes/pixel-10-pro/events", Topics.events("acct-1", "pixel-10-pro"))
+        assertEquals(
+            "thrw/acct-1/nodes/pixel-10-pro/audio/events",
+            Topics.events("acct-1", "pixel-10-pro", ResourceType.AUDIO),
+        )
     }
 
     @Test
     fun `commands topic matches the frozen shape`() {
-        assertEquals("thrw/acct-1/commands/pixel-10-pro", Topics.commands("acct-1", "pixel-10-pro"))
+        assertEquals(
+            "thrw/acct-1/commands/pixel-10-pro/audio",
+            Topics.commands("acct-1", "pixel-10-pro", ResourceType.AUDIO),
+        )
     }
 
     @Test
     fun `state topic matches the frozen shape`() {
-        assertEquals("thrw/acct-1/state", Topics.state("acct-1"))
+        assertEquals("thrw/acct-1/state/audio", Topics.state("acct-1", ResourceType.AUDIO))
     }
 
     @Test
@@ -33,9 +39,9 @@ class TopicsTest {
     @Test
     fun `every topic is account-scoped for broker-level multi-tenant isolation`() {
         val topics = listOf(
-            Topics.events("acct-1", "n"),
-            Topics.commands("acct-1", "n"),
-            Topics.state("acct-1"),
+            Topics.events("acct-1", "n", ResourceType.AUDIO),
+            Topics.commands("acct-1", "n", ResourceType.AUDIO),
+            Topics.state("acct-1", ResourceType.AUDIO),
             Topics.heartbeat("acct-1", "n"),
         )
 

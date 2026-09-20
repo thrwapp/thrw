@@ -7,7 +7,8 @@ import {
   type Scheduler,
 } from "@thrw/relay-core";
 import { PRIORITY_ORDER } from "@thrw/protocol";
-import type { EventKind, NodeManifest } from "@thrw/protocol";
+import { RESOURCE_AUDIO } from "@thrw/protocol";
+import type { EventKind, NodeManifest, ResourceType } from "@thrw/protocol";
 
 // #118: the actual long-running decision service - subscribes to every
 // registered node's events per account, drives one PriorityEngine per
@@ -46,7 +47,12 @@ interface RegistrationPayload {
 }
 
 /** ADR 0015's resource type for the headset audio connection. */
-const RESOURCE_AUDIO = "audio";
+/**
+ * Every resource type this process manages (ADR 0015). Engines are
+ * created eagerly for all of them, so `engineFor` is deterministic in
+ * tests rather than depending on whether an event has arrived yet.
+ */
+const ALL_RESOURCE_TYPES: readonly ResourceType[] = ["audio", "hid"];
 
 /**
  * A disagreement between what the relay records as the holder and what a
@@ -155,14 +161,36 @@ export interface RelayServiceOptions {
   heartbeatSweepIntervalMs?: number;
 }
 
+/**
+ * Per-account state (#171).
+ *
+ * The registry and liveness live here rather than per-resource because
+ * they are facts about **nodes**: a manifest describes one device, and a
+ * heartbeat says its process is running. Arbitration is what became
+ * per-resource - see [ResourceState].
+ */
 interface AccountState {
   readonly account: string;
   readonly registry: DeviceRegistry;
-  readonly engine: PriorityEngine;
-  lastHolder: string | null;
+  /** One per resource type, created eagerly so tests are deterministic. */
+  readonly resources: Map<ResourceType, ResourceState>;
   readonly lastHeartbeatAt: Map<string, number>;
   readonly heartbeatSubscribed: Set<string>;
   sweepHandle: unknown;
+}
+
+/**
+ * Arbitration for one resource type within one account (ADR 0015).
+ *
+ * Priority rules are resource-type-specific - "a call is ringing" has no
+ * sensible mapping onto "should the keyboard switch" - so each resource
+ * gets its own engine and its own notion of who holds it.
+ */
+interface ResourceState {
+  readonly account: string;
+  readonly resource: ResourceType;
+  readonly engine: PriorityEngine;
+  lastHolder: string | null;
 }
 
 /**
@@ -218,30 +246,46 @@ export class RelayService {
     return this.states.get(account)?.registry;
   }
 
-  /** The `PriorityEngine` for `account`, mainly for tests/inspection - `undefined` if `account` wasn't configured. */
-  engineFor(account: string): PriorityEngine | undefined {
-    return this.states.get(account)?.engine;
+  /**
+   * The `PriorityEngine` for one (account, resource), mainly for
+   * tests/inspection. Defaults to `audio`, the only resource type any
+   * adapter implements today.
+   */
+  engineFor(account: string, resource: ResourceType = RESOURCE_AUDIO): PriorityEngine | undefined {
+    return this.states.get(account)?.resources.get(resource)?.engine;
   }
 
   private async startAccount(account: string): Promise<void> {
     const state: AccountState = {
       account,
       registry: new DeviceRegistry(),
-      // Wraps the injected scheduler so this engine's own internal
-      // auto-return timer (private to PriorityEngine - there's no public
-      // "holder changed" event to observe otherwise) also triggers a
-      // holder-change check when it fires, without PriorityEngine itself
-      // needing to know anything changed.
-      engine: new PriorityEngine({ scheduler: this.observingScheduler(account) }),
-      lastHolder: null,
+      resources: new Map(),
       lastHeartbeatAt: new Map(),
       heartbeatSubscribed: new Set(),
       sweepHandle: undefined,
     };
+    for (const resource of ALL_RESOURCE_TYPES) {
+      state.resources.set(resource, {
+        account,
+        resource,
+        // Wraps the injected scheduler so this engine's own internal
+        // auto-return timer (private to PriorityEngine - there's no
+        // public "holder changed" event to observe otherwise) also
+        // triggers a holder-change check when it fires, without
+        // PriorityEngine itself needing to know anything changed.
+        engine: new PriorityEngine({ scheduler: this.observingScheduler(account, resource) }),
+        lastHolder: null,
+      });
+    }
     this.states.set(account, state);
 
-    await this.client.subscribeAllEvents(account, (payload, node) => {
-      this.handleEvent(state, node, payload);
+    await this.client.subscribeAllEvents(account, (payload, node, resource) => {
+      const forResource = state.resources.get(resource);
+      // Unreachable via the parser, which validates the segment - but a
+      // resource this process does not manage must be dropped rather
+      // than silently creating state for it.
+      if (!forResource) return;
+      this.handleEvent(state, forResource, node, payload);
     });
 
     state.sweepHandle = this.scheduler.setTimeout(
@@ -250,20 +294,25 @@ export class RelayService {
     );
   }
 
-  private observingScheduler(account: string): Scheduler {
+  private observingScheduler(account: string, resource: ResourceType): Scheduler {
     return {
       setTimeout: (callback, ms) =>
         this.scheduler.setTimeout(() => {
           callback();
-          this.syncHolder(account);
+          this.syncHolder(account, resource);
         }, ms),
       clearTimeout: (handle) => this.scheduler.clearTimeout(handle),
     };
   }
 
-  private handleEvent(state: AccountState, node: string, payload: unknown): void {
+  private handleEvent(
+    state: AccountState,
+    resourceState: ResourceState,
+    node: string,
+    payload: unknown,
+  ): void {
     if (isRegistrationPayload(payload)) {
-      const holderBefore = state.lastHolder;
+      const holderBefore = resourceState.lastHolder;
       state.registry.register(payload.manifest);
       this.trackHeartbeat(state, node);
 
@@ -278,8 +327,8 @@ export class RelayService {
       // still playing reports that, so a relay which restarted - or whose
       // MQTT connection dropped and reconnected, which is how this was
       // found - learns about it again instead of staying blind (#178).
-      state.engine.reconcileSignals(node, activeEventsFrom(payload));
-      this.syncHolder(state.account);
+      resourceState.engine.reconcileSignals(node, activeEventsFrom(payload));
+      this.syncHolder(state.account, resourceState.resource);
 
       // Second - the bug that made this visible - the relay's holder
       // state is durable but the node's actual Bluetooth connection is
@@ -310,28 +359,30 @@ export class RelayService {
       // a transient into a real switch.
       const holdsRoute = observedAudioRoute(payload);
       if (holdsRoute !== undefined) {
-        const believedHolder = state.lastHolder;
+        const believedHolder = resourceState.lastHolder;
         const disagrees = holdsRoute ? believedHolder !== node : believedHolder === node;
         if (disagrees) {
           this.onRouteDrift({ account: state.account, node, nodeHoldsRoute: holdsRoute, believedHolder });
         }
       }
 
-      if (state.lastHolder === node && holderBefore === node) {
-        this.client.publishCommand(state.account, node, { type: "claim" }).catch((error: unknown) => {
+      if (resourceState.lastHolder === node && holderBefore === node) {
+        this.client
+          .publishCommand(state.account, node, resourceState.resource, { type: "claim" })
+          .catch((error: unknown) => {
           console.error(`relay-hosted: failed to re-publish claim to ${state.account}/${node}`, error);
         });
       }
       return;
     }
     if (isEventEndPayload(payload)) {
-      state.engine.endEvent(node, payload.type);
-      this.syncHolder(state.account);
+      resourceState.engine.endEvent(node, payload.type);
+      this.syncHolder(state.account, resourceState.resource);
       return;
     }
     if (isEventPayload(payload)) {
-      state.engine.recordEvent(node, payload.type);
-      this.syncHolder(state.account);
+      resourceState.engine.recordEvent(node, payload.type);
+      this.syncHolder(state.account, resourceState.resource);
       return;
     }
     // Unrecognized payload shape - dropped, not thrown, mirroring every
@@ -369,7 +420,15 @@ export class RelayService {
         // as the winner forever (docs/handoffs/118.md's "Known gaps").
         // PriorityEngine.forgetNode (#130) is that equivalent.
         state.registry.unregister(node);
-        state.engine.forgetNode(node);
+        // Every resource, not just one (#171). A heartbeat is evidence
+        // about the *node* - whether its process is alive - not about
+        // any resource it manages. A phone that has gone silent has gone
+        // silent for audio and HID alike, so leaving it as the holder of
+        // one while forgetting it from another would strand exactly the
+        // stale-winner bug #130 closed.
+        for (const resourceState of state.resources.values()) {
+          resourceState.engine.forgetNode(node);
+        }
         state.lastHeartbeatAt.delete(node);
         state.heartbeatSubscribed.delete(node);
         forgotAny = true;
@@ -380,22 +439,26 @@ export class RelayService {
     // endEvent whose holder-change notification already rides
     // observingScheduler's wrapped timer callback. Nothing else calls
     // syncHolder after a sweep, so this is the one place that needs to.
-    if (forgotAny) this.syncHolder(state.account);
+    if (forgotAny) {
+      for (const resourceState of state.resources.values()) {
+        this.syncHolder(state.account, resourceState.resource);
+      }
+    }
     state.sweepHandle = this.scheduler.setTimeout(
       () => this.sweepHeartbeats(state),
       this.heartbeatSweepIntervalMs,
     );
   }
 
-  private syncHolder(account: string): void {
-    const state = this.states.get(account);
-    if (!state) return;
+  private syncHolder(account: string, resource: ResourceType): void {
+    const resourceState = this.states.get(account)?.resources.get(resource);
+    if (!resourceState) return;
 
-    const nextHolder = state.engine.currentHolder();
-    if (nextHolder === state.lastHolder) return;
+    const nextHolder = resourceState.engine.currentHolder();
+    if (nextHolder === resourceState.lastHolder) return;
 
-    const previousHolder = state.lastHolder;
-    state.lastHolder = nextHolder;
+    const previousHolder = resourceState.lastHolder;
+    resourceState.lastHolder = nextHolder;
 
     // Sequential handoff (ADR 0002 / architecture.md: "disconnect the
     // losing device, reconnect to the winning device") - RELEASE before
@@ -406,12 +469,12 @@ export class RelayService {
     // publish must not crash the process out from under every other
     // account this service is still managing.
     if (previousHolder !== null) {
-      this.client.publishCommand(account, previousHolder, { type: "release" }).catch((error: unknown) => {
+      this.client.publishCommand(account, previousHolder, resource, { type: "release" }).catch((error: unknown) => {
         console.error(`relay-hosted: failed to publish release to ${account}/${previousHolder}`, error);
       });
     }
     if (nextHolder !== null) {
-      this.client.publishCommand(account, nextHolder, { type: "claim" }).catch((error: unknown) => {
+      this.client.publishCommand(account, nextHolder, resource, { type: "claim" }).catch((error: unknown) => {
         console.error(`relay-hosted: failed to publish claim to ${account}/${nextHolder}`, error);
       });
     }

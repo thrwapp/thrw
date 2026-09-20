@@ -38,18 +38,26 @@ public struct NodeManifest: Codable, Sendable, Equatable {
     public let adapterVersion: String
     public let supportedEventKinds: [EventKind]
 
+    /// Which resource types this adapter can actually **control** (ADR
+    /// 0015). Distinct from `supportedEventKinds`, which is what it can
+    /// *observe*: a Linux desktop might support `hid` but not `audio` if
+    /// it has no Bluetooth audio integration.
+    public let supportedResourceTypes: [ResourceType]
+
     public init(
         nodeId: String,
         platform: Platform,
         displayName: String,
         adapterVersion: String,
-        supportedEventKinds: [EventKind]
+        supportedEventKinds: [EventKind],
+        supportedResourceTypes: [ResourceType]
     ) {
         self.nodeId = nodeId
         self.platform = platform
         self.displayName = displayName
         self.adapterVersion = adapterVersion
         self.supportedEventKinds = supportedEventKinds
+        self.supportedResourceTypes = supportedResourceTypes
     }
 }
 

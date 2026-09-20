@@ -85,6 +85,7 @@ function manifest(overrides: Partial<NodeManifest>): NodeManifest {
     displayName: "simulated node",
     adapterVersion: "1.0.0",
     supportedEventKinds: ["call", "media"],
+    supportedResourceTypes: ["audio"],
     ...overrides,
   };
 }
@@ -110,7 +111,7 @@ function publishEventEnd(
 ): Promise<void> {
   const payload: EventEndPayload = { kind: EVENT_END_KIND, type };
   return new Promise((resolve, reject) => {
-    client.publish(eventsTopic(account, node), JSON.stringify(payload), { qos: 1 }, (err) =>
+    client.publish(eventsTopic(account, node, "audio"), JSON.stringify(payload), { qos: 1 }, (err) =>
       err ? reject(err) : resolve(),
     );
   });
@@ -174,19 +175,19 @@ describe("handoff integration: two simulated nodes driving PriorityEngine over t
     // No active signal remains, but B is now the last-claimed node
     // (PriorityEngine rule 5) - this is the holder A's later call should
     // return to.
-    await nodeBClient.publishEvent(account, nodeB.nodeId, { type: "media", priority: 4 });
+    await nodeBClient.publishEvent(account, nodeB.nodeId, "audio", { type: "media", priority: 4 });
     await expect.poll(() => engine.currentHolder(), { timeout: 2000 }).toBe(nodeB.nodeId);
 
     await publishEventEnd(rawClient, account, nodeB.nodeId, "media");
     await expect.poll(() => engine.currentHolder(), { timeout: 2000 }).toBe(nodeB.nodeId);
 
     // (a) node A emits a call event -> A becomes holder.
-    await nodeAClient.publishEvent(account, nodeA.nodeId, { type: "call", priority: 1 });
+    await nodeAClient.publishEvent(account, nodeA.nodeId, "audio", { type: "call", priority: 1 });
     await expect.poll(() => engine.currentHolder(), { timeout: 2000 }).toBe(nodeA.nodeId);
 
     // (b) node B then emits media while A's call is still active -> holder
     // stays A (call outranks media, per PRIORITY_ORDER).
-    await nodeBClient.publishEvent(account, nodeB.nodeId, { type: "media", priority: 4 });
+    await nodeBClient.publishEvent(account, nodeB.nodeId, "audio", { type: "media", priority: 4 });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(engine.currentHolder()).toBe(nodeA.nodeId);
 

@@ -14,6 +14,7 @@ import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.protocol.Priority
 import com.thrw.adapter.android.protocol.ProtocolJson
 import com.thrw.adapter.android.protocol.RESOURCE_AUDIO
+import com.thrw.adapter.android.protocol.ResourceType
 import com.thrw.adapter.android.status.NodeStatus
 import com.thrw.adapter.android.status.nodeStatus
 import com.thrw.adapter.android.protocol.RegistrationPayload
@@ -91,6 +92,15 @@ class AndroidNode(
      */
     private val activeEvents = linkedSetOf<EventKind>()
     private val activeEventsLock = Any()
+
+    /**
+     * The resource this adapter manages (ADR 0015 / #171).
+     *
+     * A constant rather than a parameter: this adapter controls the
+     * headset audio connection and nothing else, which is exactly what
+     * its manifest declares. A `hid` adapter would be a different node.
+     */
+    private val resource get() = RESOURCE
 
     /**
      * This node's current status, for display (#213).
@@ -213,7 +223,7 @@ class AndroidNode(
      * leave this node deaf to the *next*, valid, claim.
      */
     suspend fun listenForCommands() {
-        transport.subscribe(Topics.commands(accountId, nodeId), TopicQos.COMMANDS_QOS)
+        transport.subscribe(Topics.commands(accountId, nodeId, RESOURCE), TopicQos.COMMANDS_QOS)
             .collect { payload ->
                 val command = runCatching {
                     json.decodeFromString(CommandPayload.serializer(), payload)
@@ -289,10 +299,13 @@ class AndroidNode(
 
     private suspend fun publishToEvents(payload: String) {
         transport.publish(
-            topic = Topics.events(accountId, nodeId),
+            topic = Topics.events(accountId, nodeId, RESOURCE),
             payload = payload,
             qos = TopicQos.EVENTS_QOS,
             retained = false,
         )
     }
 }
+
+/** This adapter manages the headset audio connection (ADR 0015). */
+private val RESOURCE = ResourceType.AUDIO

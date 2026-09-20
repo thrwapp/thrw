@@ -250,10 +250,21 @@ see ADR 0013 for the full reconciliation.
 
 ## MQTT topic design
 
-    thrw/{account}/nodes/{node}/events      node publishes, QoS 1
-    thrw/{account}/commands/{node}          relay publishes, QoS 1
-    thrw/{account}/state                    retained — current holder
-    thrw/{account}/nodes/{node}/heartbeat   QoS 0, ~30s
+    thrw/{account}/nodes/{node}/{resource}/events   node publishes, QoS 1
+    thrw/{account}/commands/{node}/{resource}      relay publishes, QoS 1
+    thrw/{account}/state/{resource}                retained — current holder
+    thrw/{account}/nodes/{node}/heartbeat          QoS 0, ~30s
+
+`{resource}` is ADR 0015's resource type — `audio` today, `hid` when
+peripheral switching exists (#171). Heartbeat deliberately has no such
+segment: liveness is a property of the node, not of anything it manages,
+and a per-resource heartbeat would multiply traffic for no extra signal.
+
+These strings are pinned in `packages/protocol/fixtures/topics.json`,
+which all three topic-builder implementations — TypeScript, Swift and
+Kotlin — assert against. They are hand-written mirrors of one another,
+and before that fixture existed nothing would have caught them drifting
+apart except a node going silent on real hardware.
 
 Account-scoped prefixes give multi-tenant isolation at the broker ACL
 level. Claim/release use QoS 1 (duplicates tolerable, missed events are

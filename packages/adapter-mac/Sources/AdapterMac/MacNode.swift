@@ -21,6 +21,13 @@ import Foundation
 /// satisfies both `NodeInterface` and `EventLifecycle` at once, so only
 /// `endEvent` needed adding.
 public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
+    /// The resource this adapter manages (ADR 0015 / #171).
+    ///
+    /// A constant rather than a parameter: this adapter controls the
+    /// headset audio connection and nothing else, which is exactly what
+    /// its manifest declares. A `hid` adapter would be a different node.
+    static let resource: ResourceType = .audio
+
     private let accountId: String
     private let nodeId: String
     private let headsetIdentifier: UUID
@@ -174,7 +181,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// and leave this node deaf to the *next*, valid, claim.
     public func listenForCommands() async throws {
         let commands = transport.subscribe(
-            topic: Topics.commands(account: accountId, node: nodeId),
+            topic: Topics.commands(account: accountId, node: nodeId, resource: Self.resource),
             qos: TopicQos.commandsQos
         )
         for await payload in commands {
@@ -214,7 +221,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     private func publishToEvents(_ payload: some Encodable) async throws {
         let data = try JSONEncoder().encode(payload)
         try await transport.publish(
-            topic: Topics.events(account: accountId, node: nodeId),
+            topic: Topics.events(account: accountId, node: nodeId, resource: Self.resource),
             payload: String(decoding: data, as: UTF8.self),
             qos: TopicQos.eventsQos,
             retained: false

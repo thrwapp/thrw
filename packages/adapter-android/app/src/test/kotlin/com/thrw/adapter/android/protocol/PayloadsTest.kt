@@ -34,7 +34,8 @@ class PayloadsTest {
 
         assertEquals(
             """{"nodeId":"pixel-10-pro","platform":"android","displayName":"Pixel 10 Pro",""" +
-                """"adapterVersion":"0.0.0","supportedEventKinds":["call","media"]}""",
+                """"adapterVersion":"0.0.0","supportedEventKinds":["call","media"],""" +
+                """"supportedResourceTypes":["audio"]}""",
             json,
         )
     }
@@ -121,6 +122,7 @@ class PayloadsTest {
             displayName = "Pixel 10 Pro",
             adapterVersion = "0.0.0",
             supportedEventKinds = listOf(EventKind.CALL, EventKind.MEDIA),
+            supportedResourceTypes = listOf(ResourceType.AUDIO),
         )
     }
 }

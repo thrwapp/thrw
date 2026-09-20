@@ -8,6 +8,7 @@ import com.thrw.adapter.android.heartbeat.HeartbeatRunner
 import com.thrw.adapter.android.registration.RegistrationRunner
 import com.thrw.adapter.android.mqtt.MqttTransport
 import com.thrw.adapter.android.protocol.EventKind
+import com.thrw.adapter.android.protocol.ResourceType
 import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.protocol.Platform
 import com.thrw.adapter.android.protocol.ProtocolJson
@@ -73,8 +74,8 @@ private class RuntimeRecordingGateway : BluetoothClassicGateway {
 private const val ACCOUNT = "acct-1"
 private const val NODE = "node-1"
 private const val HEADSET = "AA:BB:CC:DD:EE:FF"
-private const val EVENTS_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/events"
-private const val COMMANDS_TOPIC = "thrw/$ACCOUNT/commands/$NODE"
+private const val EVENTS_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/audio/events"
+private const val COMMANDS_TOPIC = "thrw/$ACCOUNT/commands/$NODE/audio"
 private const val HEARTBEAT_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/heartbeat"
 
 private val MANIFEST = NodeManifest(
@@ -83,6 +84,7 @@ private val MANIFEST = NodeManifest(
     displayName = "Test Device",
     adapterVersion = "0.1.0",
     supportedEventKinds = listOf(EventKind.CALL, EventKind.VOIP),
+    supportedResourceTypes = listOf(ResourceType.AUDIO),
 )
 
 /**
