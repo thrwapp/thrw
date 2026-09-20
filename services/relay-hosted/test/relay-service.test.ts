@@ -1,10 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { commandsTopic, eventsTopic, heartbeatTopic, type EventKind, type NodeManifest } from "@thrw/protocol";
+import {
+  commandsTopic,
+  eventsTopic,
+  heartbeatTopic,
+  stateTopic,
+  type EventKind,
+  type NodeManifest,
+} from "@thrw/protocol";
 import {
   defaultMqttBrokerUrl,
   RelayMqttClient,
   type CommandPayload,
   type Scheduler,
+  type StatePayload,
 } from "@thrw/relay-core";
 import mqtt, { type MqttClient } from "mqtt";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -79,9 +87,15 @@ function connectRawClient(): Promise<MqttClient> {
   });
 }
 
-function publishJson(client: MqttClient, topic: string, payload: unknown, qos: 0 | 1 | 2 = 1): Promise<void> {
+function publishJson(
+  client: MqttClient,
+  topic: string,
+  payload: unknown,
+  qos: 0 | 1 | 2 = 1,
+  retain = false,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    client.publish(topic, JSON.stringify(payload), { qos }, (err) => (err ? reject(err) : resolve()));
+    client.publish(topic, JSON.stringify(payload), { qos, retain }, (err) => (err ? reject(err) : resolve()));
   });
 }
 
@@ -106,6 +120,72 @@ function publishEventEnd(client: MqttClient, account: string, node: string, type
 
 function publishEvent(client: MqttClient, account: string, node: string, type: EventKind): Promise<void> {
   return publishJson(client, eventsTopic(account, node, "audio"), { type, priority: 1 });
+}
+
+/**
+ * Reads the **retained** message on the state topic the way a node that
+ * has just connected would - a fresh client, subscribing after the fact.
+ *
+ * That is the whole point of the test (#222): a subscription made after
+ * the publish is the only thing that proves the message was retained
+ * rather than merely sent. Polling `service`'s internals would prove
+ * nothing about the broker.
+ *
+ * Resolves `undefined` when nothing is retained, rather than hanging -
+ * "the topic is empty" is an assertion several tests here need to make.
+ */
+async function readRetainedState(account: string): Promise<StatePayload | undefined> {
+  const topic = stateTopic(account, "audio");
+  const client = await connectRawClient();
+  try {
+    return await new Promise<StatePayload | undefined>((resolve) => {
+      const timer = setTimeout(() => resolve(undefined), 400);
+      client.on("message", (messageTopic, message) => {
+        if (messageTopic !== topic) return;
+        clearTimeout(timer);
+        resolve(JSON.parse(message.toString()) as StatePayload);
+      });
+      client.subscribe(topic, { qos: 1 });
+    });
+  } finally {
+    await new Promise<void>((resolve) => client.end(false, {}, () => resolve()));
+  }
+}
+
+/**
+ * Counts every message that lands on the state topic from now on, so a
+ * test can assert the relay is *quiet* rather than republishing the same
+ * holder forever.
+ *
+ * The caller has to settle and clear once before counting: `rawClient`
+ * connects as MQTT 3.1.1, where a subscribe always delivers the current
+ * retained message and there is no `retainHandling` option to suppress
+ * it. Suppressing it here would need a second MQTT 5 client, which is
+ * more machinery than one discarded message is worth.
+ */
+function collectStatePublishes(client: MqttClient, account: string): StatePayload[] {
+  const received: StatePayload[] = [];
+  const topic = stateTopic(account, "audio");
+  client.subscribe(topic, { qos: 1 });
+  client.on("message", (messageTopic, message) => {
+    if (messageTopic !== topic) return;
+    received.push(JSON.parse(message.toString()) as StatePayload);
+  });
+  return received;
+}
+
+/**
+ * Clears the retained message on `account`'s state topic - an empty
+ * retained publish is MQTT's delete. Tests use random account ids, so
+ * this is only needed where a test deliberately leaves one behind for
+ * the *next* service to find.
+ */
+function clearRetainedState(client: MqttClient, account: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    client.publish(stateTopic(account, "audio"), "", { qos: 1, retain: true }, (err) =>
+      err ? reject(err) : resolve(),
+    );
+  });
 }
 
 /**
@@ -530,5 +610,175 @@ describe("RelayService (real broker)", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(drifts).toEqual([]);
+  });
+
+  // #222. `architecture.md` and ADR 0001 have always specified this
+  // topic; nothing published it, so nothing could observe who holds a
+  // resource. Every test below reads it the way a node would - a fresh
+  // client subscribing after the fact - because a subscription made
+  // *after* the publish is the only thing that proves retention.
+  describe("the retained state topic (#222)", () => {
+    it("announces the holder, and a late subscriber still gets it", async () => {
+      const account = randomUUID();
+      const nodeA = manifest({ supportedEventKinds: ["call"] });
+      await startService([account]);
+
+      await publishRegistration(rawClient, account, nodeA);
+      await publishEvent(rawClient, account, nodeA.nodeId, "call");
+
+      await expect.poll(() => readRetainedState(account), { timeout: 2000 }).toEqual({
+        holder: nodeA.nodeId,
+      });
+    });
+
+    it("follows a real handoff", async () => {
+      const account = randomUUID();
+      const nodeA = manifest({ supportedEventKinds: ["call"] });
+      const nodeB = manifest({ supportedEventKinds: ["call"] });
+      await startService([account]);
+      await publishRegistration(rawClient, account, nodeA);
+      await publishRegistration(rawClient, account, nodeB);
+
+      await publishEvent(rawClient, account, nodeA.nodeId, "call");
+      await expect.poll(() => readRetainedState(account), { timeout: 2000 }).toEqual({
+        holder: nodeA.nodeId,
+      });
+
+      await publishEvent(rawClient, account, nodeB.nodeId, "call");
+      await expect.poll(() => readRetainedState(account), { timeout: 2000 }).toEqual({
+        holder: nodeB.nodeId,
+      });
+    });
+
+    /**
+     * The state topic reports the relay's *actual* holder rule, not an
+     * intuition about one. `PriorityEngine.currentHolder()` is
+     * `computeActiveHolder() ?? lastClaimed`, so when the last signal
+     * ends the holder does **not** become nobody - the last claimer
+     * keeps it until something outranks it or it is forgotten. That is
+     * rule 5, and it is why a call ending does not fling the headset
+     * back to a device nobody is using.
+     *
+     * Written the other way round first, asserting `holder: null`, and
+     * it failed. Worth keeping as an assertion rather than a comment:
+     * the state topic is the surface a reader will form their mental
+     * model from, so if it ever *did* report null here, the readout and
+     * the arbitration would disagree.
+     */
+    it("keeps reporting the last claimer after the signal ends (rule 5)", async () => {
+      const account = randomUUID();
+      const nodeA = manifest({ supportedEventKinds: ["call"] });
+      await startService([account]);
+      await publishRegistration(rawClient, account, nodeA);
+      await publishEvent(rawClient, account, nodeA.nodeId, "call");
+      await expect.poll(() => readRetainedState(account), { timeout: 2000 }).toEqual({
+        holder: nodeA.nodeId,
+      });
+
+      await publishEventEnd(rawClient, account, nodeA.nodeId, "call");
+      await settle();
+
+      expect(await readRetainedState(account)).toEqual({ holder: nodeA.nodeId });
+    });
+
+    /**
+     * Where `holder: null` does come from: the node goes silent, the
+     * heartbeat sweep forgets it (#130/#142), and the resource really is
+     * free. `null` is a real answer - "nobody holds this" - and
+     * deliberately distinct from the topic being empty, which means
+     * "nobody has told you anything".
+     */
+    it("reports nobody once a silent node is swept", async () => {
+      const account = randomUUID();
+      const nodeA = manifest({ supportedEventKinds: ["call"] });
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      await startService([account], scheduler, () => now);
+      await publishRegistration(rawClient, account, nodeA);
+      await publishEvent(rawClient, account, nodeA.nodeId, "call");
+      await expect.poll(() => readRetainedState(account), { timeout: 2000 }).toEqual({
+        holder: nodeA.nodeId,
+      });
+
+      // Past the 90s liveness timeout with no beats at all.
+      now += 120_000;
+      scheduler.fire(5_000);
+
+      await expect.poll(() => readRetainedState(account), { timeout: 2000 }).toEqual({ holder: null });
+    });
+
+    /**
+     * The case that makes this more than a few lines.
+     *
+     * A retained message outlives the process that wrote it, and this
+     * relay holds all its state in memory (the premise of #178). So a
+     * restart leaves the broker serving the *previous* process's answer
+     * while the new one believes nothing - and `syncHolder` returns
+     * early when the holder has not changed, so it would never correct
+     * it. Registration is the only thing that runs in that window.
+     *
+     * Without the `publishedHolder === undefined` case, a relay that
+     * restarted during a quiet period would leave a confident, wrong,
+     * retained answer standing indefinitely.
+     */
+    it("overwrites a stale retained message left by a previous relay process", async () => {
+      const account = randomUUID();
+      const nodeA = manifest({ supportedEventKinds: ["call"] });
+      const ghost = randomUUID();
+
+      // Exactly what a previous process would have left behind: a
+      // retained claim about a node this new relay has never heard of.
+      await publishJson(rawClient, stateTopic(account, "audio"), { holder: ghost }, 1, true);
+      expect(await readRetainedState(account)).toEqual({ holder: ghost });
+
+      await startService([account]);
+      await publishRegistration(rawClient, account, nodeA);
+
+      await expect.poll(() => readRetainedState(account), { timeout: 2000 }).toEqual({ holder: null });
+    });
+
+    it("is quiet once it has published the current holder", async () => {
+      const account = randomUUID();
+      const nodeA = manifest({ supportedEventKinds: ["call"] });
+      await startService([account]);
+      await publishRegistration(rawClient, account, nodeA);
+      await publishEvent(rawClient, account, nodeA.nodeId, "call");
+      await expect.poll(() => readRetainedState(account), { timeout: 2000 }).toEqual({
+        holder: nodeA.nodeId,
+      });
+
+      // #178 re-registers every 2 minutes per node, forever. Publishing
+      // an unchanged holder each time would be pure noise on a topic
+      // whose whole value is being a stable, readable answer.
+      const publishes = collectStatePublishes(rawClient, account);
+      // The broker delivers the *existing* retained message on
+      // subscribe, and this client speaks MQTT 3.1.1 where `rh` does not
+      // exist to suppress that - so let it arrive and discard it, rather
+      // than counting someone else's old publish as a new one. (The
+      // first version of this test did exactly that and failed.)
+      await settle();
+      publishes.length = 0;
+
+      await publishRegistration(rawClient, account, nodeA);
+      await publishRegistration(rawClient, account, nodeA);
+      await settle();
+
+      expect(publishes).toEqual([]);
+    });
+
+    it("keeps accounts separate", async () => {
+      const accountA = randomUUID();
+      const accountB = randomUUID();
+      const nodeA = manifest({ supportedEventKinds: ["call"] });
+      await startService([accountA, accountB]);
+      await publishRegistration(rawClient, accountA, nodeA);
+
+      await publishEvent(rawClient, accountA, nodeA.nodeId, "call");
+      await expect.poll(() => readRetainedState(accountA), { timeout: 2000 }).toEqual({
+        holder: nodeA.nodeId,
+      });
+
+      expect(await readRetainedState(accountB)).toBeUndefined();
+    });
   });
 });

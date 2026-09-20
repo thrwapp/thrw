@@ -191,6 +191,24 @@ interface ResourceState {
   readonly resource: ResourceType;
   readonly engine: PriorityEngine;
   lastHolder: string | null;
+  /**
+   * What this process has published on the retained state topic (#222).
+   *
+   * Deliberately three-valued, and `undefined` is the important one: it
+   * means *this process* has published nothing yet, which is not the
+   * same as having published "nobody holds it". A retained message
+   * outlives the process that wrote it, so after a relay restart the
+   * broker is still serving the previous process's answer while this
+   * one believes nothing - and `lastHolder` being `null` on both sides
+   * would make that look like agreement.
+   *
+   * Separate from `lastHolder` rather than derived from it because they
+   * answer different questions: `lastHolder` is what this relay
+   * believes, `publishedHolder` is what the broker is currently telling
+   * everyone. They diverge for exactly as long as a publish is in
+   * flight, and across a restart.
+   */
+  publishedHolder: string | null | undefined;
 }
 
 /**
@@ -275,6 +293,7 @@ export class RelayService {
         // PriorityEngine itself needing to know anything changed.
         engine: new PriorityEngine({ scheduler: this.observingScheduler(account, resource) }),
         lastHolder: null,
+        publishedHolder: undefined,
       });
     }
     this.states.set(account, state);
@@ -373,6 +392,13 @@ export class RelayService {
           console.error(`relay-hosted: failed to re-publish claim to ${state.account}/${node}`, error);
         });
       }
+
+      // #222. Registration is the only thing that runs after a relay
+      // restart without a holder change to trigger a publish, so it is
+      // what overwrites a retained message left behind by the previous
+      // process. A no-op once this process has published the current
+      // holder - see `publishHolder`.
+      this.publishHolder(resourceState);
       return;
     }
     if (isEventEndPayload(payload)) {
@@ -478,5 +504,71 @@ export class RelayService {
         console.error(`relay-hosted: failed to publish claim to ${account}/${nextHolder}`, error);
       });
     }
+
+    this.publishHolder(resourceState);
+  }
+
+  /**
+   * Announces who holds `resource` on the retained state topic (#222).
+   *
+   * `architecture.md`'s topic table and ADR 0001 have always specified
+   * this topic; nothing published it until now, so nothing could
+   * observe who holds a resource. A node only ever hears commands
+   * addressed to itself, which tells it what it was told to do, not
+   * what is true.
+   *
+   * ## Why it is retained, and what that costs
+   *
+   * Retained is what the spec asks for, and it is what lets a node that
+   * has just connected learn the answer without waiting for the next
+   * holder change.
+   *
+   * But a retained message **outlives the process that wrote it**, and
+   * this relay holds all its state in memory (the premise of #178). So
+   * after a restart the broker keeps serving the previous process's
+   * answer while this process believes nothing, and every node
+   * connecting in that window is handed an authoritative-looking
+   * statement this relay would disown. That is #210's epoch problem in
+   * a new place.
+   *
+   * The fix is `publishedHolder`'s third state. It starts `undefined`,
+   * meaning "this process has published nothing", so the first call
+   * after a restart always publishes - overwriting the stale retained
+   * message - even when the value happens to match what is already
+   * there. Thereafter only a genuine change publishes, so the steady
+   * state is silent.
+   *
+   * ## Where this is called from
+   *
+   * Two places, and both are needed:
+   *
+   * - `syncHolder`, on a real holder change. The obvious one.
+   * - Registration, which is the *only* thing that runs after a restart
+   *   with no holder change to trigger it. Without it a relay that
+   *   restarted during a quiet period would leave the stale message
+   *   standing indefinitely - `syncHolder` returns early when the
+   *   holder has not moved, so it would never be reached.
+   *
+   * Fire-and-forget with a `.catch`, for the same reason the command
+   * publishes are: a failed publish must not crash the process out from
+   * under every other account this service is managing. The consequence
+   * of a lost state publish is a stale readout, not a missed switch.
+   */
+  private publishHolder(resourceState: ResourceState): void {
+    if (resourceState.publishedHolder === resourceState.lastHolder) return;
+
+    const holder = resourceState.lastHolder;
+    resourceState.publishedHolder = holder;
+    this.client
+      .publishState(resourceState.account, resourceState.resource, { holder })
+      .catch((error: unknown) => {
+        // Rolled back so the next opportunity retries rather than
+        // believing it has already announced this holder.
+        resourceState.publishedHolder = undefined;
+        console.error(
+          `relay-hosted: failed to publish state for ${resourceState.account}/${resourceState.resource}`,
+          error,
+        );
+      });
   }
 }

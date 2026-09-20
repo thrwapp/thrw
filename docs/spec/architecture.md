@@ -271,7 +271,24 @@ level. Claim/release use QoS 1 (duplicates tolerable, missed events are
 not). The state topic is retained so a reconnecting node (phone regains
 signal, laptop wakes up) immediately knows who currently holds the
 connection without waiting for the next event — this is what makes
-recovery from a mobile network dropout work smoothly. Priority rules
+recovery from a mobile network dropout work smoothly.
+
+Two things about the state topic are worth stating here rather than
+leaving to the implementation (#222):
+
+- **It reports the holder rule, not an intuition about it.** When the
+  last trigger ends, the holder does *not* become nobody — the last
+  claimer keeps the resource until something outranks it or the node is
+  forgotten (rule 5 below). `holder: null` means the resource is
+  genuinely free, which in practice means the holder went silent and was
+  swept. That is different again from the topic being *empty*, which
+  means nobody has told you anything yet.
+- **A retained message outlives the relay process that wrote it**, and
+  the relay holds its state in memory. So the relay republishes the
+  holder on the first registration it sees after starting, overwriting
+  whatever a previous process left behind, even when the value is
+  unchanged. Without that, a relay restarting during a quiet period
+  would leave a confident and wrong answer standing indefinitely. Priority rules
 live server-side in the relay, never duplicated in adapters, so two
 adapters can never disagree about the current rule version after a
 partial rollout.
