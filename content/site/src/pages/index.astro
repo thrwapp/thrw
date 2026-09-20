@@ -7,531 +7,465 @@
 // The waitlist CTA now submits to the Cloudflare Pages Function at
 // functions/waitlist.ts, which forwards the address to Buttondown
 // server-side (issue #70).
+//
+// The page shell — <head> metadata, glow, header, footer, design tokens —
+// lives in ../layouts/Base.astro. Only this page's own sections and their
+// styles are here.
+import Base from "../layouts/Base.astro";
+
 const title = "thrw — One headset. Every device you actually use.";
+const description =
+  "thrw switches your Bluetooth headset to whichever of your devices needs it — a call, a meeting, playback starting — across Android, Mac, iPad and Linux, not just within one vendor's ecosystem.";
+
+// The FAQ below is duplicated into FAQPage structured data so search results
+// can surface the answers directly. `faq` is the single source: the markup
+// and the JSON-LD are both generated from it, so they cannot drift apart.
+const faq = [
+  {
+    question: "Is switching instant?",
+    answer:
+      "No. Switching is a real disconnect-and-reconnect, not an instant swap, so it takes a few real seconds rather than zero. We'd rather say that plainly than promise a number we haven't measured against real hardware.",
+  },
+  {
+    question: "What devices does it support?",
+    answer:
+      "Adapters for Android, Mac, iPad, and Linux, so your headset can follow you across ecosystems instead of staying locked to one vendor's devices.",
+  },
+  {
+    question: "Do I need root or a jailbreak?",
+    answer:
+      "No. thrw uses sequential handoff — disconnect from the losing device, reconnect to the winning one — specifically so it works without root or a jailbreak on any of your devices.",
+  },
+  {
+    question: "Does this replace Apple's own device switching?",
+    answer:
+      "It's for the gaps Apple's switching doesn't cover — outside a single Apple ID, or once an Android, Windows, or Linux device is in the mix. thrw's advantage is working reliably across ecosystems, not being faster than Apple's own switching.",
+  },
+  {
+    question: "How does thrw decide which device gets the headset?",
+    answer:
+      "An incoming or outgoing call always wins, then a manual claim, then a VoIP session (Zoom, Meet, Teams, WhatsApp), then media playback, then whichever device claimed it last.",
+  },
+];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faq.map((entry) => ({
+    "@type": "Question",
+    name: entry.question,
+    acceptedAnswer: { "@type": "Answer", text: entry.answer },
+  })),
+};
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{title}</title>
-  </head>
-  <body>
-    <div class="glow" aria-hidden="true"></div>
+<Base title={title} description={description} path="/">
+  <script
+    slot="head"
+    is:inline
+    type="application/ld+json"
+    set:html={JSON.stringify(faqSchema)}
+  />
 
-    <header class="site-header">
-      <p class="wordmark">thrw</p>
-    </header>
+  <main>
+    <section class="hero">
+      <h1>One headset. Every device you actually use.</h1>
+      <p>Apple's own device-switching only works between Apple devices signed into the same Apple ID — and even then, it's inconsistently reliable. Add an Android phone, a Windows laptop, or Linux to the mix and you get no automatic handoff at all. thrw runs a small adapter on each of your devices and switches your headset to whichever one needs it — a call, a meeting starting, playback beginning — across ecosystems, without you touching a settings menu.</p>
+      <p>Switching is a real disconnect-and-reconnect, not an instant swap — so it takes a few real seconds, not zero. We're not going to pretend otherwise, or promise a number until we've measured it against real hardware.</p>
+      <form id="waitlist-form" class="waitlist-form" novalidate>
+        <label class="visually-hidden" for="waitlist-email">Email address</label>
+        <input id="waitlist-email" class="waitlist-input" name="email" type="email" placeholder="you@example.com" autocomplete="email" aria-describedby="waitlist-message" required />
+        <button type="submit" class="cta">Join the waitlist</button>
+      </form>
+      <p id="waitlist-message" class="waitlist-message" role="status" aria-live="polite"></p>
+    </section>
 
-    <main>
-      <section class="hero">
-        <h1>One headset. Every device you actually use.</h1>
-        <p>Apple's own device-switching only works between Apple devices signed into the same Apple ID — and even then, it's inconsistently reliable. Add an Android phone, a Windows laptop, or Linux to the mix and you get no automatic handoff at all. thrw runs a small adapter on each of your devices and switches your headset to whichever one needs it — a call, a meeting starting, playback beginning — across ecosystems, without you touching a settings menu.</p>
-        <p>Switching is a real disconnect-and-reconnect, not an instant swap — so it takes a few real seconds, not zero. We're not going to pretend otherwise, or promise a number until we've measured it against real hardware.</p>
-        <form id="waitlist-form" class="waitlist-form" novalidate>
-          <label class="visually-hidden" for="waitlist-email">Email address</label>
-          <input id="waitlist-email" class="waitlist-input" name="email" type="email" placeholder="you@example.com" autocomplete="email" required />
-          <button type="submit" class="cta">Join the waitlist</button>
-        </form>
-        <p id="waitlist-message" class="waitlist-message" role="status" aria-live="polite"></p>
-      </section>
+    <section class="diagram">
+      <svg viewBox="0 0 640 220" role="img" aria-label="Phone, laptop, and tablet each connecting to one shared headset">
+        <g class="diagram-links" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 6">
+          <path d="M 120 70 C 220 70, 260 110, 320 110" />
+          <path d="M 320 110 C 260 150, 220 168, 120 168" />
+          <path d="M 520 110 C 400 110, 380 110, 320 110" />
+        </g>
+        <!-- phone -->
+        <g transform="translate(72, 40)" class="diagram-node">
+          <rect x="0" y="0" width="48" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="2" />
+          <line x1="18" y1="50" x2="30" y2="50" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </g>
+        <!-- laptop -->
+        <g transform="translate(64, 138)" class="diagram-node">
+          <rect x="0" y="0" width="64" height="40" rx="4" fill="none" stroke="currentColor" stroke-width="2" />
+          <path d="M -8 44 H 72 L 64 54 H 0 Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+        </g>
+        <!-- tablet -->
+        <g transform="translate(486, 78)" class="diagram-node">
+          <rect x="0" y="0" width="64" height="64" rx="8" fill="none" stroke="currentColor" stroke-width="2" />
+          <circle cx="32" cy="53" r="2.5" fill="currentColor" />
+        </g>
+        <!-- headset (shared focal point) -->
+        <g transform="translate(296, 84)" class="diagram-node diagram-node--accent">
+          <path d="M 4 28 C 4 8, 20 -4, 40 -4 C 60 -4, 76 8, 76 28" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+          <rect x="-4" y="24" width="16" height="24" rx="6" fill="currentColor" />
+          <rect x="68" y="24" width="16" height="24" rx="6" fill="currentColor" />
+        </g>
+      </svg>
+    </section>
 
-      <section class="diagram" aria-hidden="true">
-        <svg viewBox="0 0 640 220" role="img" aria-label="Phone, laptop, and tablet each connecting to one shared headset">
-          <g class="diagram-links" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 6">
-            <path d="M 120 70 C 220 70, 260 110, 320 110" />
-            <path d="M 320 110 C 260 150, 220 168, 120 168" />
-            <path d="M 520 110 C 400 110, 380 110, 320 110" />
-          </g>
-          <!-- phone -->
-          <g transform="translate(72, 40)" class="diagram-node">
-            <rect x="0" y="0" width="48" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="2" />
-            <line x1="18" y1="50" x2="30" y2="50" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-          </g>
-          <!-- laptop -->
-          <g transform="translate(64, 138)" class="diagram-node">
-            <rect x="0" y="0" width="64" height="40" rx="4" fill="none" stroke="currentColor" stroke-width="2" />
-            <path d="M -8 44 H 72 L 64 54 H 0 Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
-          </g>
-          <!-- tablet -->
-          <g transform="translate(486, 78)" class="diagram-node">
-            <rect x="0" y="0" width="64" height="64" rx="8" fill="none" stroke="currentColor" stroke-width="2" />
-            <circle cx="32" cy="53" r="2.5" fill="currentColor" />
-          </g>
-          <!-- headset (shared focal point) -->
-          <g transform="translate(296, 84)" class="diagram-node diagram-node--accent">
-            <path d="M 4 28 C 4 8, 20 -4, 40 -4 C 60 -4, 76 8, 76 28" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
-            <rect x="-4" y="24" width="16" height="24" rx="6" fill="currentColor" />
-            <rect x="68" y="24" width="16" height="24" rx="6" fill="currentColor" />
-          </g>
-        </svg>
-      </section>
+    <section class="how-it-works">
+      <h2>How it works</h2>
+      <ol class="steps">
+        <li>
+          <span class="step-index">1</span>
+          <p>Each of your devices — phone, laptop, tablet — runs a small adapter.</p>
+        </li>
+        <li>
+          <span class="step-index">2</span>
+          <p>The adapter watches for real triggers: a call starting, a meeting beginning, playback starting.</p>
+        </li>
+        <li>
+          <span class="step-index">3</span>
+          <p>Your headset follows the trigger to whichever device needs it — a real disconnect-and-reconnect, not an instant swap.</p>
+        </li>
+        <li>
+          <span class="step-index">4</span>
+          <p>It works across ecosystems — Android, Mac, iPad, and Linux — not locked to one vendor's devices.</p>
+        </li>
+      </ol>
+    </section>
 
-      <section class="how-it-works">
-        <h2>How it works</h2>
-        <ol class="steps">
-          <li>
-            <span class="step-index">1</span>
-            <p>Each of your devices — phone, laptop, tablet — runs a small adapter.</p>
-          </li>
-          <li>
-            <span class="step-index">2</span>
-            <p>The adapter watches for real triggers: a call starting, a meeting beginning, playback starting.</p>
-          </li>
-          <li>
-            <span class="step-index">3</span>
-            <p>Your headset follows the trigger to whichever device needs it — a real disconnect-and-reconnect, not an instant swap.</p>
-          </li>
-          <li>
-            <span class="step-index">4</span>
-            <p>It works across ecosystems — Android, Mac, iPad, and Linux — not locked to one vendor's devices.</p>
-          </li>
-        </ol>
-      </section>
+    <section class="open-source">
+      <h2>Open source, and yours to run</h2>
+      <div class="prose">
+        <p>The wire protocol, the relay engine, and every device adapter are MIT-licensed and public. Read exactly what your devices send each other, fork it, or write an adapter for something we haven't got to.</p>
+        <p>Every adapter reads its relay address from build-time configuration rather than a hardcoded default — so if you would rather your devices never talk to our servers, point them at a relay you run yourself. The hosted services are source-available too.</p>
+        <p><a class="text-link" href="https://github.com/thrwapp/thrw">Read the source on GitHub</a></p>
+      </div>
+    </section>
 
-      <section class="faq">
-        <h2>Frequently asked questions</h2>
-        <div class="faq-list">
-          <details>
-            <summary>Is switching instant?</summary>
-            <p>No. Switching is a real disconnect-and-reconnect, not an instant swap, so it takes a few real seconds rather than zero. We'd rather say that plainly than promise a number we haven't measured against real hardware.</p>
-          </details>
-          <details>
-            <summary>What devices does it support?</summary>
-            <p>Adapters for Android, Mac, iPad, and Linux, so your headset can follow you across ecosystems instead of staying locked to one vendor's devices.</p>
-          </details>
-          <details>
-            <summary>Do I need root or a jailbreak?</summary>
-            <p>No. thrw uses sequential handoff — disconnect from the losing device, reconnect to the winning one — specifically so it works without root or a jailbreak on any of your devices.</p>
-          </details>
-          <details>
-            <summary>Does this replace Apple's own device switching?</summary>
-            <p>It's for the gaps Apple's switching doesn't cover — outside a single Apple ID, or once an Android, Windows, or Linux device is in the mix. thrw's advantage is working reliably across ecosystems, not being faster than Apple's own switching.</p>
-          </details>
-          <details>
-            <summary>How does thrw decide which device gets the headset?</summary>
-            <p>An incoming or outgoing call always wins, then a manual claim, then a VoIP session (Zoom, Meet, Teams, WhatsApp), then media playback, then whichever device claimed it last.</p>
-          </details>
-        </div>
-      </section>
-    </main>
-
-    <footer class="site-footer">
-      <p>thrw — built for the devices you actually own, not the ones in one company's lineup.</p>
-      <p class="footer-links"><a href="/privacy">Privacy</a></p>
-    </footer>
-
-    <script>
-      const form = document.getElementById("waitlist-form") as HTMLFormElement | null;
-      const emailInput = document.getElementById("waitlist-email") as HTMLInputElement | null;
-      const message = document.getElementById("waitlist-message");
-
-      form?.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        if (!emailInput || !message) return;
-
-        const submitButton = form.querySelector("button[type='submit']") as HTMLButtonElement | null;
-        submitButton?.setAttribute("disabled", "true");
-        message.textContent = "";
-        message.classList.remove("waitlist-message--error", "waitlist-message--success");
-
-        try {
-          const response = await fetch("/waitlist", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: emailInput.value }),
-          });
-
-          const data = await response.json().catch(() => ({}));
-
-          if (!response.ok) {
-            throw new Error(
-              typeof data.error === "string"
-                ? data.error
-                : "Something went wrong. Please try again.",
-            );
-          }
-
-          message.textContent = "You're on the list — we'll be in touch.";
-          message.classList.add("waitlist-message--success");
-          form.reset();
-        } catch (error) {
-          message.textContent =
-            error instanceof Error
-              ? error.message
-              : "Something went wrong. Please try again.";
-          message.classList.add("waitlist-message--error");
-        } finally {
-          submitButton?.removeAttribute("disabled");
+    <section class="faq">
+      <h2>Frequently asked questions</h2>
+      <div class="faq-list">
+        {
+          /* set:html rather than `{entry.question}` so the rendered text
+             stays byte-identical to the hand-written markup this replaced —
+             an expression would escape every apostrophe to `&#39;`. The
+             strings are repo-authored constants directly above, never user
+             input. */
+          faq.map((entry) => (
+            <details>
+              <summary set:html={entry.question} />
+              <p set:html={entry.answer} />
+            </details>
+          ))
         }
-      });
-    </script>
+      </div>
+    </section>
+  </main>
 
-    <style>
-      :root {
-        color-scheme: light dark;
+  <script>
+    const form = document.getElementById("waitlist-form") as HTMLFormElement | null;
+    const emailInput = document.getElementById("waitlist-email") as HTMLInputElement | null;
+    const message = document.getElementById("waitlist-message");
 
-        --color-bg: #f7f6f3;
-        --color-surface: #ffffff;
-        --color-text: #16181d;
-        --color-text-muted: #4a4e57;
-        --color-border: #e6e3dc;
-        --color-accent: #e0522a;
-        --color-accent-contrast: #fffaf6;
-        --color-focus-ring: #e0522a;
-        --color-glow: rgb(224 82 42 / 16%);
+    function showMessage(element: HTMLElement, text: string, kind: "success" | "error") {
+      element.textContent = text;
+      element.classList.remove("waitlist-message--error", "waitlist-message--success");
+      element.classList.add(`waitlist-message--${kind}`);
+    }
 
-        --space-1: 0.25rem;
-        --space-2: 0.5rem;
-        --space-3: 0.75rem;
-        --space-4: 1rem;
-        --space-6: 1.5rem;
-        --space-8: 2rem;
-        --space-12: 3rem;
-        --space-16: 4rem;
-        --space-20: 5rem;
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!emailInput || !message) return;
 
-        --font-size-wordmark: 0.9375rem;
-        --font-size-body: clamp(1rem, 0.95rem + 0.2vw, 1.125rem);
-        --font-size-cta: 1.0625rem;
-        --font-size-h1: clamp(2.25rem, 1.7rem + 2.75vw, 3.5rem);
-        --font-size-h2: clamp(1.5rem, 1.35rem + 0.75vw, 1.875rem);
-
-        --measure: 38rem;
+      // The form is `novalidate` so the browser's own bubble never appears,
+      // but `checkValidity()` still reports type=email/required — so an empty
+      // or obviously malformed address is caught here rather than costing a
+      // round-trip to /waitlist to be told the same thing. The function
+      // remains the authority on what Buttondown will accept.
+      if (!emailInput.checkValidity()) {
+        emailInput.setAttribute("aria-invalid", "true");
+        showMessage(message, "Please enter a valid email address.", "error");
+        emailInput.focus();
+        return;
       }
+      emailInput.removeAttribute("aria-invalid");
 
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --color-bg: #14161a;
-          --color-surface: #1c1f24;
-          --color-text: #f1efe9;
-          --color-text-muted: #a9adb6;
-          --color-border: #2a2d33;
-          --color-accent: #ff7d54;
-          --color-accent-contrast: #1a0d08;
-          --color-focus-ring: #ff7d54;
-          --color-glow: rgb(255 125 84 / 14%);
-        }
-      }
+      const submitButton = form.querySelector("button[type='submit']") as HTMLButtonElement | null;
+      submitButton?.setAttribute("disabled", "true");
+      message.textContent = "";
+      message.classList.remove("waitlist-message--error", "waitlist-message--success");
 
-      * {
-        box-sizing: border-box;
-      }
+      try {
+        const response = await fetch("/waitlist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: emailInput.value }),
+        });
 
-      body {
-        position: relative;
-        margin: 0;
-        min-height: 100dvh;
-        background: var(--color-bg);
-        color: var(--color-text);
-        font-family:
-          system-ui,
-          -apple-system,
-          "Segoe UI",
-          sans-serif;
-        line-height: 1.6;
-        overflow-x: hidden;
-      }
+        const data = await response.json().catch(() => ({}));
 
-      .glow {
-        position: absolute;
-        top: -12rem;
-        left: 50%;
-        width: 60rem;
-        height: 34rem;
-        transform: translateX(-50%);
-        background: radial-gradient(closest-side, var(--color-glow), transparent);
-        pointer-events: none;
-        z-index: 0;
-      }
-
-      .site-header,
-      main,
-      .site-footer {
-        position: relative;
-        z-index: 1;
-      }
-
-      .site-header {
-        display: flex;
-        justify-content: center;
-        padding: var(--space-8) var(--space-6) 0;
-      }
-
-      .wordmark {
-        margin: 0;
-        font-size: var(--font-size-wordmark);
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--color-accent);
-      }
-
-      main {
-        max-width: 48rem;
-        margin: 0 auto;
-        padding: var(--space-12) var(--space-6) var(--space-8);
-      }
-
-      .hero {
-        text-align: center;
-      }
-
-      h1 {
-        max-width: 34rem;
-        margin: 0 auto var(--space-6);
-        font-size: var(--font-size-h1);
-        line-height: 1.08;
-        letter-spacing: -0.03em;
-      }
-
-      .hero p {
-        max-width: var(--measure);
-        margin: 0 auto var(--space-4);
-        font-size: var(--font-size-body);
-        color: var(--color-text-muted);
-        text-align: left;
-      }
-
-      .hero p + p {
-        margin-bottom: var(--space-8);
-      }
-
-      .cta {
-        display: inline-block;
-        padding: var(--space-4) var(--space-8);
-        border: 1px solid var(--color-accent);
-        border-radius: 999px;
-        background: var(--color-accent);
-        color: var(--color-accent-contrast);
-        font-size: var(--font-size-cta);
-        font-weight: 600;
-        text-decoration: none;
-        box-shadow: 0 8px 24px -8px var(--color-glow);
-        transition:
-          background-color 0.15s ease,
-          transform 0.05s ease;
-      }
-
-      .cta:hover {
-        background: color-mix(in srgb, var(--color-accent) 85%, black);
-      }
-
-      .cta:focus-visible {
-        outline: 2px solid var(--color-focus-ring);
-        outline-offset: 3px;
-      }
-
-      .cta:active {
-        transform: translateY(1px);
-      }
-
-      .cta:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-      }
-
-      .visually-hidden {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0, 0, 0, 0);
-        white-space: nowrap;
-        border: 0;
-      }
-
-      .waitlist-form {
-        display: inline-flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: var(--space-3);
-      }
-
-      .waitlist-input {
-        min-width: 16rem;
-        padding: var(--space-4) var(--space-6);
-        border: 1px solid var(--color-border);
-        border-radius: 999px;
-        background: var(--color-surface);
-        color: var(--color-text);
-        font-size: var(--font-size-cta);
-      }
-
-      .waitlist-input:focus-visible {
-        outline: 2px solid var(--color-focus-ring);
-        outline-offset: 3px;
-      }
-
-      /* Prefixed with .hero: `.hero p { margin: 0 auto var(--space-4); ... }`
-         above targets every <p> in the hero (including this one) and beats
-         a bare `.waitlist-message` selector on specificity (descendant
-         class+type vs. a single class), silently zeroing out margin-top -
-         confirmed via computed styles showing marginTop:"0px" despite this
-         rule setting var(--space-3). Scoping under .hero fixes the
-         specificity rather than fighting it with !important. */
-      .hero .waitlist-message {
-        min-height: 1.5rem;
-        margin: var(--space-3) 0 0;
-        font-size: 0.9375rem;
-      }
-
-      .hero .waitlist-message--success,
-      .hero .waitlist-message--error {
-        display: inline-block;
-        padding: var(--space-2) var(--space-4);
-        border-radius: 0.5rem;
-        border: 1px solid;
-      }
-
-      .hero .waitlist-message--success {
-        color: var(--color-text);
-        background: var(--color-surface);
-        border-color: var(--color-border);
-      }
-
-      .hero .waitlist-message--error {
-        color: var(--color-accent);
-        background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
-        border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
-      }
-
-      .diagram {
-        margin-top: var(--space-20);
-        color: var(--color-text-muted);
-      }
-
-      .diagram svg {
-        display: block;
-        width: 100%;
-        height: auto;
-      }
-
-      .diagram-node--accent {
-        color: var(--color-accent);
-      }
-
-      .how-it-works,
-      .faq {
-        margin-top: var(--space-20);
-      }
-
-      .how-it-works h2,
-      .faq h2 {
-        margin: 0 0 var(--space-8);
-        font-size: var(--font-size-h2);
-        letter-spacing: -0.01em;
-        text-align: center;
-      }
-
-      .steps {
-        display: grid;
-        gap: var(--space-6);
-        max-width: var(--measure);
-        margin: 0 auto;
-        padding: 0;
-        list-style: none;
-      }
-
-      .steps li {
-        display: flex;
-        gap: var(--space-4);
-        align-items: baseline;
-      }
-
-      .step-index {
-        flex-shrink: 0;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 2rem;
-        height: 2rem;
-        border-radius: 999px;
-        border: 1px solid var(--color-border);
-        background: var(--color-surface);
-        color: var(--color-accent);
-        font-weight: 700;
-        font-size: 0.9375rem;
-      }
-
-      .steps p {
-        margin: 0;
-        color: var(--color-text-muted);
-      }
-
-      .faq-list {
-        display: grid;
-        gap: var(--space-4);
-        max-width: var(--measure);
-        margin: 0 auto;
-      }
-
-      .faq-list details {
-        border: 1px solid var(--color-border);
-        border-radius: var(--space-3);
-        background: var(--color-surface);
-        padding: var(--space-4) var(--space-6);
-      }
-
-      .faq-list summary {
-        cursor: pointer;
-        font-weight: 600;
-      }
-
-      .faq-list summary::marker {
-        color: var(--color-accent);
-      }
-
-      .faq-list p {
-        margin: var(--space-4) 0 0;
-        color: var(--color-text-muted);
-      }
-
-      .site-footer {
-        border-top: 1px solid var(--color-border);
-        padding: var(--space-8) var(--space-6) var(--space-12);
-        text-align: center;
-      }
-
-      .site-footer p {
-        margin: 0;
-        font-size: 0.875rem;
-        color: var(--color-text-muted);
-      }
-
-      .footer-links {
-        margin-top: var(--space-3);
-      }
-
-      .footer-links a {
-        color: var(--color-text-muted);
-      }
-
-      .footer-links a:hover {
-        color: var(--color-accent);
-      }
-
-      .footer-links a:focus-visible {
-        outline: 2px solid var(--color-focus-ring);
-        outline-offset: 3px;
-      }
-
-      @media (max-width: 375px) {
-        main {
-          padding: var(--space-8) var(--space-4) var(--space-6);
+        if (!response.ok) {
+          throw new Error(
+            typeof data.error === "string"
+              ? data.error
+              : "Something went wrong. Please try again.",
+          );
         }
 
-        .hero p {
-          text-align: left;
-        }
-
-        .diagram {
-          margin-top: var(--space-12);
-        }
+        showMessage(message, "You're on the list — we'll be in touch.", "success");
+        form.reset();
+      } catch (error) {
+        showMessage(
+          message,
+          error instanceof Error ? error.message : "Something went wrong. Please try again.",
+          "error",
+        );
+        emailInput.setAttribute("aria-invalid", "true");
+      } finally {
+        submitButton?.removeAttribute("disabled");
       }
-    </style>
-  </body>
-</html>
+    });
+  </script>
+</Base>
+
+<style>
+  main {
+    max-width: 48rem;
+    margin: 0 auto;
+    padding: var(--space-12) var(--space-6) var(--space-8);
+  }
+
+  .hero {
+    text-align: center;
+  }
+
+  h1 {
+    max-width: 34rem;
+    margin: 0 auto var(--space-6);
+    font-size: var(--font-size-h1);
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+  }
+
+  .hero p {
+    max-width: var(--measure);
+    margin: 0 auto var(--space-4);
+    font-size: var(--font-size-body);
+    color: var(--color-text-muted);
+    text-align: left;
+  }
+
+  .hero p + p {
+    margin-bottom: var(--space-8);
+  }
+
+  .cta {
+    display: inline-block;
+    padding: var(--space-4) var(--space-8);
+    border: 1px solid var(--color-accent);
+    border-radius: 999px;
+    background: var(--color-accent);
+    color: var(--color-accent-contrast);
+    font-size: var(--font-size-cta);
+    font-weight: 600;
+    text-decoration: none;
+    box-shadow: 0 8px 24px -8px var(--color-glow);
+    transition:
+      background-color 0.15s ease,
+      transform 0.05s ease;
+  }
+
+  .cta:hover {
+    background: color-mix(in srgb, var(--color-accent) 85%, black);
+  }
+
+  .cta:active {
+    transform: translateY(1px);
+  }
+
+  .cta:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .waitlist-form {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--space-3);
+  }
+
+  .waitlist-input {
+    min-width: 16rem;
+    padding: var(--space-4) var(--space-6);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: var(--font-size-cta);
+  }
+
+  .waitlist-input[aria-invalid="true"] {
+    border-color: var(--color-accent);
+  }
+
+  /* Prefixed with .hero: `.hero p { margin: 0 auto var(--space-4); ... }`
+     above targets every <p> in the hero (including this one) and beats
+     a bare `.waitlist-message` selector on specificity (descendant
+     class+type vs. a single class), silently zeroing out margin-top -
+     confirmed via computed styles showing marginTop:"0px" despite this
+     rule setting var(--space-3). Scoping under .hero fixes the
+     specificity rather than fighting it with !important. */
+  .hero .waitlist-message {
+    min-height: 1.5rem;
+    margin: var(--space-3) 0 0;
+    font-size: 0.9375rem;
+  }
+
+  .hero .waitlist-message--success,
+  .hero .waitlist-message--error {
+    display: inline-block;
+    padding: var(--space-2) var(--space-4);
+    border-radius: 0.5rem;
+    border: 1px solid;
+  }
+
+  .hero .waitlist-message--success {
+    color: var(--color-text);
+    background: var(--color-surface);
+    border-color: var(--color-border);
+  }
+
+  .hero .waitlist-message--error {
+    color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+    border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
+  }
+
+  .diagram {
+    margin-top: var(--space-20);
+    color: var(--color-text-muted);
+  }
+
+  .diagram svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .diagram-node--accent {
+    color: var(--color-accent);
+  }
+
+  .how-it-works,
+  .open-source,
+  .faq {
+    margin-top: var(--space-20);
+  }
+
+  .how-it-works h2,
+  .open-source h2,
+  .faq h2 {
+    margin: 0 0 var(--space-8);
+    font-size: var(--font-size-h2);
+    letter-spacing: -0.01em;
+    text-align: center;
+  }
+
+  .steps {
+    display: grid;
+    gap: var(--space-6);
+    max-width: var(--measure);
+    margin: 0 auto;
+    padding: 0;
+    list-style: none;
+  }
+
+  .steps li {
+    display: flex;
+    gap: var(--space-4);
+    align-items: baseline;
+  }
+
+  .step-index {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 999px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-accent);
+    font-weight: 700;
+    font-size: 0.9375rem;
+  }
+
+  .steps p {
+    margin: 0;
+    color: var(--color-text-muted);
+  }
+
+  .prose {
+    max-width: var(--measure);
+    margin: 0 auto;
+  }
+
+  .prose p {
+    margin: 0 0 var(--space-4);
+    font-size: var(--font-size-body);
+    color: var(--color-text-muted);
+  }
+
+  .prose p:last-child {
+    margin-bottom: 0;
+  }
+
+  .text-link {
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+
+  .faq-list {
+    display: grid;
+    gap: var(--space-4);
+    max-width: var(--measure);
+    margin: 0 auto;
+  }
+
+  .faq-list details {
+    border: 1px solid var(--color-border);
+    border-radius: var(--space-3);
+    background: var(--color-surface);
+    padding: var(--space-4) var(--space-6);
+  }
+
+  .faq-list summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .faq-list summary::marker {
+    color: var(--color-accent);
+  }
+
+  .faq-list p {
+    margin: var(--space-4) 0 0;
+    color: var(--color-text-muted);
+  }
+
+  @media (max-width: 375px) {
+    main {
+      padding: var(--space-8) var(--space-4) var(--space-6);
+    }
+
+    .hero p {
+      text-align: left;
+    }
+
+    .diagram {
+      margin-top: var(--space-12);
+    }
+  }
+</style>

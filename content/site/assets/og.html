@@ -1,0 +1,122 @@
+<!doctype html>
+<!--
+  Source for public/og.png — the 1200x630 Open Graph card. It is kept as
+  HTML (not committed as a PNG only) so the card can be regenerated when the
+  headline or palette changes, rather than being an opaque binary nobody can
+  edit.
+
+  Regenerate with any headless Chromium, e.g. the one Playwright caches:
+
+    chrome-headless-shell --headless --disable-gpu --hide-scrollbars \
+      --force-color-profile=srgb --window-size=1200,630 \
+      --screenshot=content/site/public/og.png \
+      content/site/assets/og.html
+
+  Colours are the dark-scheme tokens from src/layouts/Base.astro; keep them
+  in step with it. Fonts are the system stack, so a regeneration on another
+  OS will render slightly differently — that is fine, it is a picture.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+
+      html,
+      body {
+        width: 1200px;
+        height: 630px;
+        background: #14161a;
+        overflow: hidden;
+        position: relative;
+        background: #14161a;
+        color: #f1efe9;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+
+      .glow {
+        position: absolute;
+        top: -260px;
+        left: 30%;
+        width: 1100px;
+        height: 700px;
+        transform: translateX(-50%);
+        background: radial-gradient(closest-side, rgb(255 125 84 / 22%), transparent);
+      }
+
+      .card {
+        position: relative;
+        height: 100%;
+        padding: 72px 80px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .wordmark {
+        font-size: 24px;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #ff7d54;
+      }
+
+      h1 {
+        max-width: 720px;
+        font-size: 78px;
+        font-weight: 700;
+        line-height: 1.04;
+        letter-spacing: -0.035em;
+      }
+
+      .footer {
+        display: flex;
+        align-items: baseline;
+        gap: 20px;
+        font-size: 26px;
+        color: #a9adb6;
+      }
+
+      .footer .dot {
+        color: #ff7d54;
+      }
+
+      .headset {
+        position: absolute;
+        right: 56px;
+        bottom: 104px;
+        width: 400px;
+        color: #ff7d54;
+        opacity: 0.92;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="glow"></div>
+
+    <!-- The same headset geometry as the landing page diagram. -->
+    <svg class="headset" viewBox="-10 -12 104 68" fill="none">
+      <path
+        d="M 4 28 C 4 8, 20 -4, 40 -4 C 60 -4, 76 8, 76 28"
+        stroke="currentColor"
+        stroke-width="5"
+        stroke-linecap="round"
+      />
+      <rect x="-4" y="24" width="16" height="26" rx="7" fill="currentColor" />
+      <rect x="68" y="24" width="16" height="26" rx="7" fill="currentColor" />
+    </svg>
+
+    <div class="card">
+      <p class="wordmark">thrw</p>
+      <h1>One headset.<br />Every device you actually use.</h1>
+      <p class="footer">
+        <span>Android</span><span class="dot">·</span><span>Mac</span
+        ><span class="dot">·</span><span>iPad</span><span class="dot">·</span
+        ><span>Linux</span>
+      </p>
+    </div>
+  </body>
+</html>
