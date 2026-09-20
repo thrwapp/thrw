@@ -91,8 +91,67 @@ describe("RelayMqttClient (real broker)", () => {
     await relayClient.publishCommand(account, node, payload);
 
     const { payload: receivedPayload, packet } = await received;
-    expect(receivedPayload).toEqual(payload);
+    // #210: the wire payload is the caller's, stamped with seq/epoch.
+    expect(receivedPayload).toMatchObject(payload);
     expect(packet.qos).toBe(TopicQos.commands.qos);
+  });
+
+  // #210 / ADR 0018 decision 1. The relay emits these; enforcement is
+  // the adapters' half and lands separately.
+  it("stamps every command with a sequence number and an epoch", async () => {
+    const account = randomUUID();
+    const node = randomUUID();
+    const topic = commandsTopic(account, node);
+
+    await new Promise<void>((resolve, reject) => {
+      verifier.subscribe(topic, { qos: 2 }, (err) => (err ? reject(err) : resolve()));
+    });
+
+    const first = waitForMessage(verifier, topic);
+    await relayClient.publishCommand(account, node, { type: "claim" });
+    const a = (await first).payload as { seq: number; epoch: string };
+
+    const second = waitForMessage(verifier, topic);
+    await relayClient.publishCommand(account, node, { type: "release" });
+    const b = (await second).payload as { seq: number; epoch: string };
+
+    expect(b.seq).toBeGreaterThan(a.seq);
+    expect(a.epoch).toEqual(b.epoch);
+    expect(a.epoch).toBeTruthy();
+  });
+
+  /**
+   * Per (account, node), so one node's traffic cannot advance another's
+   * counter. If it could, a quiet node's next command would arrive with
+   * a number far above what it last saw - harmless on its own, but it
+   * makes the sequence meaningless as evidence of ordering *for that
+   * node*, which is the only thing it is for.
+   */
+  it("sequences each node independently", async () => {
+    const account = randomUUID();
+    const nodeA = randomUUID();
+    const nodeB = randomUUID();
+    const topicA = commandsTopic(account, nodeA);
+    const topicB = commandsTopic(account, nodeB);
+
+    for (const topic of [topicA, topicB]) {
+      await new Promise<void>((resolve, reject) => {
+        verifier.subscribe(topic, { qos: 2 }, (err) => (err ? reject(err) : resolve()));
+      });
+    }
+
+    const firstA = waitForMessage(verifier, topicA);
+    await relayClient.publishCommand(account, nodeA, { type: "claim" });
+    expect(((await firstA).payload as { seq: number }).seq).toBe(1);
+
+    const secondA = waitForMessage(verifier, topicA);
+    await relayClient.publishCommand(account, nodeA, { type: "release" });
+    expect(((await secondA).payload as { seq: number }).seq).toBe(2);
+
+    // B has had nothing, so it starts at 1 rather than continuing A's run.
+    const firstB = waitForMessage(verifier, topicB);
+    await relayClient.publishCommand(account, nodeB, { type: "claim" });
+    expect(((await firstB).payload as { seq: number }).seq).toBe(1);
   });
 
   it("publishes state retained to @thrw/protocol's stateTopic", async () => {

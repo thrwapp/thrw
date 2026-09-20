@@ -116,13 +116,25 @@ function settle(ms = 300): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Collects the commands published to `node`, **stripped down to the
+ * decision they carry**.
+ *
+ * `publishCommand` stamps every command with `seq` and `epoch` (#210).
+ * Those are transport concerns: whether the relay issues them correctly
+ * is asserted in `relay-core`'s own tests, against the wire. The tests
+ * in this file are about *arbitration* - who should hold the resource
+ * and when - so they assert on `{ type }` and would otherwise have to be
+ * rewritten every time the envelope grows a field.
+ */
 function collectCommands(client: MqttClient, account: string, node: string): CommandPayload[] {
   const received: CommandPayload[] = [];
   const topic = commandsTopic(account, node);
   client.subscribe(topic, { qos: 1 });
   client.on("message", (messageTopic, message) => {
     if (messageTopic !== topic) return;
-    received.push(JSON.parse(message.toString()) as CommandPayload);
+    const { type } = JSON.parse(message.toString()) as CommandPayload;
+    received.push({ type });
   });
   return received;
 }
