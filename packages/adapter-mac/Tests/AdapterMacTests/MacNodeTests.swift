@@ -296,3 +296,36 @@ final class MacNodeTests: XCTestCase {
         XCTAssertEqual(f.gateway.connectCalls, [headsetIdentifier])
     }
 }
+
+/// #210. The relay stamps every command with `seq` and `epoch`. This
+/// adapter does not read them yet, and must keep working while it does
+/// not — that is the whole basis for shipping the relay half first.
+///
+/// Asserted against the **exact bytes** a real relay emits, captured from
+/// the wire on 2026-09-20 rather than hand-written from the type:
+///
+///     {"type":"claim","seq":1,"epoch":"2174ac4b-0ab7-4cff-967e-8a352e3bd7c8"}
+final class CommandPayloadForwardCompatibilityTests: XCTestCase {
+    func testDecodesACommandCarryingSequencingFieldsItDoesNotKnowAbout() throws {
+        let wire = #"{"type":"claim","seq":1,"epoch":"2174ac4b-0ab7-4cff-967e-8a352e3bd7c8"}"#
+
+        let decoded = try JSONDecoder().decode(CommandPayload.self, from: Data(wire.utf8))
+
+        XCTAssertEqual(decoded.type, .claim)
+    }
+
+    func testDecodesAReleaseTheSameWay() throws {
+        let wire = #"{"type":"release","seq":9,"epoch":"any"}"#
+
+        XCTAssertEqual(try JSONDecoder().decode(CommandPayload.self, from: Data(wire.utf8)).type, .release)
+    }
+
+    /// The guarantee is *unknown fields are ignored*, not *these two
+    /// specific fields*. A relay that grows a third must not break this
+    /// adapter either.
+    func testAnUnrecognisedFieldIsIgnored() throws {
+        let wire = #"{"type":"claim","seq":1,"epoch":"e","somethingAddedLater":{"a":[1,2]}}"#
+
+        XCTAssertEqual(try JSONDecoder().decode(CommandPayload.self, from: Data(wire.utf8)).type, .claim)
+    }
+}

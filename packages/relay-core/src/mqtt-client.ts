@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import mqtt, {
   type IClientOptions,
   type ISubscriptionGrant,
@@ -23,6 +24,40 @@ export interface EventPayload {
 
 export interface CommandPayload {
   type: "claim" | "release";
+}
+
+/**
+ * What actually goes on the wire (#210, ADR 0018 decision 1).
+ *
+ * Callers pass a plain ``CommandPayload``; ``publishCommand`` stamps
+ * these. That is deliberate - there are three call sites and counting,
+ * and a sequence number that any of them can forget to set is worse than
+ * none, because the adapter would discard as stale whatever arrived
+ * without one.
+ */
+export interface SequencedCommandPayload extends CommandPayload {
+  /**
+   * Monotonic per (account, node). Lets an adapter discard a command
+   * that arrives after a newer one - a stale claim overtaking a release
+   * must not re-claim.
+   *
+   * ADR 0018 specifies this per (account, node, resource_type). There is
+   * exactly one resource type today, so the two are identical; it gains
+   * the resource segment with #171.
+   */
+  seq: number;
+  /**
+   * Identifies this relay *process*. Changes on every restart.
+   *
+   * Without it the scheme deadlocks the system. The relay holds all its
+   * state in memory (the premise of #178), so a restart resets these
+   * counters to zero while adapters still hold persisted high-water
+   * marks - and every subsequent command is then discarded as stale,
+   * permanently, until adapter state is cleared by hand. That is exactly
+   * the "restart every adapter manually" failure #178 removed. An
+   * adapter resets its high-water mark whenever the epoch changes.
+   */
+  epoch: string;
 }
 
 export interface StatePayload {
@@ -57,6 +92,20 @@ export type NodeEventListener = (payload: unknown, node: string) => void;
 // rather than a hand-rolled topic string or QoS number. No connection
 // state machine, no device registry - both out of scope for this issue.
 export class RelayMqttClient {
+  /**
+   * This relay process's epoch (#210). Generated once, here, because
+   * "once per process" is exactly what it has to mean: it is the signal
+   * that the in-memory sequence counters below have restarted.
+   *
+   * A reconnect does not change it, and must not - the counters survive
+   * a reconnect, so telling adapters to reset would be a lie. Only a new
+   * process is a new epoch.
+   */
+  private readonly epoch = randomUUID();
+
+  /** (account, node) -> last issued sequence number. */
+  private readonly sequences = new Map<string, number>();
+
   private constructor(private readonly client: MqttClient) {}
 
   static connect(
@@ -94,9 +143,32 @@ export class RelayMqttClient {
   }
 
   publishCommand(account: string, node: string, payload: CommandPayload): Promise<void> {
-    return this.publish(commandsTopic(account, node), payload, {
+    const sequenced: SequencedCommandPayload = {
+      ...payload,
+      seq: this.nextSequence(account, node),
+      epoch: this.epoch,
+    };
+    return this.publish(commandsTopic(account, node), sequenced, {
       qos: TopicQos.commands.qos,
     });
+  }
+
+  /**
+   * Next sequence number for this node (#210).
+   *
+   * In-memory, and correct that way: durability is what the epoch
+   * provides instead. Persisting these would mean giving the relay
+   * durable state it has nowhere to put, to solve a problem a single
+   * random string already solves.
+   */
+  private nextSequence(account: string, node: string): number {
+    // "\u0000" rather than "/" or ":" - account ids and node ids are
+    // user- and platform-supplied, and a separator either could contain
+    // would let two different pairs collide on one counter.
+    const key = `${account}\u0000${node}`;
+    const next = (this.sequences.get(key) ?? 0) + 1;
+    this.sequences.set(key, next);
+    return next;
   }
 
   publishState(account: string, payload: StatePayload): Promise<void> {
