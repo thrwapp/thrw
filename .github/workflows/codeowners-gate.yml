@@ -1,0 +1,123 @@
+name: codeowners-gate
+
+# Enforces AGENTS.md's human-merge rule, which CODEOWNERS alone does not
+# (#181).
+#
+# `main-trunk-protection` already sets `require_code_owner_review: true`,
+# but with `required_approving_review_count: 0` that rule never blocks
+# anything - a PR satisfies "reviews" with no reviews at all, so the
+# code-owner requirement never gets a chance to apply. Three PRs merged
+# straight through it, including one touching `services/**` and one
+# touching `docs/adr/**`, which AGENTS.md calls "always human-merge, no
+# exceptions".
+#
+# Raising the approval count to 1 would fix that, but it applies to every
+# PR and so removes the `packages/**` / `content/site/**` auto-merge lane
+# AGENTS.md deliberately grants ("no human review required by default").
+# Rulesets cannot condition the pull_request rule on changed paths, so
+# this job is the only way to satisfy both halves of the contract: the
+# fast lane stays open, and the protected paths genuinely require a
+# code-owner approval.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # An approval must be able to turn this check green without a push.
+  pull_request_review:
+    types: [submitted, dismissed]
+  merge_group:
+    types: [checks_requested]
+
+concurrency:
+  # pull_request.number is undefined under merge_group - fall back to the
+  # merge group's own head sha, same as ci.yml.
+  group: codeowners-gate-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # No job-level `if` here on purpose. A required check that skips reports
+  # as "skipped" and leaves the merge queue stuck on "Expected - waiting"
+  # forever - the trap ci.yml's own comment documents, and which has
+  # already bitten agent-eval.yml once. This job always runs and decides
+  # internally.
+  codeowners-gate:
+    name: codeowners-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check code-owner approval for protected paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "merge_group" ]; then
+            echo "merge_group: the gate already passed on the PR to get here."
+            exit 0
+          fi
+
+          git fetch --no-tags --quiet origin "$BASE_SHA"
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "Changed files:"
+          echo "$CHANGED" | sed 's/^/  /'
+
+          python3 - "$CHANGED" <<'PY' > protected.txt
+          import sys
+          changed = [f for f in sys.argv[1].splitlines() if f.strip()]
+          # AGENTS.md's human-merge rules, deliberately restated here
+          # rather than read from CODEOWNERS: AGENTS.md is the contract,
+          # and CODEOWNERS is currently *narrower* than it (see the
+          # pricing note below), so parsing CODEOWNERS would enforce less
+          # than the contract promises.
+          def protected(path: str) -> bool:
+              return (
+                  path.startswith("services/")
+                  or path.startswith(".github/")
+                  or path.startswith("docs/adr/")
+                  # AGENTS.md: "any file whose path contains `pricing`".
+                  # Broader than CODEOWNERS' content/site/src/pages/pricing*.
+                  or "pricing" in path
+              )
+          for f in changed:
+              if protected(f):
+                  print(f)
+          PY
+
+          if [ ! -s protected.txt ]; then
+            echo "No protected paths touched - the packages/** fast lane applies."
+            exit 0
+          fi
+
+          echo "Protected paths touched:"
+          sed 's/^/  /' protected.txt
+
+          OWNERS=$(grep -ohE '@[A-Za-z0-9._-]+' .github/CODEOWNERS | tr -d '@' | sort -u)
+          echo "Code owners: $(echo "$OWNERS" | tr '\n' ' ')"
+
+          APPROVERS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --paginate \
+            --jq '.[] | select(.state == "APPROVED") | .user.login' | sort -u || true)
+          echo "Approved by: ${APPROVERS:-(nobody)}"
+
+          for owner in $OWNERS; do
+            if echo "$APPROVERS" | grep -qix "$owner"; then
+              echo "Approved by code owner @$owner."
+              exit 0
+            fi
+          done
+
+          echo
+          echo "::error::This PR touches paths AGENTS.md marks human-merge and has no code-owner approval."
+          echo "Approve it as one of: $(echo "$OWNERS" | tr '\n' ' ')"
+          exit 1
