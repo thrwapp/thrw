@@ -5,6 +5,7 @@ import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.heartbeat.HeartbeatSink
 import com.thrw.adapter.android.mqtt.MqttTransport
 import com.thrw.adapter.android.protocol.CommandPayload
+import com.thrw.adapter.android.protocol.CommandSequenceGate
 import com.thrw.adapter.android.protocol.CommandType
 import com.thrw.adapter.android.protocol.EventEndPayload
 import com.thrw.adapter.android.protocol.EventKind
@@ -61,6 +62,14 @@ class AndroidNode(
     private val selfCooldown: SelfCooldown = SelfCooldown(),
     /** #191 - suppresses route observations taken mid-transition. */
     private val routeTransition: RouteTransition = RouteTransition(),
+    /**
+     * ADR 0018 decision 1 (#210). Discards a relay command that is
+     * older than one this node has already acted on. Defaults to an
+     * in-memory mark so tests and a node built without a Context still
+     * work; [AdapterForegroundService] supplies the persisted one,
+     * which is what makes the guarantee survive a process restart.
+     */
+    private val sequenceGate: CommandSequenceGate = CommandSequenceGate(),
 ) : NodeInterface, EventLifecycle, HeartbeatSink {
 
     /**
@@ -243,12 +252,29 @@ class AndroidNode(
                 // that's the runtime shutting this coroutine down, not a
                 // Bluetooth failure, and catching it would break
                 // cancellation.
+                // ADR 0018 decision 1 (#210). Commands ride QoS 1, so the
+                // broker may redeliver - and does, on reconnect. Acting
+                // on a redelivered CLAIM that arrives after a newer
+                // RELEASE would re-claim the headset from whoever now
+                // holds it.
+                //
+                // Checked before the try/catch rather than inside it: a
+                // discard is not a failure, and logging it as one would
+                // bury the failures that matter.
+                if (command != null && !sequenceGate.accepts(command)) {
+                    Log.i(TAG, "Discarding stale ${command.type} (seq=${command.seq}, epoch=${command.epoch})")
+                    return@collect
+                }
                 try {
                     when (command?.type) {
                         CommandType.CLAIM -> onClaim()
                         CommandType.RELEASE -> onRelease()
                         null -> Unit
                     }
+                    // Only after the command actually succeeded. A claim
+                    // that threw has not happened, and leaving the mark
+                    // where it is lets a redelivery retry it.
+                    if (command != null) sequenceGate.record(command)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {

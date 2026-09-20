@@ -69,12 +69,21 @@ private class FakeMqttTransport : MqttTransport {
     }
 }
 
-private class RecordingGateway : BluetoothClassicGateway {
+private class RecordingGateway(private var failConnectTimes: Int = 0) : BluetoothClassicGateway {
     val connectCalls = mutableListOf<String>()
     val disconnectCalls = mutableListOf<String>()
 
     override suspend fun connect(deviceAddress: String) {
         connectCalls += deviceAddress
+        // #210: a headset that is off, out of range or busy makes the
+        // real gateway throw (#161). The call is still recorded, so a
+        // test can tell "was attempted and failed" from "was discarded
+        // and never attempted" - which is the whole distinction the
+        // retry test turns on.
+        if (failConnectTimes > 0) {
+            failConnectTimes--
+            error("simulated connect failure")
+        }
     }
 
     override suspend fun disconnect(deviceAddress: String) {
@@ -450,6 +459,85 @@ class AndroidNodeTest {
         assertEquals(listOf(COMMANDS_TOPIC to 1), f.transport.subscriptions)
         assertEquals(listOf(HEADSET), f.gateway.connectCalls)
         assertEquals(listOf(HEADSET), f.gateway.disconnectCalls)
+    }
+
+    /**
+     * #210 / ADR 0018 decision 1, end to end through the node rather
+     * than against the gate alone.
+     *
+     * Commands ride MQTT at QoS 1 - at-*least*-once - so the broker is
+     * entitled to redeliver, and does on reconnect. The redelivered
+     * CLAIM here arrives after a newer RELEASE, and acting on it would
+     * take the headset back from whichever device now holds it.
+     */
+    @Test
+    fun `a claim redelivered after a newer release does not reconnect`() = runTest {
+        val f = Fixture()
+        f.transport.commands.send("""{"type":"claim","seq":1,"epoch":"e1"}""")
+        f.transport.commands.send("""{"type":"release","seq":2,"epoch":"e1"}""")
+        f.transport.commands.send("""{"type":"claim","seq":1,"epoch":"e1"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(listOf(HEADSET), f.gateway.connectCalls, "the redelivered claim must not reconnect")
+        assertEquals(listOf(HEADSET), f.gateway.disconnectCalls)
+    }
+
+    /**
+     * The relay restarted: new epoch, counters back to 1. Every command
+     * is below this node's mark and must be acted on anyway, or the
+     * system deadlocks until adapter state is cleared by hand.
+     */
+    @Test
+    fun `a command from a new relay epoch is acted on even though its seq is lower`() = runTest {
+        val f = Fixture()
+        f.transport.commands.send("""{"type":"claim","seq":9,"epoch":"e1"}""")
+        f.transport.commands.send("""{"type":"release","seq":1,"epoch":"e2"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(listOf(HEADSET), f.gateway.connectCalls)
+        assertEquals(listOf(HEADSET), f.gateway.disconnectCalls, "a new epoch resets the mark")
+    }
+
+    /**
+     * The relay half of #210 shipped before this half, so a build of
+     * this adapter has already run against a relay that stamped
+     * nothing. A node that discarded unsequenced commands would be
+     * completely deaf rather than merely unprotected.
+     */
+    @Test
+    fun `an unsequenced command is still honoured`() = runTest {
+        val f = Fixture()
+        f.transport.commands.send("""{"type":"claim","seq":5,"epoch":"e1"}""")
+        f.transport.commands.send("""{"type":"release"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(listOf(HEADSET), f.gateway.disconnectCalls)
+    }
+
+    /**
+     * A claim that throws has not happened - the headset was off, out of
+     * range or busy (#161). The mark must stay where it is so the
+     * broker's redelivery gets to retry it, rather than being marked
+     * done and discarded forever.
+     */
+    @Test
+    fun `a command that failed is retried when it is redelivered`() = runTest {
+        val transport = FakeMqttTransport()
+        val gateway = RecordingGateway(failConnectTimes = 1)
+        val node = AndroidNode(ACCOUNT, NODE, HEADSET, transport, BluetoothConnectionManager(gateway))
+        transport.commands.send("""{"type":"claim","seq":1,"epoch":"e1"}""")
+        transport.commands.send("""{"type":"claim","seq":1,"epoch":"e1"}""")
+        transport.commands.close()
+
+        node.listenForCommands()
+
+        assertEquals(listOf(HEADSET, HEADSET), gateway.connectCalls, "the failed claim must be retryable")
     }
 
     /**

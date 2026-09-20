@@ -387,6 +387,105 @@ final class MacNodeTests: XCTestCase {
         XCTAssertEqual(gateway.connectCalls, [headsetIdentifier], "a relay CLAIM must still connect during cooldown")
     }
 
+    /// #210 / ADR 0018 decision 1, end to end through the node rather
+    /// than against the gate alone.
+    ///
+    /// Commands ride MQTT at QoS 1 - at-*least*-once - so the broker is
+    /// entitled to redeliver, and does on reconnect. The redelivered
+    /// claim here arrives after a newer release, and acting on it would
+    /// take the headset back from whichever device now holds it.
+    func testAClaimRedeliveredAfterANewerReleaseDoesNotReconnect() async throws {
+        let f = Fixture()
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"release","seq":2,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(f.gateway.connectCalls, [headsetIdentifier], "the redelivered claim must not reconnect")
+        XCTAssertEqual(f.gateway.disconnectCalls, [headsetIdentifier])
+    }
+
+    /// The relay restarted: new epoch, counters back to 1. Every command
+    /// is below this node's mark and must be acted on anyway, or the
+    /// system deadlocks until adapter state is cleared by hand.
+    func testACommandFromANewRelayEpochIsActedOnEvenThoughItsSeqIsLower() async throws {
+        let f = Fixture()
+        f.transport.sendCommand(#"{"type":"claim","seq":9,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"release","seq":1,"epoch":"e2"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(f.gateway.connectCalls, [headsetIdentifier])
+        XCTAssertEqual(f.gateway.disconnectCalls, [headsetIdentifier], "a new epoch resets the mark")
+    }
+
+    /// The relay half of #210 shipped before this half, so a build of
+    /// this adapter has already run against a relay that stamped
+    /// nothing. A node that discarded unsequenced commands would be
+    /// completely deaf rather than merely unprotected.
+    func testAnUnsequencedCommandIsStillHonoured() async throws {
+        let f = Fixture()
+        f.transport.sendCommand(#"{"type":"claim","seq":5,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"release"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(f.gateway.disconnectCalls, [headsetIdentifier])
+    }
+
+    /// A claim that throws has not happened - the headset was off, out
+    /// of range or busy. The mark must stay where it is so the broker's
+    /// redelivery gets to retry it, rather than being marked done and
+    /// discarded forever.
+    ///
+    /// Note what this test has to do that `AndroidNodeTest`'s twin does
+    /// not: call `listenForCommands` a second time. On Android a failing
+    /// command is caught and the subscription survives (#161); here the
+    /// error propagates out and ends the loop for good. That is a real
+    /// bug - one failed claim leaves this Mac permanently deaf - but it
+    /// predates #210 and is filed as **#223** rather than fixed here.
+    /// Until it is, the retry has to be exercised across two calls.
+    func testACommandThatFailedIsRetriedWhenItIsRedelivered() async throws {
+        // One gateway and one gate across both attempts - the same
+        // headset and the same persisted mark, which is what makes this
+        // a redelivery rather than two unrelated commands.
+        let gateway = FakeBluetoothPeripheralGateway()
+        let gate = CommandSequenceGate(store: InMemorySequenceStore())
+        let wire = #"{"type":"claim","seq":1,"epoch":"e1"}"#
+
+        func node(_ transport: FakeMqttTransport) -> MacNode {
+            MacNode(
+                accountId: accountId, nodeId: nodeId, headsetIdentifier: headsetIdentifier,
+                transport: transport, bluetooth: BluetoothConnectionManager(gateway: gateway),
+                sequenceGate: gate
+            )
+        }
+
+        gateway.failNextConnect = true
+        let first = FakeMqttTransport()
+        first.sendCommand(wire)
+        first.finishCommands()
+        do {
+            try await node(first).listenForCommands()
+            XCTFail("the failing claim should have propagated")
+        } catch {}
+
+        let second = FakeMqttTransport()
+        second.sendCommand(wire)
+        second.finishCommands()
+        try await node(second).listenForCommands()
+
+        XCTAssertEqual(
+            gateway.connectCalls,
+            [headsetIdentifier, headsetIdentifier],
+            "the failed claim must be retryable"
+        )
+    }
+
     func testAnUnparseableCommandIsSkippedWithoutDroppingTheSubscription() async throws {
         let f = Fixture()
         f.transport.sendCommand("not json")
@@ -400,9 +499,13 @@ final class MacNodeTests: XCTestCase {
     }
 }
 
-/// #210. The relay stamps every command with `seq` and `epoch`. This
-/// adapter does not read them yet, and must keep working while it does
-/// not — that is the whole basis for shipping the relay half first.
+/// #210. The relay stamps every command with `seq` and `epoch`.
+///
+/// These tests were written for the relay half, when this adapter did
+/// **not** read the fields and had to keep working anyway - the whole
+/// basis for shipping the two halves separately. The adapter half now
+/// reads them, so the assertions below also pin that the values decode
+/// rather than merely that the message survives.
 ///
 /// Asserted against the **exact bytes** a real relay emits, captured from
 /// the wire on 2026-09-20 rather than hand-written from the type:
@@ -415,12 +518,28 @@ final class CommandPayloadForwardCompatibilityTests: XCTestCase {
         let decoded = try JSONDecoder().decode(CommandPayload.self, from: Data(wire.utf8))
 
         XCTAssertEqual(decoded.type, .claim)
+        XCTAssertEqual(decoded.seq, 1)
+        XCTAssertEqual(decoded.epoch, "2174ac4b-0ab7-4cff-967e-8a352e3bd7c8")
     }
 
     func testDecodesAReleaseTheSameWay() throws {
         let wire = #"{"type":"release","seq":9,"epoch":"any"}"#
 
-        XCTAssertEqual(try JSONDecoder().decode(CommandPayload.self, from: Data(wire.utf8)).type, .release)
+        let decoded = try JSONDecoder().decode(CommandPayload.self, from: Data(wire.utf8))
+
+        XCTAssertEqual(decoded.type, .release)
+        XCTAssertEqual(decoded.seq, 9)
+    }
+
+    /// The pre-#210 wire shape, which a relay older than this adapter
+    /// still emits. Both fields must decode as absent rather than
+    /// failing - `CommandSequenceGate` treats that as acceptable.
+    func testACommandWithNoSequencingFieldsDecodesWithBothAbsent() throws {
+        let decoded = try JSONDecoder().decode(CommandPayload.self, from: Data(#"{"type":"claim"}"#.utf8))
+
+        XCTAssertEqual(decoded.type, .claim)
+        XCTAssertNil(decoded.seq)
+        XCTAssertNil(decoded.epoch)
     }
 
     /// The guarantee is *unknown fields are ignored*, not *these two

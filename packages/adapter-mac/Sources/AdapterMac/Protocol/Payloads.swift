@@ -28,12 +28,32 @@ public enum CommandType: String, Codable, Sendable {
     case release
 }
 
-/// Mirror of relay-core's `CommandPayload`.
+/// Mirror of relay-core's `SequencedCommandPayload`.
+///
+/// `seq` and `epoch` are optional so a command carrying neither still
+/// decodes - Swift's synthesised decoding uses `decodeIfPresent` for an
+/// Optional. That is not defensive padding: the relay half of #210
+/// shipped before the adapter half, so a build of this adapter has
+/// already run against a relay that stamped nothing, and
+/// ``CommandSequenceGate`` treats an unsequenced command as acceptable
+/// rather than discarding it.
 public struct CommandPayload: Codable, Sendable, Equatable {
     public let type: CommandType
 
-    public init(type: CommandType) {
+    /// Monotonic per (account, node, resource type), within one
+    /// ``epoch``. See ``CommandSequenceGate`` for what this node does
+    /// with it.
+    public let seq: Int?
+
+    /// The relay *process* that sent this. Changes on every relay
+    /// restart, which is what stops the high-water mark deadlocking the
+    /// system - see ``CommandSequenceGate``.
+    public let epoch: String?
+
+    public init(type: CommandType, seq: Int? = nil, epoch: String? = nil) {
         self.type = type
+        self.seq = seq
+        self.epoch = epoch
     }
 }
 

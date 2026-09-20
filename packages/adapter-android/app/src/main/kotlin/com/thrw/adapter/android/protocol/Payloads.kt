@@ -34,10 +34,30 @@ enum class CommandType {
     RELEASE,
 }
 
-/** Mirror of relay-core's `CommandPayload`. */
+/**
+ * Mirror of relay-core's `SequencedCommandPayload`.
+ *
+ * [seq] and [epoch] are nullable with a `null` default so a command that
+ * carries neither still decodes. That is not defensive padding: the relay
+ * half of #210 shipped before this half, so a build of this adapter has
+ * already run against a relay that stamped nothing, and the
+ * [CommandSequenceGate] treats an unsequenced command as acceptable
+ * rather than discarding it.
+ */
 @Serializable
 data class CommandPayload(
     val type: CommandType,
+    /**
+     * Monotonic per (account, node, resource type), within one [epoch].
+     * See [CommandSequenceGate] for what this node does with it.
+     */
+    val seq: Long? = null,
+    /**
+     * The relay *process* that sent this. Changes on every relay
+     * restart, which is what stops the high-water mark deadlocking the
+     * system - see [CommandSequenceGate].
+     */
+    val epoch: String? = null,
 )
 
 /**
