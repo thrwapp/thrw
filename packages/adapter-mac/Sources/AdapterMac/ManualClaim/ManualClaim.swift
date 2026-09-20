@@ -39,9 +39,19 @@ public final class ManualClaim: @unchecked Sendable {
 
     /// Whether this node is currently holding a manual claim.
     public func isHeld() -> Bool {
+        withLock { held }
+    }
+
+    /// Synchronous on purpose: taking an `NSLock` directly inside an
+    /// `async` function is unavailable under the Swift 6 language mode
+    /// (there is no suspension point inside, so there is nothing unsafe
+    /// about it - but the compiler cannot know that). Same seam
+    /// ``MQTTNIOTransport`` uses, and AGENTS.md asks for Swift 6
+    /// concurrency, so this compiles today and keeps compiling.
+    private func withLock<T>(_ body: () -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
-        return held
+        return body()
     }
 
     /// Claims if not held, releases if held. Returns the new state.
@@ -58,9 +68,7 @@ public final class ManualClaim: @unchecked Sendable {
         } else {
             try await node.endEvent(type: .manualClaim)
         }
-        lock.lock()
-        held = wantToHold
-        lock.unlock()
+        withLock { held = wantToHold }
         return wantToHold
     }
 }
