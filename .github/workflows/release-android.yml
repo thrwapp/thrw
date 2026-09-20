@@ -120,7 +120,17 @@ jobs:
           printf 'relay.password=%s\n' "$RELAY_PASSWORD" >> "$overlay"
           echo "Wrote $overlay (gitignored, removed after the build)."
 
-      - name: Build signed bundle
+      # Both artifacts from one Gradle invocation, deliberately: they share
+      # the generated build config (and so the relay credential written
+      # above), the same keystore decode, and the same versionCode. Two
+      # separate invocations could drift on any of those and produce an
+      # `.aab` and an `.apk` that are not the same build.
+      #
+      # The `.aab` is Play's upload format - Play expands it into
+      # per-device APKs and a phone cannot install one. The `.apk` is what
+      # actually goes on the Pixel for internal testing (#188), which is
+      # the whole point while there is no Play track yet.
+      - name: Build signed bundle and APK
         working-directory: packages/adapter-android
         env:
           THRW_VERSION_CODE: ${{ steps.version.outputs.code }}
@@ -128,7 +138,7 @@ jobs:
           THRW_PLAY_KEYSTORE_PASSWORD: ${{ secrets.THRW_PLAY_KEYSTORE_PASSWORD }}
           THRW_PLAY_KEY_ALIAS: ${{ secrets.THRW_PLAY_KEY_ALIAS }}
           THRW_PLAY_KEY_PASSWORD: ${{ secrets.THRW_PLAY_KEY_PASSWORD }}
-        run: ./gradlew bundleRelease
+        run: ./gradlew bundleRelease assembleRelease
 
       # A green `bundleRelease` does NOT mean the bundle is signed: an
       # unconfigured build succeeds and produces an unsigned one on purpose.
@@ -149,6 +159,36 @@ jobs:
           fi
           echo "Signed by:"
           grep -E "^(Owner|Valid from)" /tmp/cert.txt
+
+      # Same reasoning as the bundle check above, but `apksigner` rather
+      # than `keytool`: an APK can be signed with v1 (JAR), v2, v3 or v4,
+      # and `keytool -printcert -jarfile` only sees v1. On a modern
+      # minSdk, AGP may legitimately produce a v2/v3-only APK, which
+      # keytool would report as unsigned - a false failure. `apksigner`
+      # understands every scheme and is what the platform itself uses to
+      # decide whether a package installs.
+      - name: Verify the APK is signed
+        run: |
+          set -euo pipefail
+          apk="packages/adapter-android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$apk" ]; then
+            echo "::error::$apk was not produced by assembleRelease."
+            exit 1
+          fi
+          apksigner="$ANDROID_SDK_ROOT/build-tools/35.0.1/apksigner"
+          if [ ! -x "$apksigner" ]; then
+            echo "::error::apksigner not found at $apksigner - the build-tools" \
+                 "version installed above has changed without this step following."
+            exit 1
+          fi
+          if ! "$apksigner" verify --print-certs "$apk" > /tmp/apk-certs.txt 2>&1; then
+            echo "::error::$apk is not signed, or its signature does not verify -" \
+                 "an unsigned APK will not install. Check the upload-key secrets."
+            cat /tmp/apk-certs.txt
+            exit 1
+          fi
+          echo "Signed by:"
+          grep -E "certificate DN|Signer" /tmp/apk-certs.txt || cat /tmp/apk-certs.txt
 
       # Runs even if the build or verification failed, so key material never
       # outlives the job that needed it.
@@ -195,7 +235,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: app-release-${{ steps.version.outputs.code }}
-          path: packages/adapter-android/app/build/outputs/bundle/release/app-release.aab
+          path: |
+            packages/adapter-android/app/build/outputs/bundle/release/app-release.aab
+            packages/adapter-android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
       # Only on a tag: a workflow_dispatch run has no version to release
@@ -213,12 +255,46 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           tag="${GITHUB_REF#refs/tags/}"
+          code="${{ steps.version.outputs.code }}"
+          aab=packages/adapter-android/app/build/outputs/bundle/release/app-release.aab
+          apk=packages/adapter-android/app/build/outputs/apk/release/app-release.apk
+
+          # Asset names say what each one is for. `app-release.aab` and
+          # `app-release.apk` differ by one character, and picking the
+          # wrong one means either a Play upload that fails or a download
+          # that will not install - so the APK is named after the thing a
+          # human is trying to do with it.
           gh release create "$tag" \
             --title "$tag" \
-            --notes "Signed Android App Bundle, versionCode ${{ steps.version.outputs.code }}. Upload to Play Console manually." \
+            --notes "Android artifacts for $tag (versionCode $code)." \
             --draft \
-            packages/adapter-android/app/build/outputs/bundle/release/app-release.aab#app-release.aab \
+            "$aab#app-release.aab" \
+            "$apk#thrw-$tag.apk" \
             || gh release upload "$tag" \
-              packages/adapter-android/app/build/outputs/bundle/release/app-release.aab#app-release.aab \
+              "$aab#app-release.aab" \
+              "$apk#thrw-$tag.apk" \
               --clobber
+
+          # Set the notes unconditionally afterwards, rather than relying
+          # on `create` above having been the one that ran. A `v*` tag
+          # starts several workflows (#190) and whichever creates the
+          # Release first sets its notes - so without this, the body a
+          # human reads would depend on a race, and could be release.yml's
+          # generic Linux text. `edit` is deterministic: `create` only
+          # succeeds once, so this always wins.
+          gh release edit "$tag" --notes "$(cat <<NOTES
+          Android artifacts for \`$tag\` (versionCode $code).
+
+          - **\`thrw-$tag.apk\`** - install this on a phone. Sideload:
+            \`adb install thrw-$tag.apk\`, or copy it across and open it,
+            granting "install unknown apps" to whatever opens it.
+          - **\`app-release.aab\`** - Play Console upload format only. A
+            phone cannot install this; Play expands it into per-device
+            APKs.
+
+          Both come from one build and carry the same versionCode and
+          relay credential.
+          NOTES
+          )"
