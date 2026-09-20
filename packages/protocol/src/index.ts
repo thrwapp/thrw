@@ -4,18 +4,46 @@ export const protocolPackageName = "@thrw/protocol";
 // The topic structure itself is a frozen contract (AGENTS.md, ADR 0001);
 // changing the string shapes below requires a new ADR and human review.
 
-export function eventsTopic(account: string, node: string): string {
-  return `thrw/${account}/nodes/${node}/events`;
+/**
+ * ADR 0015's resource types. `audio` is the headset connection thrw
+ * manages today; `hid` is keyboard/mouse switching, which no adapter
+ * implements yet.
+ */
+export type ResourceType = "audio" | "hid";
+
+/** The headset audio connection - the only resource type in use. */
+export const RESOURCE_AUDIO: ResourceType = "audio";
+
+/**
+ * Topics carrying a resource-type segment, per ADR 0015. This is the
+ * breaking change to ADR 0001's structure that the ADR authorises, and
+ * it is a flag day: a node on the old shape is invisible to a relay on
+ * the new one, with no overlap window.
+ *
+ * Every string these produce is pinned in `fixtures/topics.json`, which
+ * `adapter-mac` and `adapter-android`'s own builders assert against too -
+ * there are three hand-written implementations of this contract and
+ * nothing else would catch them drifting apart.
+ */
+export function eventsTopic(account: string, node: string, resource: ResourceType): string {
+  return `thrw/${account}/nodes/${node}/${resource}/events`;
 }
 
-export function commandsTopic(account: string, node: string): string {
-  return `thrw/${account}/commands/${node}`;
+export function commandsTopic(account: string, node: string, resource: ResourceType): string {
+  return `thrw/${account}/commands/${node}/${resource}`;
 }
 
-export function stateTopic(account: string): string {
-  return `thrw/${account}/state`;
+export function stateTopic(account: string, resource: ResourceType): string {
+  return `thrw/${account}/state/${resource}`;
 }
 
+/**
+ * Deliberately **without** a resource-type segment (ADR 0015 lists
+ * exactly three topics that gain one). Liveness is a property of the
+ * node - its process is running or it is not - not of any resource it
+ * manages. Adding a segment here would also mean per-resource
+ * heartbeats, multiplying traffic for no signal.
+ */
 export function heartbeatTopic(account: string, node: string): string {
   return `thrw/${account}/nodes/${node}/heartbeat`;
 }
@@ -48,6 +76,13 @@ export interface NodeManifest {
   displayName: string;
   adapterVersion: string;
   supportedEventKinds: EventKind[];
+  /**
+   * Which resource types this adapter can actually *control* (ADR 0015).
+   * Distinct from `supportedEventKinds`, which is what it can observe: a
+   * Linux desktop might support `hid` but not `audio` if it has no
+   * Bluetooth audio integration.
+   */
+  supportedResourceTypes: ResourceType[];
 }
 
 // Method signatures only, per architecture.md's "System components" section.

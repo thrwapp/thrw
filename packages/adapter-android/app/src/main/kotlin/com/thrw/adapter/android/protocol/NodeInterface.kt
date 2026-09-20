@@ -60,6 +60,13 @@ data class NodeManifest(
     val displayName: String,
     val adapterVersion: String,
     val supportedEventKinds: List<EventKind>,
+    /**
+     * Which resource types this adapter can actually **control** (ADR
+     * 0015). Distinct from [supportedEventKinds], which is what it can
+     * *observe*: a Linux desktop might support `hid` but not `audio` if
+     * it has no Bluetooth audio integration.
+     */
+    val supportedResourceTypes: List<ResourceType>,
 )
 
 /**

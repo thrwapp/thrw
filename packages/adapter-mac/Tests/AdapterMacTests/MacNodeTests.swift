@@ -10,15 +10,16 @@ private final class CooldownClock: @unchecked Sendable {
 private let accountId = "acct-1"
 private let nodeId = "mac-node-1"
 private let headsetIdentifier = BluetoothDeviceIdentifier.identifier(forAddressString: "AA:BB:CC:DD:EE:FF")!
-private let eventsTopicString = Topics.events(account: accountId, node: nodeId)
-private let commandsTopicString = Topics.commands(account: accountId, node: nodeId)
+private let eventsTopicString = Topics.events(account: accountId, node: nodeId, resource: .audio)
+private let commandsTopicString = Topics.commands(account: accountId, node: nodeId, resource: .audio)
 
 private let manifest = NodeManifest(
     nodeId: nodeId,
     platform: .mac,
     displayName: "MacBook Air",
     adapterVersion: "0.0.0",
-    supportedEventKinds: [.call, .voip]
+    supportedEventKinds: [.call, .voip],
+    supportedResourceTypes: [.audio]
 )
 
 /// Mirrors `adapter-android`'s `AndroidNodeTest.kt` test-for-test, using

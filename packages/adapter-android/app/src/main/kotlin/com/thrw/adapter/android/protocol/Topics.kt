@@ -1,5 +1,8 @@
 package com.thrw.adapter.android.protocol
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
 /**
  * Kotlin mirror of `packages/protocol/src/index.ts`'s MQTT topic builders -
  * see docs/spec/architecture.md, "MQTT topic design".
@@ -11,13 +14,40 @@ package com.thrw.adapter.android.protocol
  * keeps the two in sync is that every publish/subscribe in this adapter
  * goes through this object, never a literal topic string at the call site.
  */
+/**
+ * ADR 0015's resource types. Mirrors `@thrw/protocol`'s `ResourceType`;
+ * the wire spellings are pinned by
+ * `packages/protocol/fixtures/topics.json`, which this module's own
+ * tests assert against - there are three hand-written implementations of
+ * the topic contract and nothing else would catch them drifting apart.
+ */
+@Serializable
+enum class ResourceType {
+    @SerialName("audio")
+    AUDIO,
+
+    @SerialName("hid")
+    HID,
+    ;
+
+    /** The wire spelling - lowercase, as it appears in a topic. */
+    val wire: String get() = name.lowercase()
+}
+
 object Topics {
-    fun events(account: String, node: String): String = "thrw/$account/nodes/$node/events"
+    fun events(account: String, node: String, resource: ResourceType): String =
+        "thrw/$account/nodes/$node/${resource.wire}/events"
 
-    fun commands(account: String, node: String): String = "thrw/$account/commands/$node"
+    fun commands(account: String, node: String, resource: ResourceType): String =
+        "thrw/$account/commands/$node/${resource.wire}"
 
-    fun state(account: String): String = "thrw/$account/state"
+    fun state(account: String, resource: ResourceType): String = "thrw/$account/state/${resource.wire}"
 
+    /**
+     * Deliberately **without** a resource segment (ADR 0015 lists exactly
+     * three topics that gain one). Liveness is a property of the node,
+     * not of any resource it manages.
+     */
     fun heartbeat(account: String, node: String): String = "thrw/$account/nodes/$node/heartbeat"
 }
 

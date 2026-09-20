@@ -9,6 +9,7 @@ import {
   eventsTopic,
   heartbeatTopic,
   stateTopic,
+  type ResourceType,
   TopicQos,
   type EventKind,
   type Priority,
@@ -84,7 +85,7 @@ export type HeartbeatListener = (payload: unknown, topic: string) => void;
 // it, and re-deriving it from a raw topic string is the same parsing
 // logic every caller would otherwise have to duplicate. So this hands
 // back the already-parsed node directly instead of the topic.
-export type NodeEventListener = (payload: unknown, node: string) => void;
+export type NodeEventListener = (payload: unknown, node: string, resource: ResourceType) => void;
 
 // Thin wrapper around the `mqtt` npm package (see PR description for why
 // this dependency): only exists to guarantee every publish/subscribe call
@@ -136,19 +137,29 @@ export class RelayMqttClient {
     });
   }
 
-  publishEvent(account: string, node: string, payload: EventPayload): Promise<void> {
-    return this.publish(eventsTopic(account, node), payload, {
+  publishEvent(
+    account: string,
+    node: string,
+    resource: ResourceType,
+    payload: EventPayload,
+  ): Promise<void> {
+    return this.publish(eventsTopic(account, node, resource), payload, {
       qos: TopicQos.events.qos,
     });
   }
 
-  publishCommand(account: string, node: string, payload: CommandPayload): Promise<void> {
+  publishCommand(
+    account: string,
+    node: string,
+    resource: ResourceType,
+    payload: CommandPayload,
+  ): Promise<void> {
     const sequenced: SequencedCommandPayload = {
       ...payload,
-      seq: this.nextSequence(account, node),
+      seq: this.nextSequence(account, node, resource),
       epoch: this.epoch,
     };
-    return this.publish(commandsTopic(account, node), sequenced, {
+    return this.publish(commandsTopic(account, node, resource), sequenced, {
       qos: TopicQos.commands.qos,
     });
   }
@@ -161,18 +172,18 @@ export class RelayMqttClient {
    * durable state it has nowhere to put, to solve a problem a single
    * random string already solves.
    */
-  private nextSequence(account: string, node: string): number {
+  private nextSequence(account: string, node: string, resource: ResourceType): number {
     // "\u0000" rather than "/" or ":" - account ids and node ids are
     // user- and platform-supplied, and a separator either could contain
     // would let two different pairs collide on one counter.
-    const key = `${account}\u0000${node}`;
+    const key = `${account}\u0000${node}\u0000${resource}`;
     const next = (this.sequences.get(key) ?? 0) + 1;
     this.sequences.set(key, next);
     return next;
   }
 
-  publishState(account: string, payload: StatePayload): Promise<void> {
-    return this.publish(stateTopic(account), payload, {
+  publishState(account: string, resource: ResourceType, payload: StatePayload): Promise<void> {
+    return this.publish(stateTopic(account, resource), payload, {
       retain: TopicQos.state.retained,
     });
   }
@@ -213,12 +224,15 @@ export class RelayMqttClient {
     account: string,
     onMessage: NodeEventListener,
   ): Promise<ISubscriptionGrant[]> {
-    const topic = eventsTopic(account, "+");
+    // Two wildcards now: one for the node, one for the resource type.
+    // `+` is not a ResourceType, so this is the one place the builder is
+    // deliberately given a wildcard rather than a real value.
+    const topic = eventsTopic(account, "+", "+" as ResourceType);
 
     this.client.on("message", (messageTopic, message) => {
-      const node = nodeFromEventsTopic(account, messageTopic);
-      if (node === null) return;
-      onMessage(parsePayload(message), node);
+      const parsed = nodeFromEventsTopic(account, messageTopic);
+      if (parsed === null) return;
+      onMessage(parsePayload(message), parsed.node, parsed.resource);
     });
 
     return new Promise((resolve, reject) => {
@@ -264,17 +278,32 @@ function parsePayload(message: Buffer): unknown {
 // same MQTT connection happens to also be subscribed to (e.g. via a
 // separate subscribeHeartbeat call sharing the same underlying "message"
 // event) is silently ignored rather than misreported as a node id.
-function nodeFromEventsTopic(account: string, topic: string): string | null {
+function nodeFromEventsTopic(
+  account: string,
+  topic: string,
+): { node: string; resource: ResourceType } | null {
   const segments = topic.split("/");
-  const [prefix, topicAccount, nodesSegment, node, eventsSegment] = segments;
+  const [prefix, topicAccount, nodesSegment, node, resource, eventsSegment] = segments;
   if (
-    segments.length === 5 &&
+    segments.length === 6 &&
     prefix === "thrw" &&
     topicAccount === account &&
     nodesSegment === "nodes" &&
-    eventsSegment === "events"
+    eventsSegment === "events" &&
+    isResourceType(resource)
   ) {
-    return node;
+    return { node, resource };
   }
   return null;
+}
+
+/**
+ * Validated rather than cast (#171). This parser is the only thing
+ * between a topic off the wire and the priority engine, and the resource
+ * type now selects *which engine* a message reaches - so an unrecognised
+ * one must be dropped here rather than quietly creating state for a
+ * resource nothing manages.
+ */
+function isResourceType(value: string | undefined): value is ResourceType {
+  return value === "audio" || value === "hid";
 }

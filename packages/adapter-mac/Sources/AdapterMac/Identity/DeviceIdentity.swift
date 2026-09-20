@@ -47,7 +47,8 @@ public enum DeviceIdentity {
             platform: .mac,
             displayName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName,
             adapterVersion: adapterVersion,
-            supportedEventKinds: [.voip, .media]
+            supportedEventKinds: [.voip, .media],
+            supportedResourceTypes: [MacNode.resource]
         )
     }
 }

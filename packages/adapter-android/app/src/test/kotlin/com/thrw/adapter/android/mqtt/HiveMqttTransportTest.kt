@@ -13,6 +13,7 @@ import com.thrw.adapter.android.protocol.EventKind
 import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.protocol.Platform
 import com.thrw.adapter.android.protocol.ProtocolJson
+import com.thrw.adapter.android.protocol.ResourceType
 import com.thrw.adapter.android.protocol.Topics
 import com.thrw.adapter.android.protocol.TopicQos
 import io.moquette.broker.Server
@@ -139,11 +140,11 @@ class HiveMqttTransportTest {
     @Test
     fun `a retained publish is delivered to a subscriber that connects afterwards`() = runBlocking {
         val transport = connectTransport()
-        transport.publish(Topics.state(ACCOUNT), """{"holder":"$NODE"}""", 1, TopicQos.STATE_RETAINED)
+        transport.publish(Topics.state(ACCOUNT, ResourceType.AUDIO), """{"holder":"$NODE"}""", 1, TopicQos.STATE_RETAINED)
 
         val lateJoiner = connectRelayClient("late-joiner")
         val received = lateJoiner.publishes(MqttGlobalPublishFilter.ALL)
-        lateJoiner.subscribeWith().topicFilter(Topics.state(ACCOUNT)).qos(MqttQos.AT_LEAST_ONCE).send()
+        lateJoiner.subscribeWith().topicFilter(Topics.state(ACCOUNT, ResourceType.AUDIO)).qos(MqttQos.AT_LEAST_ONCE).send()
 
         // Receiving at all is the assertion: this subscriber connected
         // *after* the publish, so the only way this message reaches it is
@@ -153,7 +154,7 @@ class HiveMqttTransportTest {
         // delivered message. Moquette doesn't set it when replaying from its
         // retained store, so that would test the broker, not this adapter.)
         val publish = received.receive(TIMEOUT_SECONDS, TimeUnit.SECONDS).orElseThrow()
-        assertEquals(Topics.state(ACCOUNT), publish.topic.toString())
+        assertEquals(Topics.state(ACCOUNT, ResourceType.AUDIO), publish.topic.toString())
         assertEquals("""{"holder":"$NODE"}""", String(publish.payloadAsBytes))
     }
 
@@ -212,8 +213,8 @@ class HiveMqttTransportTest {
         const val HEADSET = "AA:BB:CC:DD:EE:FF"
         const val TIMEOUT_SECONDS = 15L
 
-        val EVENTS_TOPIC = Topics.events(ACCOUNT, NODE)
-        val COMMANDS_TOPIC = Topics.commands(ACCOUNT, NODE)
+        val EVENTS_TOPIC = Topics.events(ACCOUNT, NODE, ResourceType.AUDIO)
+        val COMMANDS_TOPIC = Topics.commands(ACCOUNT, NODE, ResourceType.AUDIO)
 
         val MANIFEST = NodeManifest(
             nodeId = NODE,
@@ -221,6 +222,7 @@ class HiveMqttTransportTest {
             displayName = "Pixel 10 Pro",
             adapterVersion = "0.0.0",
             supportedEventKinds = listOf(EventKind.CALL, EventKind.VOIP, EventKind.MEDIA),
+            supportedResourceTypes = listOf(ResourceType.AUDIO),
         )
 
         fun freePort(): Int = ServerSocket(0).use { it.localPort }

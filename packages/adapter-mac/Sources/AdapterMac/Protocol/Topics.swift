@@ -10,17 +10,25 @@ import Foundation
 /// package can't be consumed from Swift - so the *only* discipline that
 /// keeps the two in sync is that every publish/subscribe in this adapter
 /// goes through this type, never a literal topic string at the call site.
+/// ADR 0015's resource types. Mirrors `@thrw/protocol`'s `ResourceType`;
+/// the wire spellings are pinned by `packages/protocol/fixtures/topics.json`,
+/// which this package's own tests assert against.
+public enum ResourceType: String, Codable, Sendable {
+    case audio
+    case hid
+}
+
 public enum Topics {
-    public static func events(account: String, node: String) -> String {
-        "thrw/\(account)/nodes/\(node)/events"
+    public static func events(account: String, node: String, resource: ResourceType) -> String {
+        "thrw/\(account)/nodes/\(node)/\(resource.rawValue)/events"
     }
 
-    public static func commands(account: String, node: String) -> String {
-        "thrw/\(account)/commands/\(node)"
+    public static func commands(account: String, node: String, resource: ResourceType) -> String {
+        "thrw/\(account)/commands/\(node)/\(resource.rawValue)"
     }
 
-    public static func state(account: String) -> String {
-        "thrw/\(account)/state"
+    public static func state(account: String, resource: ResourceType) -> String {
+        "thrw/\(account)/state/\(resource.rawValue)"
     }
 
     public static func heartbeat(account: String, node: String) -> String {

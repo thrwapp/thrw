@@ -20,19 +20,19 @@ describe("@thrw/protocol", () => {
 
   describe("topic builders", () => {
     it("builds the events topic", () => {
-      expect(eventsTopic("acme", "node-1")).toBe(
-        "thrw/acme/nodes/node-1/events",
+      expect(eventsTopic("acme", "node-1", "audio")).toBe(
+        "thrw/acme/nodes/node-1/audio/events",
       );
     });
 
     it("builds the commands topic", () => {
-      expect(commandsTopic("acme", "node-1")).toBe(
-        "thrw/acme/commands/node-1",
+      expect(commandsTopic("acme", "node-1", "audio")).toBe(
+        "thrw/acme/commands/node-1/audio",
       );
     });
 
     it("builds the state topic", () => {
-      expect(stateTopic("acme")).toBe("thrw/acme/state");
+      expect(stateTopic("acme", "audio")).toBe("thrw/acme/state/audio");
     });
 
     it("builds the heartbeat topic", () => {

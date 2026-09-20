@@ -5,15 +5,16 @@ import XCTest
 private let runtimeAccountId = "acct-1"
 private let runtimeNodeId = "mac-node-1"
 private let runtimeHeadsetIdentifier = BluetoothDeviceIdentifier.identifier(forAddressString: "AA:BB:CC:DD:EE:FF")!
-private let runtimeEventsTopic = Topics.events(account: runtimeAccountId, node: runtimeNodeId)
-private let runtimeCommandsTopic = Topics.commands(account: runtimeAccountId, node: runtimeNodeId)
+private let runtimeEventsTopic = Topics.events(account: runtimeAccountId, node: runtimeNodeId, resource: .audio)
+private let runtimeCommandsTopic = Topics.commands(account: runtimeAccountId, node: runtimeNodeId, resource: .audio)
 
 private let runtimeManifest = NodeManifest(
     nodeId: runtimeNodeId,
     platform: .mac,
     displayName: "MacBook Air",
     adapterVersion: "0.0.0",
-    supportedEventKinds: [.voip]
+    supportedEventKinds: [.voip],
+    supportedResourceTypes: [.audio]
 )
 
 /// Tests ``NodeRuntime`` - the composition root's testable half (#128's

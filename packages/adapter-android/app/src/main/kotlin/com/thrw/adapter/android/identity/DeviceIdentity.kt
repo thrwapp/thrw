@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import com.thrw.adapter.android.BuildConfig
 import com.thrw.adapter.android.protocol.EventKind
+import com.thrw.adapter.android.protocol.ResourceType
 import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.protocol.Platform
 import java.util.UUID
@@ -50,5 +51,6 @@ object DeviceIdentity {
         displayName = Build.MODEL,
         adapterVersion = BuildConfig.VERSION_NAME,
         supportedEventKinds = listOf(EventKind.CALL, EventKind.VOIP, EventKind.MEDIA),
+        supportedResourceTypes = listOf(ResourceType.AUDIO),
     )
 }

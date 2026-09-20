@@ -66,6 +66,7 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
     displayName: "simulated node",
     adapterVersion: "1.0.0",
     supportedEventKinds: ["call", "media"],
+    supportedResourceTypes: ["audio"],
     ...overrides,
   };
 }
@@ -91,7 +92,7 @@ function publishRegistration(
   activeEvents?: EventKind[],
   observedRoutes?: Record<string, boolean>,
 ): Promise<void> {
-  return publishJson(client, eventsTopic(account, nodeManifest.nodeId), {
+  return publishJson(client, eventsTopic(account, nodeManifest.nodeId, "audio"), {
     kind: REGISTRATION_KIND,
     manifest: nodeManifest,
     ...(activeEvents ? { activeEvents } : {}),
@@ -100,11 +101,11 @@ function publishRegistration(
 }
 
 function publishEventEnd(client: MqttClient, account: string, node: string, type: EventKind): Promise<void> {
-  return publishJson(client, eventsTopic(account, node), { kind: EVENT_END_KIND, type });
+  return publishJson(client, eventsTopic(account, node, "audio"), { kind: EVENT_END_KIND, type });
 }
 
 function publishEvent(client: MqttClient, account: string, node: string, type: EventKind): Promise<void> {
-  return publishJson(client, eventsTopic(account, node), { type, priority: 1 });
+  return publishJson(client, eventsTopic(account, node, "audio"), { type, priority: 1 });
 }
 
 /**
@@ -129,7 +130,7 @@ function settle(ms = 300): Promise<void> {
  */
 function collectCommands(client: MqttClient, account: string, node: string): CommandPayload[] {
   const received: CommandPayload[] = [];
-  const topic = commandsTopic(account, node);
+  const topic = commandsTopic(account, node, "audio");
   client.subscribe(topic, { qos: 1 });
   client.on("message", (messageTopic, message) => {
     if (messageTopic !== topic) return;
@@ -356,7 +357,7 @@ describe("RelayService (real broker)", () => {
     const node = randomUUID();
     const service = await startService([account]);
 
-    await publishJson(rawClient, eventsTopic(account, node), { unrelated: "shape" });
+    await publishJson(rawClient, eventsTopic(account, node, "audio"), { unrelated: "shape" });
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     expect(service.registryFor(account)?.listAll()).toEqual([]);
