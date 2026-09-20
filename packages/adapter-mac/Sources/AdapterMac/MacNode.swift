@@ -89,7 +89,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
 
     /// Publishes a trigger to the events topic at QoS 1 per `TopicQos`.
     public func emitEvent(type: EventKind, priority: Priority) async throws {
-        if selfCooldown.isActive() { return }
+        if selfCooldown.isActive(), !type.bypassesSelfCooldown { return }
         try await publishToEvents(EventPayload(type: type, priority: priority))
         activeEvents.insert(type)
     }
@@ -99,7 +99,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// `EventEndPayload` on the same events topic at the same QoS -
     /// mirrors `AndroidNode.kt`'s own `endEvent` (#68).
     public func endEvent(type: EventKind) async throws {
-        if selfCooldown.isActive() { return }
+        if selfCooldown.isActive(), !type.bypassesSelfCooldown { return }
         try await publishToEvents(EventEndPayload(type: type))
         activeEvents.remove(type)
     }

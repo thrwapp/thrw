@@ -44,6 +44,74 @@ private final class Fixture {
 }
 
 final class MacNodeTests: XCTestCase {
+    // MARK: - manual claim vs the self-cooldown (#212)
+
+    /// The cooldown exists so thrw ignores its **own** side effects (#167).
+    /// A manual claim is the user acting, not an echo, and ADR 0010 says
+    /// direct user action always wins - so it must go out even inside the
+    /// window. Without this the override button silently does nothing for
+    /// three seconds after any switch, which is exactly when a user
+    /// reaches for it.
+    func testAManualClaimIsPublishedEvenInsideTheSelfCooldown() async throws {
+        let cooldown = SelfCooldown()
+        let transport = FakeMqttTransport()
+        let node = MacNode(
+            accountId: accountId,
+            nodeId: nodeId,
+            headsetIdentifier: headsetIdentifier,
+            transport: transport,
+            bluetooth: BluetoothConnectionManager(gateway: FakeBluetoothPeripheralGateway()),
+            selfCooldown: cooldown
+        )
+        cooldown.arm()
+
+        try await node.emitEvent(type: .manualClaim, priority: unrankedPriority)
+
+        XCTAssertEqual(transport.published.count, 1, "a manual claim must not be suppressed by the cooldown")
+    }
+
+    func testReleasingAManualClaimIsAlsoPublishedInsideTheCooldown() async throws {
+        let cooldown = SelfCooldown()
+        let transport = FakeMqttTransport()
+        let node = MacNode(
+            accountId: accountId,
+            nodeId: nodeId,
+            headsetIdentifier: headsetIdentifier,
+            transport: transport,
+            bluetooth: BluetoothConnectionManager(gateway: FakeBluetoothPeripheralGateway()),
+            selfCooldown: cooldown
+        )
+        cooldown.arm()
+
+        try await node.endEvent(type: .manualClaim)
+
+        XCTAssertEqual(transport.published.count, 1, "releasing must not be suppressed either")
+    }
+
+    /// The exemption is for `manual_claim` alone. Every other kind is
+    /// observed rather than requested, so every other kind can legitimately
+    /// be an echo of thrw's own action - suppressing those is the whole
+    /// point of #167 and must not regress.
+    func testEveryOtherTriggerIsStillSuppressedByTheCooldown() async throws {
+        for kind in [EventKind.media, .voip, .call] {
+            let cooldown = SelfCooldown()
+            let transport = FakeMqttTransport()
+            let node = MacNode(
+                accountId: accountId,
+                nodeId: nodeId,
+                headsetIdentifier: headsetIdentifier,
+                transport: transport,
+                bluetooth: BluetoothConnectionManager(gateway: FakeBluetoothPeripheralGateway()),
+                selfCooldown: cooldown
+            )
+            cooldown.arm()
+
+            try await node.emitEvent(type: kind, priority: unrankedPriority)
+
+            XCTAssertTrue(transport.published.isEmpty, "\(kind) must still be suppressed")
+        }
+    }
+
     // MARK: - activeEvents (#178)
 
     /// The point of the whole mechanism: a periodic registration has to

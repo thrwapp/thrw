@@ -47,6 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// in that window once it exists rather than in a second surface.
     private let loginItem: LoginItemController = SMAppServiceLoginItem()
 
+    /// #212. Non-nil only while a node runtime is running - the menu item
+    /// is disabled otherwise, because there is nothing to claim through.
+    private var manualClaim: ManualClaim?
+
+    /// Held so its title can be flipped between claim and release.
+    private var claimItem: NSMenuItem?
+
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -68,6 +75,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image = NSImage(systemSymbolName: "headphones", accessibilityDescription: "thrw")
 
         let menu = NSMenu()
+
+        // #212. First item, because it is the thing you reach for when
+        // the automation has just got it wrong - ADR 0010's "direct user
+        // action always wins", made reachable.
+        let claim = NSMenuItem(title: Self.claimTitle, action: #selector(toggleManualClaim), keyEquivalent: "k")
+        claim.target = self
+        menu.addItem(claim)
+        menu.addItem(.separator())
+        claimItem = claim
+
         let setUpItem = NSMenuItem(title: "Set Up\u{2026}", action: #selector(openProvisioning), keyEquivalent: ",")
         setUpItem.target = self
         menu.addItem(setUpItem)
@@ -82,6 +99,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `LSUIElement` app has no Dock icon and isn't normally activated,
     /// so this has to activate explicitly or the window opens behind
     /// whatever the user was doing.
+    private static let claimTitle = "Claim Headset"
+    private static let releaseTitle = "Release Headset"
+
+    /// #212. The publish is awaited before the title changes, so the menu
+    /// never claims a state the relay was not actually told about - a
+    /// failed claim leaves the item as it was, and the next tap retries.
+    @objc private func toggleManualClaim() {
+        guard let manualClaim else { return }
+        Task { @MainActor in
+            do {
+                _ = try await manualClaim.toggle()
+            } catch {
+                // Logged rather than swallowed: the title stays as it was,
+                // so the menu keeps telling the truth and the next tap
+                // retries.
+                Self.logger.error("Manual claim failed: \(error.localizedDescription, privacy: .public)")
+            }
+            self.refreshClaimItem()
+        }
+    }
+
+    private func refreshClaimItem() {
+        claimItem?.title = (manualClaim?.isHeld() ?? false) ? Self.releaseTitle : Self.claimTitle
+    }
+
+    /// Disabled until a node is running: without one there is nothing to
+    /// claim through, and an item that silently does nothing is worse
+    /// than one that is visibly unavailable.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem === claimItem { return manualClaim != nil }
+        return true
+    }
+
     @objc private func openProvisioning() {
         if let provisioningWindow {
             NSApp.activate(ignoringOtherApps: true)
@@ -199,6 +249,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 bluetooth: bluetooth,
                 routeObserver: routeObserver
             )
+            manualClaim = ManualClaim(node: node)
+            refreshClaimItem()
 
             let voipMonitor = VoipTriggerMonitor(source: NSWorkspaceRunningApplicationSource(), node: node)
             // #166: media (rule 4), via public CoreAudio.
