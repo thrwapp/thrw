@@ -35,6 +35,16 @@ final class FakeMqttTransport: MqttTransport, @unchecked Sendable {
     private(set) var published: [PublishedMessage] = []
     private(set) var subscriptions: [Subscription] = []
 
+    /// Set by the node under test; fired by ``simulateReconnect()``.
+    private var reconnectedHandler: (@Sendable () -> Void)?
+
+    func onReconnected(_ handler: @escaping @Sendable () -> Void) {
+        reconnectedHandler = handler
+    }
+
+    /// Stands in for the transport re-establishing a dropped connection.
+    func simulateReconnect() { reconnectedHandler?() }
+
     private let commandsStream: AsyncStream<String>
     private let commandsContinuation: AsyncStream<String>.Continuation
 

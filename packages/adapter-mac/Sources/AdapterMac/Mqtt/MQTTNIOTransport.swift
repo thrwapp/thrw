@@ -50,9 +50,104 @@ import NIOPosix
 public final class MQTTNIOTransport: MqttTransport, @unchecked Sendable {
     private let client: MQTTClient
 
+    /// Guards everything below. `NSLock` rather than an actor for the
+    /// same reason ``SelfCooldown`` uses one: this is touched from
+    /// MQTTNIO's own callback threads as well as from Swift tasks.
+    private let lock = NSLock()
+    /// Live subscriptions, re-issued after a reconnect.
+    private var subscriptions: [String: Int] = [:]
+    /// Set by the node, to re-register after a reconnect.
+    private var reconnectedHandler: (@Sendable () -> Void)?
+    /// Stops the close listener fighting an intentional shutdown.
+    private var isShuttingDown = false
+    /// Stops two overlapping reconnect loops after a flapping link.
+    private var isReconnecting = false
+
     private init(client: MQTTClient) {
         self.client = client
+        client.addCloseListener(named: Self.closeListenerName) { [weak self] _ in
+            self?.connectionClosed()
+        }
     }
+
+    private static let closeListenerName = "AdapterMac.reconnect"
+
+    /// Synchronous on purpose: taking an `NSLock` directly inside an
+    /// `async` function is unavailable under the Swift 6 language mode
+    /// (there is no suspension point inside, so there is nothing to be
+    /// unsafe about - but the compiler cannot know that). Every locked
+    /// read/write below goes through here.
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    public func onReconnected(_ handler: @escaping @Sendable () -> Void) {
+        withLock { reconnectedHandler = handler }
+    }
+
+    /// MQTTNIO has no automatic reconnect, so this is it (#182).
+    ///
+    /// Without it an adapter that loses its connection never comes back:
+    /// it keeps running, its menu bar item stays up, and it is silently
+    /// useless until relaunched. Observed for real when a relay deploy
+    /// restarted the broker and neither adapter returned. The triggers
+    /// are mundane - a network change, a sleep/wake, any relay deploy.
+    private func connectionClosed() {
+        let shouldReconnect = withLock {
+            let go = !isShuttingDown && !isReconnecting
+            if go { isReconnecting = true }
+            return go
+        }
+        guard shouldReconnect else { return }
+        Task { await reconnectLoop() }
+    }
+
+    private func reconnectLoop() async {
+        var delay = Self.initialReconnectDelay
+        while true {
+            if withLock({ isShuttingDown }) { break }
+
+            // Jitter so several nodes coming back from a shared outage -
+            // a relay deploy, a router reboot - don't all reconnect and
+            // re-register on the same tick (ADR 0020's reconnect jitter).
+            let jitter = Duration.milliseconds(Int.random(in: 0...2000))
+            try? await Task.sleep(for: delay + jitter)
+
+            do {
+                _ = try await client.connect()
+                await restoreSubscriptions()
+                let handler = withLock { () -> (@Sendable () -> Void)? in
+                    isReconnecting = false
+                    return reconnectedHandler
+                }
+                handler?()
+                return
+            } catch {
+                delay = min(delay * 2, Self.maxReconnectDelay)
+            }
+        }
+        withLock { isReconnecting = false }
+    }
+
+    /// Re-issues every live subscription.
+    ///
+    /// The session is clean, so reconnecting restores the *connection*,
+    /// not the subscriptions - without this the client comes back
+    /// connected and **deaf**, never receiving another claim or release
+    /// while looking perfectly healthy. (The publish listeners are
+    /// client-level and do survive, so only the SUBSCRIBE needs
+    /// re-sending.)
+    private func restoreSubscriptions() async {
+        let live = withLock { subscriptions }
+        for (topic, qos) in live {
+            _ = try? await client.subscribe(to: [MQTTSubscribeInfo(topicFilter: topic, qos: mqttQos(qos))])
+        }
+    }
+
+    private static let initialReconnectDelay: Duration = .seconds(1)
+    private static let maxReconnectDelay: Duration = .seconds(30)
 
     /// Connects to `config`'s relay as `clientId` and returns a
     /// connected transport.
@@ -116,8 +211,11 @@ public final class MQTTNIOTransport: MqttTransport, @unchecked Sendable {
                 continuation.yield(String(buffer: publishInfo.payload))
             }
 
-            continuation.onTermination = { [client] _ in
+            withLock { subscriptions[topic] = qos }
+            continuation.onTermination = { [client, weak self] _ in
                 client.removePublishListener(named: listenerName)
+                guard let self else { return }
+                self.withLock { _ = self.subscriptions.removeValue(forKey: topic) }
             }
 
             Task { [client] in
@@ -135,6 +233,11 @@ public final class MQTTNIOTransport: MqttTransport, @unchecked Sendable {
     }
 
     public func close() async throws {
+        // Before shutdown, so the close listener treats the resulting
+        // disconnect as intentional rather than starting a reconnect loop
+        // against a client that is going away.
+        withLock { isShuttingDown = true }
+        client.removeCloseListener(named: Self.closeListenerName)
         try await client.shutdown()
     }
 

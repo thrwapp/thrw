@@ -22,6 +22,24 @@ public protocol MqttTransport: Sendable {
     func subscribe(topic: String, qos: Int) -> AsyncStream<String>
 
     func close() async throws
+
+    /// Registers `handler` to run whenever the transport
+    /// **re-establishes** a dropped connection - not on the first
+    /// connect (#182).
+    ///
+    /// The node uses this to re-register: the relay learns of a node only
+    /// from a registration and holds that in memory, so a node that
+    /// silently reconnects is connected but invisible - #178 by another
+    /// route. Reconnect is also when the relay's picture is most likely
+    /// stale, and #178 made registration a safe, repeatable statement of
+    /// current state rather than an edge.
+    func onReconnected(_ handler: @escaping @Sendable () -> Void)
+}
+
+extension MqttTransport {
+    /// Default no-op, so the fakes in this package's tests and any
+    /// transport without a reconnect story need no change.
+    public func onReconnected(_ handler: @escaping @Sendable () -> Void) {}
 }
 
 extension MqttTransport {

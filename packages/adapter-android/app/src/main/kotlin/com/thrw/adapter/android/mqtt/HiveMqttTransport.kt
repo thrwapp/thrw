@@ -1,5 +1,6 @@
 package com.thrw.adapter.android.mqtt
 
+import android.util.Log
 import com.hivemq.client.mqtt.MqttWebSocketConfig
 import com.hivemq.client.mqtt.datatypes.MqttQos
 import com.hivemq.client.mqtt.mqtt3.Mqtt3BlockingClient
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -34,7 +36,72 @@ import kotlinx.coroutines.withTimeout
  */
 class HiveMqttTransport private constructor(
     private val client: Mqtt3BlockingClient,
+    private val hooks: Hooks,
 ) : MqttTransport {
+
+    init {
+        // Wired here rather than at build time because the listeners are
+        // registered on the builder, before this instance exists.
+        hooks.onReconnect = { resubscribeAll() }
+    }
+
+    /**
+     * State shared with the client's builder-time connect/disconnect
+     * listeners (#182). HiveMQ registers those on the *builder*, so they
+     * are created before the transport they need to call back into.
+     */
+    internal class Hooks {
+        /** Live subscriptions, re-issued after a reconnect. */
+        val subscriptions = ConcurrentHashMap<String, Subscription>()
+
+        /** Set by the transport once constructed. */
+        @Volatile
+        var onReconnect: (() -> Unit)? = null
+
+        /** Set by the node, to re-register after a reconnect. */
+        @Volatile
+        var onReconnected: (() -> Unit)? = null
+
+        /**
+         * The first CONNECT is not a *re*connect. Without this, the node
+         * would register twice at startup - once from NodeRuntime and
+         * once from the connected listener firing on the initial connect.
+         */
+        @Volatile
+        var hasConnectedOnce = false
+    }
+
+    internal class Subscription(val topic: String, val qos: Int, val onMessage: (String) -> Unit)
+
+    override fun onReconnected(handler: () -> Unit) {
+        hooks.onReconnected = handler
+    }
+
+    /**
+     * Re-issues every live subscription after a reconnect.
+     *
+     * Necessary because the session is clean: HiveMQ's automatic
+     * reconnect restores the *connection*, not the subscriptions, so
+     * without this the client comes back connected and **deaf** - it
+     * would never receive another claim or release, while looking
+     * perfectly healthy. That silent-deafness failure is the same shape
+     * as the bug this issue is about, one layer down.
+     */
+    private fun resubscribeAll() {
+        val async = client.toAsync()
+        for (subscription in hooks.subscriptions.values) {
+            runCatching {
+                async.subscribeWith()
+                    .topicFilter(subscription.topic)
+                    .qos(mqttQos(subscription.qos))
+                    .callback { publish ->
+                        subscription.onMessage(String(publish.payloadAsBytes, Charsets.UTF_8))
+                    }
+                    .send()
+            }.onFailure { Log.e(TAG, "re-subscribe to ${subscription.topic} failed", it) }
+        }
+        hooks.onReconnected?.invoke()
+    }
 
     override suspend fun publish(topic: String, payload: String, qos: Int, retained: Boolean) {
         withContext(Dispatchers.IO) {
@@ -90,6 +157,8 @@ class HiveMqttTransport private constructor(
          * turns any future variant of that into a loud, diagnosable
          * failure instead of a silent hang.
          */
+        private const val TAG = "HiveMqttTransport"
+
         private const val CONNECT_TIMEOUT_MS = 20_000L
 
         suspend fun connect(
@@ -97,10 +166,38 @@ class HiveMqttTransport private constructor(
             clientId: String,
             credentials: RelayCredentials? = null,
         ): HiveMqttTransport = withContext(Dispatchers.IO) {
+            val hooks = Hooks()
             var builder = Mqtt3Client.builder()
                 .identifier(clientId)
                 .serverHost(config.host)
                 .serverPort(config.port)
+                // #182. Without this an adapter that loses its connection
+                // never comes back: it keeps running, its foreground
+                // notification stays up, and every publish throws
+                // MqttClientStateException("MQTT client is not
+                // connected") forever. That is silent, because #161's
+                // crash survivability faithfully keeps the adapter alive
+                // while its transport is dead. Observed for real when a
+                // relay deploy restarted the broker and neither adapter
+                // ever returned. The triggers are mundane - Wi-Fi change,
+                // the phone sleeping past the 60s keepalive, any relay
+                // deploy.
+                .automaticReconnectWithDefaultConfig()
+                .addDisconnectedListener { context ->
+                    Log.w(
+                        TAG,
+                        "MQTT disconnected (source=${context.source}); reconnecting",
+                        context.cause,
+                    )
+                }
+                .addConnectedListener {
+                    if (!hooks.hasConnectedOnce) {
+                        hooks.hasConnectedOnce = true
+                        return@addConnectedListener
+                    }
+                    Log.i(TAG, "MQTT reconnected; restoring subscriptions and re-registering")
+                    hooks.onReconnect?.invoke()
+                }
 
             if (config.webSocket) {
                 builder = builder.webSocketConfig(
@@ -134,7 +231,7 @@ class HiveMqttTransport private constructor(
                 client.connect()
             }
             }
-            HiveMqttTransport(client)
+            HiveMqttTransport(client, hooks)
         }
     }
 }

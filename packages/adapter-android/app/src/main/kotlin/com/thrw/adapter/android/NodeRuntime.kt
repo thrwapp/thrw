@@ -70,5 +70,20 @@ class NodeRuntime(
             registration.join()
             registrationRunner.run { node.register(manifest) }
         }
+        // #182. Reconnecting restores the connection, not the relay's
+        // memory of this node - the relay learns of a node only from a
+        // registration and holds that in memory, so a node that silently
+        // reconnects is connected but invisible, which is #178 by another
+        // route. Waiting for the 2-minute timer would leave a window
+        // where the headset cannot be arbitrated at all, and reconnect is
+        // exactly when the relay's picture is most likely to be stale.
+        //
+        // Safe to do on every reconnect because #178 made registration a
+        // statement of current state rather than an edge: it carries the
+        // node's active triggers, so the relay reconciles instead of
+        // being told something started.
+        node.onReconnected {
+            scope.launch { node.register(manifest) }
+        }
     }
 }
