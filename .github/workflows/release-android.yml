@@ -332,6 +332,13 @@ jobs:
             printf -- '- **`thrw-%s.apk`** - install this on a phone. Sideload:\n' "$tag"
             printf -- '  `adb install thrw-%s.apk`, or copy it across and open it,\n' "$tag"
             printf -- '  granting "install unknown apps" to whatever opens it.\n'
+            printf -- '- If the install fails with\n'
+            printf -- '  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, a debug-signed build\n'
+            printf -- '  is already installed. Release builds are signed with the\n'
+            printf -- '  upload key and Android will not update across a signature\n'
+            printf -- '  change: `adb uninstall app.thrw.android` first. That wipes\n'
+            printf -- '  app data, so provisioning has to be redone. One-time - later\n'
+            printf -- '  releases share this key and update in place.\n'
             printf -- '- **`app-release.aab`** - Play Console upload format only. A\n'
             printf -- '  phone cannot install this; Play expands it into per-device\n'
             printf -- '  APKs.\n'
