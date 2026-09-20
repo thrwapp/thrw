@@ -295,7 +295,7 @@ jobs:
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" \
               --title "$tag" \
-              --notes "Android artifacts for $tag (versionCode $code)." \
+              --notes "Adapter artifacts for $tag. Draft until a human publishes it." \
               --draft || true
           fi
           gh release upload "$tag" \
@@ -303,24 +303,51 @@ jobs:
             "$staged/thrw-$tag.apk" \
             --clobber
 
-          # Set the notes unconditionally afterwards, rather than relying
-          # on `create` above having been the one that ran. A `v*` tag
-          # starts several workflows (#190) and whichever creates the
-          # Release first sets its notes - so without this, the body a
-          # human reads would depend on a race, and could be release.yml's
-          # generic Linux text. `edit` is deterministic: `create` only
-          # succeeds once, so this always wins.
-          gh release edit "$tag" --notes "$(cat <<NOTES
-          Android artifacts for \`$tag\` (versionCode $code).
+          # APPEND this platform's section; never replace the body.
+          #
+          # The first version of this step set the whole body with
+          # `--notes`, on the reasoning that `create` succeeds only once
+          # so a later `edit` is deterministic. It is - and that was the
+          # bug. release-mac.yml appends its own section, so whichever
+          # workflow finished last won outright: on the recreated v0.0.1
+          # this step ran after the Mac one and silently deleted the
+          # macOS install instructions, including the Gatekeeper step a
+          # first install actually needs. The `thrw-mac-*.zip` was
+          # attached and undocumented.
+          #
+          # Built with printf into a file rather than a heredoc: the
+          # existing body contains backticks, and interpolating it into an
+          # unquoted heredoc would run them as command substitutions.
+          #
+          # The write is verified and retried. Two publishers doing
+          # read-modify-write can still interleave - there is no atomic
+          # append in the API - so after writing, this re-reads and tries
+          # again if its own marker is gone. That self-heals the case
+          # where the other publisher's write landed in between, which is
+          # exactly what happened here.
+          section="$RUNNER_TEMP/android-section.md"
+          {
+            printf '<!-- android-install -->\n'
+            printf '### Android - `thrw-%s.apk` (versionCode %s)\n\n' "$tag" "$code"
+            printf -- '- **`thrw-%s.apk`** - install this on a phone. Sideload:\n' "$tag"
+            printf -- '  `adb install thrw-%s.apk`, or copy it across and open it,\n' "$tag"
+            printf -- '  granting "install unknown apps" to whatever opens it.\n'
+            printf -- '- **`app-release.aab`** - Play Console upload format only. A\n'
+            printf -- '  phone cannot install this; Play expands it into per-device\n'
+            printf -- '  APKs.\n'
+          } > "$section"
 
-          - **\`thrw-$tag.apk\`** - install this on a phone. Sideload:
-            \`adb install thrw-$tag.apk\`, or copy it across and open it,
-            granting "install unknown apps" to whatever opens it.
-          - **\`app-release.aab\`** - Play Console upload format only. A
-            phone cannot install this; Play expands it into per-device
-            APKs.
-
-          Both come from one build and carry the same versionCode and
-          relay credential.
-          NOTES
-          )"
+          for attempt in 1 2 3; do
+            body="$(gh release view "$tag" --json body -q .body)"
+            case "$body" in
+              *"<!-- android-install -->"*)
+                echo "Android section present (attempt $attempt)."
+                break
+                ;;
+            esac
+            notes="$RUNNER_TEMP/notes.md"
+            { printf '%s\n\n' "$body"; cat "$section"; } > "$notes"
+            gh release edit "$tag" --notes-file "$notes"
+            echo "Appended the Android section (attempt $attempt)."
+            sleep 5
+          done

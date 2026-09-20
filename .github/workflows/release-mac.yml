@@ -288,36 +288,43 @@ jobs:
           # unquoted heredoc would run those as command substitutions.
           # printf with %s arguments treats every value as data.
           #
-          # Honest about the limitation: two workflows appending
-          # concurrently could interleave, and Actions offers no
-          # cross-workflow lock. Releases are hand-cut and rare, the
-          # marker makes a re-run idempotent, and notes are editable by
-          # hand - so this is judged not worth a heavier mechanism. If it
-          # does go wrong, the fix is a static notes file in the repo that
-          # every publisher points at.
+          # The write is verified and retried, because read-modify-write
+          # is not atomic and two publishers can interleave. On the
+          # recreated v0.0.1 this section was written and then destroyed:
+          # release-android.yml replaced the whole body afterwards, so
+          # the Mac zip shipped with no install instructions. That
+          # workflow now appends its own marked section too, and both
+          # sides re-read after writing and try again if their marker has
+          # vanished - which self-heals an interleave rather than
+          # depending on finishing order.
           short="${{ steps.version.outputs.short }}"
           build="${{ steps.version.outputs.build }}"
-          body="$(gh release view "$tag" --json body -q .body)"
-          case "$body" in
-            *"<!-- mac-install -->"*)
-              echo "Mac section already present - nothing to append."
-              ;;
-            *)
-              notes="$RUNNER_TEMP/notes.md"
-              {
-                printf '%s\n\n' "$body"
-                printf '<!-- mac-install -->\n'
-                printf '### macOS - `%s`\n\n' "$name"
-                printf 'Unzip and drag `AdapterMac.app` to /Applications. It is a\n'
-                printf 'menu-bar app with no Dock icon, so look in the menu bar\n'
-                printf 'rather than the Dock after launching it.\n\n'
-                printf 'It is **not** Developer ID signed or notarized, so the first\n'
-                printf 'launch is blocked. Open System Settings > Privacy & Security\n'
-                printf 'and click "Open Anyway", then launch it again. Once per\n'
-                printf 'install.\n\n'
-                printf 'Version %s (build %s).\n' "$short" "$build"
-              } > "$notes"
-              gh release edit "$tag" --notes-file "$notes"
-              echo "Appended the Mac section."
-              ;;
-          esac
+
+          section="$RUNNER_TEMP/mac-section.md"
+          {
+            printf '<!-- mac-install -->\n'
+            printf '### macOS - `%s`\n\n' "$name"
+            printf 'Unzip and drag `AdapterMac.app` to /Applications. It is a\n'
+            printf 'menu-bar app with no Dock icon, so look in the menu bar\n'
+            printf 'rather than the Dock after launching it.\n\n'
+            printf 'It is **not** Developer ID signed or notarized, so the first\n'
+            printf 'launch is blocked. Open System Settings > Privacy & Security\n'
+            printf 'and click "Open Anyway", then launch it again. Once per\n'
+            printf 'install.\n\n'
+            printf 'Version %s (build %s).\n' "$short" "$build"
+          } > "$section"
+
+          for attempt in 1 2 3; do
+            body="$(gh release view "$tag" --json body -q .body)"
+            case "$body" in
+              *"<!-- mac-install -->"*)
+                echo "Mac section present (attempt $attempt)."
+                break
+                ;;
+            esac
+            notes="$RUNNER_TEMP/notes.md"
+            { printf '%s\n\n' "$body"; cat "$section"; } > "$notes"
+            gh release edit "$tag" --notes-file "$notes"
+            echo "Appended the Mac section (attempt $attempt)."
+            sleep 5
+          done
