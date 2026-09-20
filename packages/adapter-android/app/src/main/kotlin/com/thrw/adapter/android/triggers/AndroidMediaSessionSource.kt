@@ -67,35 +67,26 @@ class AndroidMediaSessionSource(
 
         fun playing(state: PlaybackState?) = state?.state == PlaybackState.STATE_PLAYING
 
+        // Decides nothing: [reconcileSessions] does that, over plain data,
+        // where it can be tested (#179). Everything here is execution -
+        // unregister these, register those, emit that. Both production
+        // bugs this file has had (#174, #175) were decisions made in a
+        // place no test could reach.
         fun rebind(controllers: List<MediaController>) {
-            val live = controllers.associateBy { it.packageName }
+            val byKey = controllers.associateBy { it.packageName }
+            val plan = reconcileSessions(
+                tracked = callbacks.mapValues { (_, registered) -> registered.first.sessionToken },
+                live = controllers.map {
+                    SessionRef(it.packageName, it.sessionToken, playing(it.playbackState))
+                },
+            )
 
-            // Sessions that went away entirely: report Gone so the monitor
-            // forgets them rather than tracking them as idle forever.
-            for ((key, registered) in callbacks - live.keys) {
-                registered.first.unregisterCallback(registered.second)
-                callbacks.remove(key)
-                trySend(MediaSessionEvent.Gone(key))
+            for (key in plan.unregister) {
+                callbacks.remove(key)?.let { (controller, cb) -> controller.unregisterCallback(cb) }
             }
 
-            for ((key, controller) in live) {
-                // Identity is the *session token*, not the package (#175).
-                // A package is stable across controller instances, which is
-                // precisely why "this package is already in the map" cannot
-                // tell us the session was replaced. An app that destroys and
-                // recreates its session - relaunching, or Spotify moving
-                // between local and Connect playback - keeps its package in
-                // `live`, so the `callbacks - live.keys` pass above removes
-                // nothing and a package check would skip the new controller
-                // forever, leaving this bound to a dead one and deaf to that
-                // app. `MediaSession.Token` has value equality, so it is the
-                // right test here.
-                val existing = callbacks[key]
-                if (existing != null && existing.first.sessionToken == controller.sessionToken) continue
-                if (existing != null) {
-                    existing.first.unregisterCallback(existing.second)
-                    callbacks.remove(key)
-                }
+            for (key in plan.register) {
+                val controller = byKey[key] ?: continue
                 val cb = object : MediaController.Callback() {
                     override fun onPlaybackStateChanged(state: PlaybackState?) {
                         trySend(MediaSessionEvent.Changed(MediaSessionState(key, playing(state))))
@@ -104,18 +95,18 @@ class AndroidMediaSessionSource(
                     override fun onSessionDestroyed() {
                         // Drop the entry as well as reporting it: leaving a
                         // destroyed controller in the map is what made this
-                        // deaf to the app's next session (#175).
+                        // deaf to the app's next session (#175). Not part of
+                        // reconcileSessions - this is the framework telling
+                        // us out-of-band, not a rebind.
                         callbacks.remove(key)
                         trySend(MediaSessionEvent.Gone(key))
                     }
                 }
                 controller.registerCallback(cb, handler)
                 callbacks[key] = controller to cb
-                // Emit the current state immediately: registerCallback does
-                // not replay, so a session already playing when this starts
-                // would otherwise be invisible until its next change.
-                trySend(MediaSessionEvent.Changed(MediaSessionState(key, playing(controller.playbackState))))
             }
+
+            plan.events.forEach { trySend(it) }
         }
 
         val onActiveSessionsChanged =
