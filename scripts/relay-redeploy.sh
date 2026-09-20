@@ -74,12 +74,21 @@ docker run -d --name relay --restart unless-stopped \
 # Caddyfile at its stable path every run (cheap), then either start Caddy
 # fresh or hot-reload its config into the already-running instance.
 #
-# deploy.yml's "Roll the relay VM" step scp's services/relay-hosted/Caddyfile
-# to /tmp/Caddyfile alongside this script, the same pattern already used
-# for this script itself.
+# deploy.yml's "Roll the relay VM" step scp's
+# services/relay-hosted/Caddyfile next to this script, so it is resolved
+# relative to wherever this script actually is rather than a fixed path
+# (#180).
+#
+# That indirection is the fix, not a nicety: both files used to be
+# uploaded to fixed paths under /tmp, which is sticky - only the owner
+# may overwrite a file there. A single manual deploy left them owned by a
+# human, after which every CI deploy (running as `runner`) failed on
+# `scp: Permission denied` and could never recover on its own. That went
+# unnoticed for two days while merged fixes sat undeployed.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CADDYFILE_DIR=/etc/caddy
 mkdir -p "$CADDYFILE_DIR"
-cp /tmp/Caddyfile "$CADDYFILE_DIR/Caddyfile"
+cp "$SCRIPT_DIR/Caddyfile" "$CADDYFILE_DIR/Caddyfile"
 
 docker volume create caddy_data >/dev/null
 docker volume create caddy_config >/dev/null
