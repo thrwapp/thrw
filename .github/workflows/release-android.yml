@@ -201,6 +201,13 @@ jobs:
       # Only on a tag: a workflow_dispatch run has no version to release
       # against, and its bundle is available as the artifact above. `gh` is
       # preinstalled on the runner, so this needs no third-party action.
+      #
+      # The create-draft-or-upload shape below is the shared-Release
+      # contract documented in release.yml's header (#190): a `v*` tag
+      # starts several workflows with no ordering between them, and they
+      # all attach to this one Release. Keep the two in step - a publisher
+      # that creates a *published* release instead makes the outcome
+      # depend on which workflow happens to win.
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:

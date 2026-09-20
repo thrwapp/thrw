@@ -1,0 +1,50 @@
+name: announce
+
+# Posts about a release once a human publishes it (#190).
+#
+# This was a job inside `release.yml` with `needs: [mac, android, linux]`,
+# which was wrong twice over:
+#
+#  - It could only wait for jobs in its own workflow, never for
+#    `release-android.yml`'s signed bundle - so it could announce a
+#    release whose main artifact had not been attached yet.
+#  - It waited on `mac`, which ran on a `[self-hosted, macOS]` runner that
+#    does not exist, so in practice it never ran at all.
+#
+# `release: published` is the signal it actually wanted: every publisher
+# has attached its assets, and a human has looked at the draft and decided
+# it is real. That also means announcing is deliberate rather than an
+# automatic consequence of pushing a tag - correct for something that
+# posts in public.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write # GCP Workload Identity Federation
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Will fail until WIF_PROVIDER / GCP_PROJECT_AI secrets exist -
+      # expected at this stage. Reuses the agent-pipeline service account
+      # (social drafting is a Gemini Flash / Vertex AI task per ADR 0008).
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: agent-pipeline@${{ secrets.GCP_PROJECT_AI }}.iam.gserviceaccount.com
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Announce release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: python3 scripts/social-post.py
