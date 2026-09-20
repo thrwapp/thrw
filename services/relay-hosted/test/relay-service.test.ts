@@ -84,10 +84,16 @@ function publishJson(client: MqttClient, topic: string, payload: unknown, qos: 0
   });
 }
 
-function publishRegistration(client: MqttClient, account: string, nodeManifest: NodeManifest): Promise<void> {
+function publishRegistration(
+  client: MqttClient,
+  account: string,
+  nodeManifest: NodeManifest,
+  activeEvents?: EventKind[],
+): Promise<void> {
   return publishJson(client, eventsTopic(account, nodeManifest.nodeId), {
     kind: REGISTRATION_KIND,
     manifest: nodeManifest,
+    ...(activeEvents ? { activeEvents } : {}),
   });
 }
 
@@ -381,6 +387,50 @@ describe("RelayService (real broker)", () => {
 
     await publishRegistration(rawClient, account, nodeB);
     await publishEvent(rawClient, account, nodeB.nodeId, "media");
+
+    await expect.poll(() => commandsB, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+  });
+
+  // #178. A relay that restarted, or whose MQTT connection dropped and
+  // reconnected, knows nothing about nodes that are still running - it
+  // learns of a node only from a registration. Adapters therefore
+  // re-register periodically, carrying what they currently have active.
+  it("learns an already-playing node from a periodic registration alone", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["media"] });
+    const nodeB = manifest({ supportedEventKinds: ["media"] });
+    await startService([account]);
+
+    const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+    // B is registered and idle. A has never been seen by this service -
+    // it has been playing since before the relay knew anything, and the
+    // `media` *event* that started it was published to a relay that no
+    // longer exists. Its next periodic registration is the only chance
+    // this relay gets to find out.
+    await publishRegistration(rawClient, account, nodeB);
+    await publishRegistration(rawClient, account, nodeA, ["media"]);
+
+    await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+  });
+
+  it("frees a stale signal when a later registration stops reporting it", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["call"] });
+    const nodeB = manifest({ supportedEventKinds: ["media"] });
+    await startService([account]);
+
+    const commandsB = collectCommands(rawClient, account, nodeB.nodeId);
+
+    // A reports a call - which outranks everything - and never ends it
+    // (#183 saw exactly this happen for real).
+    await publishRegistration(rawClient, account, nodeA, ["call"]);
+    await publishRegistration(rawClient, account, nodeB);
+    await publishEvent(rawClient, account, nodeB.nodeId, "media");
+
+    // A's next periodic registration simply doesn't mention the call, so
+    // it clears - without needing an event_end that is never coming.
+    await publishRegistration(rawClient, account, nodeA, []);
 
     await expect.poll(() => commandsB, { timeout: 2000 }).toEqual([{ type: "claim" }]);
   });

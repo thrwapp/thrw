@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -103,6 +104,62 @@ private class Fixture {
 }
 
 class AndroidNodeTest {
+    private fun activeEventsOf(payload: String): List<String> =
+        ((ProtocolJson.parseToJsonElement(payload) as JsonObject)["activeEvents"] as? JsonArray)
+            ?.map { it.jsonPrimitive.content } ?: emptyList()
+
+    /**
+     * #178. The point of the whole mechanism: a periodic registration has
+     * to tell the relay what is playing *now*, or a relay that lost its
+     * state stays blind to a node that is mid-playback.
+     */
+    @Test
+    fun `register reports the triggers this node has active`() = runTest {
+        val f = Fixture()
+
+        f.node.emitEvent(EventKind.MEDIA, 0)
+        f.node.register(MANIFEST)
+
+        assertEquals(listOf("media"), activeEventsOf(f.transport.published.last().payload))
+    }
+
+    @Test
+    fun `a trigger that ended is no longer reported`() = runTest {
+        val f = Fixture()
+
+        f.node.emitEvent(EventKind.MEDIA, 0)
+        f.node.endEvent(EventKind.MEDIA)
+        f.node.register(MANIFEST)
+
+        assertEquals(emptyList<String>(), activeEventsOf(f.transport.published.last().payload))
+    }
+
+    /**
+     * The subtle one. [SelfCooldown] exists so thrw doesn't react to its
+     * own claim/release (#167) - a suppressed trigger was never told to
+     * the relay at all. Recording it here would smuggle it out on the
+     * next periodic registration and undo the suppression entirely.
+     */
+    @Test
+    fun `a trigger suppressed by the self-cooldown is not reported`() = runTest {
+        val transport = FakeMqttTransport()
+        val node = AndroidNode(
+            ACCOUNT, NODE, HEADSET, transport,
+            BluetoothConnectionManager(RecordingGateway()),
+            selfCooldown = SelfCooldown(windowMs = 3_000) { 0L },
+        )
+
+        node.onClaim()
+        node.emitEvent(EventKind.MEDIA, 0)
+        node.register(MANIFEST)
+
+        assertEquals(
+            emptyList<String>(),
+            activeEventsOf(transport.published.last().payload),
+            "a suppressed trigger must not leak out via registration",
+        )
+    }
+
     @Test
     fun `register publishes the manifest on the node's events topic at QoS 1`() = runTest {
         val f = Fixture()

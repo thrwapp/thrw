@@ -5,6 +5,7 @@ package com.thrw.adapter.android
 import com.thrw.adapter.android.bluetooth.BluetoothClassicGateway
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.heartbeat.HeartbeatRunner
+import com.thrw.adapter.android.registration.RegistrationRunner
 import com.thrw.adapter.android.mqtt.MqttTransport
 import com.thrw.adapter.android.protocol.EventKind
 import com.thrw.adapter.android.protocol.NodeManifest
@@ -92,6 +93,7 @@ class NodeRuntimeTest {
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
             mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = noHeartbeat(),
+            registrationRunner = noReregistration(),
         )
 
         runtime.start(this, MANIFEST)
@@ -114,6 +116,7 @@ class NodeRuntimeTest {
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
             mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = noHeartbeat(),
+            registrationRunner = noReregistration(),
         )
 
         runtime.start(this, MANIFEST)
@@ -137,6 +140,7 @@ class NodeRuntimeTest {
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
             mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = noHeartbeat(),
+            registrationRunner = noReregistration(),
         )
 
         runtime.start(this, MANIFEST)
@@ -169,6 +173,7 @@ class NodeRuntimeTest {
             voipTriggerMonitor = VoipTriggerMonitor(notificationSource, node),
             mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = noHeartbeat(),
+            registrationRunner = noReregistration(),
         )
 
         runtime.start(this, MANIFEST)
@@ -194,6 +199,7 @@ class NodeRuntimeTest {
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
             mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = noHeartbeat(),
+            registrationRunner = noReregistration(),
         )
 
         // The commands subscription (from listenForCommands) never
@@ -226,6 +232,7 @@ class NodeRuntimeTest {
             // Beats once and returns, so advanceUntilIdle() terminates.
             mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = { node.publishHeartbeat() },
+            registrationRunner = noReregistration(),
         )
 
         runtime.start(this, MANIFEST)
@@ -251,6 +258,7 @@ class NodeRuntimeTest {
             voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
             mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
             heartbeatRunner = { beats++ },
+            registrationRunner = noReregistration(),
         )
 
         runtime.start(this, MANIFEST)
@@ -267,6 +275,13 @@ class NodeRuntimeTest {
      * test forever - see [com.thrw.adapter.android.heartbeat.HeartbeatRunner].
      */
     private fun noHeartbeat() = HeartbeatRunner {}
+
+    /**
+     * Same reason as [noHeartbeat]: the real `RegistrationPublisher`
+     * loops on `delay` forever, so `advanceUntilIdle()` under `runTest`'s
+     * virtual clock would never see the scheduler go idle.
+     */
+    private fun noReregistration() = RegistrationRunner { }
 
     private fun emptyMediaSessionSource() = object : MediaSessionSource {
         override fun sessions(): Flow<MediaSessionEvent> = emptyList<MediaSessionEvent>().asFlow()

@@ -6,6 +6,7 @@ import {
   type RelayMqttClient,
   type Scheduler,
 } from "@thrw/relay-core";
+import { PRIORITY_ORDER } from "@thrw/protocol";
 import type { EventKind, NodeManifest } from "@thrw/protocol";
 
 // #118: the actual long-running decision service - subscribes to every
@@ -29,6 +30,12 @@ const EVENT_END_KIND = "event_end";
 interface RegistrationPayload {
   kind: typeof REGISTRATION_KIND;
   manifest: NodeManifest;
+  // The node's currently-active triggers (#178). Every registration
+  // carries them, so the relay's view converges on the node's own rather
+  // than being inferred from a stream of edges it may have missed.
+  // Optional on the wire: an adapter that predates this sends none, which
+  // reads as "nothing active" - identical to #173's fresh-process case.
+  activeEvents?: EventKind[];
 }
 
 interface EventEndPayload {
@@ -41,6 +48,16 @@ function isRegistrationPayload(payload: unknown): payload is RegistrationPayload
     typeof payload === "object" &&
     payload !== null &&
     (payload as { kind?: unknown }).kind === REGISTRATION_KIND
+  );
+}
+
+// Defensive: this comes off the wire, so anything that isn't a known
+// EventKind is dropped rather than trusted into the engine.
+function activeEventsFrom(payload: RegistrationPayload): EventKind[] {
+  const raw: unknown = payload.activeEvents;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((kind): kind is EventKind =>
+    typeof kind === "string" && (PRIORITY_ORDER as readonly string[]).includes(kind),
   );
 }
 
@@ -202,10 +219,15 @@ export class RelayService {
       // A registration means a fresh adapter process (#173). Two things
       // follow, and both are needed.
       //
-      // First, anything this node had active is stale: the monitor that
-      // would send the matching `event_end` no longer exists, so the
-      // signal would otherwise pin the route to this node forever.
-      state.engine.restartNode(node);
+      // First, reconcile this node's signals to what it says is actually
+      // active. A fresh process reports nothing, which clears signals it
+      // can no longer end itself (the monitor that would send the
+      // matching `event_end` is gone, so they would pin the route to this
+      // node forever). A *periodic* registration from a node that is
+      // still playing reports that, so a relay which restarted - or whose
+      // MQTT connection dropped and reconnected, which is how this was
+      // found - learns about it again instead of staying blind (#178).
+      state.engine.reconcileSignals(node, activeEventsFrom(payload));
       this.syncHolder(state.account);
 
       // Second - the bug that made this visible - the relay's holder
