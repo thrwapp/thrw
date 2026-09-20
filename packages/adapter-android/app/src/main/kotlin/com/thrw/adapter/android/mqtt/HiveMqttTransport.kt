@@ -5,6 +5,7 @@ import com.hivemq.client.mqtt.MqttWebSocketConfig
 import com.hivemq.client.mqtt.datatypes.MqttQos
 import com.hivemq.client.mqtt.mqtt3.Mqtt3BlockingClient
 import com.hivemq.client.mqtt.mqtt3.Mqtt3Client
+import com.hivemq.client.mqtt.mqtt3.message.auth.Mqtt3SimpleAuth
 import com.thrw.adapter.android.config.RelayConfig
 import com.thrw.adapter.android.config.RelayCredentials
 import kotlinx.coroutines.Dispatchers
@@ -207,6 +208,24 @@ class HiveMqttTransport private constructor(
             if (config.tls) {
                 builder = builder.sslWithDefaultConfig()
             }
+            // Credentials belong on the *builder*, not on connectWith()
+            // below (#182). simpleAuth() on a connect call applies to
+            // that one CONNECT; automaticReconnect sends its own, and
+            // without this it sends it unauthenticated. Against the
+            // deployed broker (allow_anonymous=false) every reconnect
+            // then fails with BAD_USER_NAME_OR_PASSWORD forever, so the
+            // adapter retries busily and never recovers - which looks
+            // exactly like having no reconnect at all. Caught only by
+            // testing on a real device against the real relay; the unit
+            // tests use a fake transport and cannot see it.
+            if (credentials != null) {
+                builder = builder.simpleAuth(
+                    Mqtt3SimpleAuth.builder()
+                        .username(credentials.username)
+                        .password(credentials.password.toByteArray())
+                        .build(),
+                )
+            }
 
             val client = builder.buildBlocking()
             // withTimeout rather than a HiveMQ-level option: the blocking
@@ -220,16 +239,11 @@ class HiveMqttTransport private constructor(
             // tests run). The deployed relay sets allow_anonymous=false
             // and rejects that with a NOT_AUTHORIZED connack.
             withTimeout(CONNECT_TIMEOUT_MS) {
-            if (credentials != null) {
-                client.toBlocking().connectWith()
-                    .simpleAuth()
-                    .username(credentials.username)
-                    .password(credentials.password.toByteArray())
-                    .applySimpleAuth()
-                    .send()
-            } else {
+                // Auth rides the builder above, so this is the same call
+                // whether or not credentials were configured - and,
+                // crucially, the same CONNECT that automaticReconnect
+                // will re-send on its own.
                 client.connect()
-            }
             }
             HiveMqttTransport(client, hooks)
         }
