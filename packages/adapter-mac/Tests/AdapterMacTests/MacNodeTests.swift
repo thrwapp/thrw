@@ -32,8 +32,10 @@ private final class Fixture {
     let bluetooth: BluetoothConnectionManager
     let node: MacNode
 
-    init() {
-        bluetooth = BluetoothConnectionManager(gateway: gateway)
+    /// `gateway` overrides the recording fake for the one test that
+    /// needs a gateway which *cancels* rather than fails (#223).
+    init(gateway underlying: BluetoothPeripheralGateway? = nil) {
+        bluetooth = BluetoothConnectionManager(gateway: underlying ?? gateway)
         node = MacNode(
             accountId: accountId,
             nodeId: nodeId,
@@ -42,6 +44,14 @@ private final class Fixture {
             bluetooth: bluetooth
         )
     }
+}
+
+/// #223. Throws `CancellationError` rather than a Bluetooth error, so a
+/// test can tell the two apart — the distinction the catch in
+/// `listenForCommands` turns on.
+private struct CancellingGateway: BluetoothPeripheralGateway {
+    func connect(deviceIdentifier: UUID) async throws { throw CancellationError() }
+    func disconnect(deviceIdentifier: UUID) async throws { throw CancellationError() }
 }
 
 final class MacNodeTests: XCTestCase {
@@ -442,48 +452,99 @@ final class MacNodeTests: XCTestCase {
     /// redelivery gets to retry it, rather than being marked done and
     /// discarded forever.
     ///
-    /// Note what this test has to do that `AndroidNodeTest`'s twin does
-    /// not: call `listenForCommands` a second time. On Android a failing
-    /// command is caught and the subscription survives (#161); here the
-    /// error propagates out and ends the loop for good. That is a real
-    /// bug - one failed claim leaves this Mac permanently deaf - but it
-    /// predates #210 and is filed as **#223** rather than fixed here.
-    /// Until it is, the retry has to be exercised across two calls.
+    /// Simplified to one `listenForCommands` call by #223. It used to
+    /// need two, because a failing command ended the loop for good on
+    /// this platform; now the subscription survives, exactly as
+    /// `AndroidNodeTest`'s twin has always assumed.
     func testACommandThatFailedIsRetriedWhenItIsRedelivered() async throws {
-        // One gateway and one gate across both attempts - the same
-        // headset and the same persisted mark, which is what makes this
-        // a redelivery rather than two unrelated commands.
-        let gateway = FakeBluetoothPeripheralGateway()
-        let gate = CommandSequenceGate(store: InMemorySequenceStore())
-        let wire = #"{"type":"claim","seq":1,"epoch":"e1"}"#
+        let f = Fixture()
+        f.gateway.failNextConnect = true
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.finishCommands()
 
-        func node(_ transport: FakeMqttTransport) -> MacNode {
-            MacNode(
-                accountId: accountId, nodeId: nodeId, headsetIdentifier: headsetIdentifier,
-                transport: transport, bluetooth: BluetoothConnectionManager(gateway: gateway),
-                sequenceGate: gate
-            )
-        }
-
-        gateway.failNextConnect = true
-        let first = FakeMqttTransport()
-        first.sendCommand(wire)
-        first.finishCommands()
-        do {
-            try await node(first).listenForCommands()
-            XCTFail("the failing claim should have propagated")
-        } catch {}
-
-        let second = FakeMqttTransport()
-        second.sendCommand(wire)
-        second.finishCommands()
-        try await node(second).listenForCommands()
+        try await f.node.listenForCommands()
 
         XCTAssertEqual(
-            gateway.connectCalls,
+            f.gateway.connectCalls,
             [headsetIdentifier, headsetIdentifier],
             "the failed claim must be retryable"
         )
+    }
+
+    /// #223. A headset that is off, out of range or busy makes
+    /// `onClaim` throw. Before this, the error propagated out of
+    /// `listenForCommands` and `NodeRuntime` let the task end - nothing
+    /// resubscribed, and `onReconnected` only re-registers - so one
+    /// failed claim left this Mac silently deaf to every later command
+    /// until the app was relaunched.
+    ///
+    /// `adapter-android` has had this since #161. macOS never got it.
+    /// Distinct from the redelivery test above: there the *same*
+    /// command comes back, here a genuinely **later** one arrives. Both
+    /// have to work, and only the second one proves the loop is still
+    /// iterating at all.
+    func testAFailingCommandDoesNotTearDownTheSubscription() async throws {
+        let f = Fixture()
+        f.gateway.failNextConnect = true
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"claim","seq":2,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(
+            f.gateway.connectCalls,
+            [headsetIdentifier, headsetIdentifier],
+            "the later claim must still be acted on"
+        )
+    }
+
+    /// The same for a failing release, so the rule is about commands
+    /// rather than about claims specifically.
+    ///
+    /// The successful claim first is not scene-setting: without it the
+    /// manager is in `.disconnected`, so `disconnect` short-circuits and
+    /// never reaches the gateway - the release would "pass" without
+    /// having failed at all. Written the obvious way first, and it did
+    /// exactly that.
+    func testAFailingReleaseDoesNotTearDownTheSubscription() async throws {
+        let f = Fixture()
+        f.gateway.failNextDisconnect = true
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"release","seq":2,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"claim","seq":3,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(f.gateway.disconnectCalls, [headsetIdentifier], "the release did reach the gateway")
+        XCTAssertEqual(
+            f.gateway.connectCalls,
+            [headsetIdentifier, headsetIdentifier],
+            "the claim after the failed release must still be acted on"
+        )
+    }
+
+    /// #223, the half that must *not* be swallowed. A `CancellationError`
+    /// is the runtime shutting this task down
+    /// (`NodeRuntimeHandle.cancel()`, or app quit), not a Bluetooth
+    /// failure - catching it would break cancellation and leave the node
+    /// running after the app asked it to stop.
+    func testCancellationIsNotSwallowedAsACommandFailure() async {
+        let f = Fixture(gateway: CancellingGateway())
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"release","seq":2,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        do {
+            try await f.node.listenForCommands()
+            XCTFail("cancellation must propagate out of listenForCommands")
+        } catch is CancellationError {
+            // expected
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
     }
 
     func testAnUnparseableCommandIsSkippedWithoutDroppingTheSubscription() async throws {
