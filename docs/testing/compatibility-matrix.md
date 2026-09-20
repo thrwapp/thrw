@@ -63,13 +63,56 @@ adapters installed as apps, against the deployed `relay.thrw.app`.
 - The claiming device's own media monitor re-fires at **+4s/+5s** after
   its own claim, i.e. outside ADR 0010's 3s window.
 
+**The call path, verified 2026-09-20** — the highest-priority rule, and
+the least acceptable thing to get wrong.
+
+A real cellular call on the Pixel, with the Mac holding the headset and
+playing audio:
+
+```
+14:33:24  nodes/…pixel/events   {"type":"call","priority":0}
+14:33:24  commands/…mac         {"type":"release", …}
+14:33:24  commands/…pixel       {"type":"claim",   …}
+          -> phone mActiveDevice = AirPods, HFP connected (the call profile)
+          -> Mac default output fell back to MacBook Air Speakers
+
+14:34:02  nodes/…pixel/events   {"kind":"event_end","type":"call"}
+14:34:02  commands/…pixel       {"type":"release", …}
+14:34:02  commands/…mac         {"type":"claim",   …}
+          -> Mac default output = AirPods Pro #2, phone mActiveDevice = null
+```
+
+Both directions physically confirmed on the devices, not inferred from
+the relay traffic. Auto-return was immediate rather than waiting out the
+grace period, which is correct: the Mac still had active `media`, so the
+holder recomputed to it directly rather than falling through to the
+rule-5 timer.
+
 **Not yet verified** — do not infer these from the above
 
-- Call trigger claiming from the Mac, and auto-return after the call.
-- Manual claim from either device.
+- Manual claim from either device (#212/#213 built; the tap-to-wire path
+  is unconfirmed on both platforms).
 - Walking out of Bluetooth range.
 - Provisioning from scratch on a clean install.
 - Any headset other than this one, and any Android OEM other than Pixel.
+
+## Observation: an `event_end` with no matching start
+
+During the call, the Pixel published `{"kind":"event_end","type":"voip"}`
+for a `voip` event that had **no corresponding start** on the wire, and
+which its own `activeEvents` never listed (both registrations either side
+report `activeEvents: []`).
+
+The likely cause is the self-cooldown: `AndroidNode.emitEvent` records
+into `activeEvents` only when it actually publishes, so a *start*
+suppressed inside the cooldown window can still be followed by an
+unsuppressed *end*.
+
+Harmless as observed — the relay's `endEvent` for a signal it never
+recorded is a no-op, and `activeEvents` stayed consistent with what the
+relay knew, so #178's reconciliation had nothing to correct. Recorded
+because the asymmetry is real and could matter if end-handling ever gains
+side effects.
 
 ## Multipoint: Bluetooth link state is not a holder signal
 
