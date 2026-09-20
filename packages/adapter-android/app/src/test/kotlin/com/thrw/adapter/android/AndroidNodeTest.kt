@@ -104,6 +104,70 @@ private class Fixture {
 }
 
 class AndroidNodeTest {
+    /**
+     * #212. The cooldown exists so thrw ignores its **own** side effects
+     * (#167). A manual claim is the user acting, not an echo, and ADR
+     * 0010 says direct user action always wins - so it must go out even
+     * inside the window. Without this the override silently does nothing
+     * for three seconds after any switch, which is exactly when a user
+     * reaches for it.
+     */
+    @Test
+    fun `a manual claim is published even inside the self-cooldown`() = runTest {
+        val transport = FakeMqttTransport()
+        val node = AndroidNode(
+            ACCOUNT, NODE, HEADSET, transport,
+            BluetoothConnectionManager(RecordingGateway()),
+            selfCooldown = SelfCooldown(windowMs = 3_000) { 0L },
+        )
+
+        node.onClaim()
+        node.emitEvent(EventKind.MANUAL_CLAIM, 0)
+
+        assertTrue(
+            transport.published.any { it.payload.contains("manual_claim") },
+            "a manual claim must not be suppressed by the cooldown",
+        )
+    }
+
+    @Test
+    fun `releasing a manual claim is also published inside the cooldown`() = runTest {
+        val transport = FakeMqttTransport()
+        val node = AndroidNode(
+            ACCOUNT, NODE, HEADSET, transport,
+            BluetoothConnectionManager(RecordingGateway()),
+            selfCooldown = SelfCooldown(windowMs = 3_000) { 0L },
+        )
+
+        node.onClaim()
+        node.endEvent(EventKind.MANUAL_CLAIM)
+
+        assertTrue(transport.published.any { it.payload.contains("manual_claim") })
+    }
+
+    /**
+     * The exemption is for `manual_claim` alone. Every other kind is
+     * observed rather than requested, so every other kind can legitimately
+     * be an echo of thrw's own action - suppressing those is the whole
+     * point of #167 and must not regress.
+     */
+    @Test
+    fun `every other trigger is still suppressed by the cooldown`() = runTest {
+        for (kind in listOf(EventKind.MEDIA, EventKind.VOIP, EventKind.CALL)) {
+            val transport = FakeMqttTransport()
+            val node = AndroidNode(
+                ACCOUNT, NODE, HEADSET, transport,
+                BluetoothConnectionManager(RecordingGateway()),
+                selfCooldown = SelfCooldown(windowMs = 3_000) { 0L },
+            )
+
+            node.onClaim()
+            node.emitEvent(kind, 0)
+
+            assertTrue(transport.published.isEmpty(), "$kind must still be suppressed")
+        }
+    }
+
     private fun activeEventsOf(payload: String): List<String> =
         ((ProtocolJson.parseToJsonElement(payload) as JsonObject)["activeEvents"] as? JsonArray)
             ?.map { it.jsonPrimitive.content } ?: emptyList()

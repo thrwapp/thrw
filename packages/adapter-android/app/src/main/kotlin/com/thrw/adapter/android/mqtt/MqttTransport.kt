@@ -40,4 +40,18 @@ interface MqttTransport {
      * transport without a reconnect story, need no change.
      */
     fun onReconnected(handler: () -> Unit) {}
+
+    /**
+     * Whether the transport currently has a live connection (#213).
+     *
+     * Used to tell "not holding the headset" apart from "not talking to
+     * the relay at all", which from outside look identical and have
+     * looked identical during every silent failure so far (#173, #178,
+     * #182).
+     *
+     * Defaults to `true`: a transport that does not track connection
+     * state has no way to be *known* disconnected, and defaulting to
+     * false would put every test fake permanently into "disconnected".
+     */
+    fun isConnected(): Boolean = true
 }
