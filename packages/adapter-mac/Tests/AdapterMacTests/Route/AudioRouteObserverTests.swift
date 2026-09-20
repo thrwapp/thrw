@@ -8,8 +8,20 @@ import XCTest
 final class AudioDeviceUIDMatchingTests: XCTestCase {
     private let address = "74-15-F5-12-2A-21"
 
+    /// The first entry is the **real** UID observed on the reference Mac
+    /// with the AirPods connected, captured 2026-09-20:
+    ///
+    ///     default output id: 82
+    ///       UID:  74-15-F5-12-2A-21:output
+    ///       Name: Tom's AirPods Pro #2
+    ///
+    /// Recorded literally because Apple does not document this format,
+    /// so it is evidence rather than an assumption. The rest are
+    /// spellings the normalisation is meant to tolerate if it ever
+    /// changes.
     func testMatchesRegardlessOfSeparatorAndCase() {
         for uid in [
+            "74-15-F5-12-2A-21:output",
             "74-15-F5-12-2A-21",
             "74:15:f5:12:2a:21",
             "7415F5122A21",
