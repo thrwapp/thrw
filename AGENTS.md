@@ -22,6 +22,29 @@ disagree, the ADR wins for architecture; this file wins for process.
   **`docs/adr/**`** are always human-merge, no exceptions, regardless of
   which top-level directory they otherwise sit under.
 
+**How the human-merge rule is actually enforced (#181).** CODEOWNERS on
+its own does not enforce it: `main-trunk-protection` sets
+`require_code_owner_review: true` but `required_approving_review_count:
+0`, and at zero a PR satisfies the review rule with no reviews at all, so
+the code-owner requirement never applies. Three PRs merged straight
+through it, including one touching `services/**` and one touching
+`docs/adr/**`.
+
+Raising the approval count to 1 would fix that but applies to *every* PR,
+removing the `packages/**` / `content/site/**` auto-merge lane granted
+above — and rulesets cannot condition the pull-request rule on changed
+paths. So the rule is enforced by the `codeowners-gate` required check
+(`.github/workflows/codeowners-gate.yml`), which passes immediately when
+a PR touches no protected path and otherwise demands an approving review
+from a CODEOWNERS owner. Both halves of the contract hold: the fast lane
+stays open, the protected paths genuinely need a human.
+
+That check restates the four rules above rather than reading CODEOWNERS,
+because CODEOWNERS is currently **narrower than this contract**: it
+covers `content/site/src/pages/pricing*`, while the rule above is any
+path containing `pricing`. Widening CODEOWNERS would be a reasonable
+follow-up; until then the check, not CODEOWNERS, is the enforcement.
+
 ## Definition of done
 
 A task is not done until all of the following are true:
