@@ -18,6 +18,13 @@ name: codeowners-gate
 # this job is the only way to satisfy both halves of the contract: the
 # fast lane stays open, and the protected paths genuinely require a
 # code-owner approval.
+#
+# "Requires a code owner" means approved by one, OR opened by one. With a
+# single code owner those are the same human, and GitHub forbids
+# self-approval, so demanding the former alone makes the rule
+# unsatisfiable for anything that human writes themselves. Agent PRs come
+# from the thrw-agent App and are unaffected - they still need a real
+# approval. See the exemption's own comment below.
 
 on:
   pull_request:
@@ -48,17 +55,18 @@ jobs:
     name: codeowners-gate
     runs-on: ubuntu-latest
     steps:
+      # Only .github/CODEOWNERS is read below, so a full-history clone
+      # buys nothing. The changed-file list comes from the API now, not
+      # from a local diff - see the step's own comment.
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Check code-owner approval for protected paths
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -68,8 +76,24 @@ jobs:
             exit 0
           fi
 
-          git fetch --no-tags --quiet origin "$BASE_SHA"
-          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          # The PR's own file list, from the API - deliberately NOT a
+          # local `git diff BASE_SHA HEAD_SHA`, which is what this job
+          # used to do and which was wrong. `pull_request.base.sha` is
+          # the *current tip* of the base branch, not the merge base, so
+          # a two-dot diff against it reports everything main gained
+          # since the branch point as though this PR had changed it. A
+          # docs-only PR was blocked for "touching"
+          # .github/workflows/codeowners-gate.yml - a file added to main
+          # by the PR that created this very job, which the branch had
+          # simply not caught up to yet. Every PR that falls behind main
+          # hit this, and the busier the repo the more often.
+          #
+          # `git diff BASE...HEAD` (three-dot, i.e. from the merge base)
+          # would also be correct. The API is used instead because it is
+          # the same list GitHub shows on the Files tab, so what the gate
+          # enforces and what a human reviews can never diverge.
+          CHANGED=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+            --jq '.[].filename')
           echo "Changed files:"
           echo "$CHANGED" | sed 's/^/  /'
 
@@ -106,6 +130,33 @@ jobs:
           OWNERS=$(grep -ohE '@[A-Za-z0-9._-]+' .github/CODEOWNERS | tr -d '@' | sort -u)
           echo "Code owners: $(echo "$OWNERS" | tr '\n' ' ')"
 
+          # A PR opened by a code owner satisfies the rule by being
+          # opened by them: AGENTS.md asks that protected paths get a
+          # human in the loop, and with a single code owner that human
+          # is the author. GitHub forbids approving your own PR, so
+          # without this the rule is literally unsatisfiable for anything
+          # Tom writes himself - and the ruleset sets
+          # current_user_can_bypass: never, so there is no admin door
+          # either. That deadlock is what this exemption fixes.
+          #
+          # This does NOT reopen #181. Agent PRs are opened by the
+          # thrw-agent GitHub App (agent-code.yml mints an App token),
+          # so their author is a bot, never a code owner, and they still
+          # need a real approval. The Bot guard below makes that
+          # explicit rather than relying on the App never sharing a
+          # login with a code owner.
+          if [ "$PR_AUTHOR_TYPE" = "Bot" ]; then
+            echo "Author @$PR_AUTHOR is a bot - no author exemption."
+          else
+            for owner in $OWNERS; do
+              if [ "$(printf '%s' "$PR_AUTHOR" | tr '[:upper:]' '[:lower:]')" \
+                 = "$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')" ]; then
+                echo "Opened by code owner @$PR_AUTHOR - a human owns this PR."
+                exit 0
+              fi
+            done
+          fi
+
           APPROVERS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --paginate \
             --jq '.[] | select(.state == "APPROVED") | .user.login' | sort -u || true)
           echo "Approved by: ${APPROVERS:-(nobody)}"
@@ -118,6 +169,6 @@ jobs:
           done
 
           echo
-          echo "::error::This PR touches paths AGENTS.md marks human-merge and has no code-owner approval."
+          echo "::error::This PR touches paths AGENTS.md marks human-merge, was not opened by a code owner, and has no code-owner approval."
           echo "Approve it as one of: $(echo "$OWNERS" | tr '\n' ' ')"
           exit 1
