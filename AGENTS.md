@@ -66,6 +66,43 @@ A task is not done until all of the following are true:
 - Android: use Kotlin coroutines for async code.
 - No new dependency without justification in the PR description.
 
+## Concurrent sessions and worktrees
+
+More than one agent session can be running against this repo at once,
+and git gives no warning when they collide — a `checkout` that moves
+HEAD out from under another session reports success exactly like a
+normal one. This section is the convention that prevents that. It was
+written after a real incident: a session opening an unrelated docs
+branch ran `git checkout -b` in the shared checkout while another
+session was mid-task on `agent/178-periodic-reregistration`. Nothing
+was lost, because the in-flight work was uncommitted and followed the
+checkout, but a commit in that window would have landed #178's work on
+the docs branch.
+
+- **The shared checkout at the repo root belongs to whoever is already
+  working in it.** If you did not start there, never run `checkout`,
+  `switch` or `checkout -b` in it.
+- **A new branch means a new worktree, created before any edits:**
+
+      git worktree add ../thrw-wt-<topic> -b <branch>
+
+  Put it outside the repo root. `.claude/` is not in `.gitignore`, so
+  an in-tree worktree shows up as untracked noise in every other
+  session's `git status`.
+- **Never bare `git stash` / `git stash pop`.** The stash stack is
+  shared across all worktrees, so a `pop` can take a different
+  session's work. Use a throwaway WIP commit to set work aside
+  instead; if you must stash, tag it (`git stash push -u -m "<tag>"`)
+  and restore with `git stash apply <sha>`, never `pop`.
+- **Don't reach into another worktree with `git -C`.** Run git from
+  the worktree you own. Operate on your own branch only.
+- **`git push` and `gh pr create` are still shared state.** Worktrees
+  isolate the working tree, not the remote — check `git branch
+  --show-current` before pushing, and never push a branch you didn't
+  create.
+- Worktrees do not share `node_modules`, `.build` or `.gradle`, so a
+  fresh worktree needs its own `pnpm install` before it can run tests.
+
 ## Protocol invariants
 
 The MQTT topic structure and the node interface in `packages/protocol`
@@ -88,6 +125,12 @@ The **resource-type segment** in MQTT topics (ADR 0015) and the
 
 Changes require an ADR and human review.
 
+**Command sequence numbers** (ADR 0018) and the **confirmed-outcome
+pattern** for claim/release — every command resolving to succeeded /
+failed / timed_out within a bounded timeout (ADR 0019) — are part of
+that same frozen contract. Changes require an ADR and human review,
+not a routine agent PR.
+
 **Note for whoever picks this up:** the currently-running Mac/Pixel
 implementation was built against the pre-ADR-0015 topic structure, with
 no resource-type segment, and is deployed and working against the live
@@ -97,6 +140,25 @@ adapters, changed together, since the two structures are mutually
 incompatible. With no customers and two devices this is a flag day
 rather than a staged rollout, and it should land **before** any
 peripheral (hid) adapter work is built on the old structure.
+
+**Reliability work comes before new feature surface.** The three
+reliability ADRs — 0018 (state reconciliation and command
+idempotency), 0019 (confirmed switch outcomes and failure telemetry)
+and 0020 (relay-side debouncing and defined offline behaviour) —
+should be implemented and verified against the existing Mac/Pixel
+implementation before peripheral (hid) adapter work or further
+focus-tracking work begins. All three add guarantees to the shared
+claim/release machinery, and retrofitting them gets harder with every
+resource type and adapter layered on top of the current two-node
+system. This sequencing sits alongside the ADR 0015 migration above,
+which is the other thing gating hid work.
+
+ADR 0018's command sequence number and the ADR 0015 topic migration
+change the same payloads in the same packages, and both are flag days
+across `packages/protocol`, `packages/relay-core`,
+`services/relay-hosted` and both adapters. **Land them together**, or
+if they must be split, 0015 first — see ADR 0018's "Sequencing against
+the ADR 0015 migration".
 
 ## Build-time configuration, not hardcoded endpoints
 

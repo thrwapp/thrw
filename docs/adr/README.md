@@ -19,3 +19,6 @@
 | [0015](./0015-typed-resources.md) | Typed resources — audio and HID share claim/release, not priority rules | Accepted |
 | [0016](./0016-ambient-focus-tracking.md) | Ambient focus tracking as the default-holder layer | Accepted |
 | [0017](./0017-ai-scope.md) | AI scope — local classification for decisions, LLM for explanation only | Accepted |
+| [0018](./0018-state-reconciliation-and-idempotency.md) | State reconciliation and command idempotency | Accepted |
+| [0019](./0019-switch-outcome-confirmation-and-failure-telemetry.md) | Every switch has a confirmed outcome, not fire-and-forget | Accepted |
+| [0020](./0020-command-debouncing-and-offline-behavior.md) | Command debouncing at the relay, and defined offline behaviour | Accepted |
