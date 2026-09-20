@@ -34,12 +34,26 @@ public protocol MqttTransport: Sendable {
     /// stale, and #178 made registration a safe, repeatable statement of
     /// current state rather than an edge.
     func onReconnected(_ handler: @escaping @Sendable () -> Void)
+
+    /// Whether the transport currently has a live connection (#213).
+    ///
+    /// Used to tell "not holding the headset" apart from "not talking to
+    /// the relay at all", which from outside look identical and have
+    /// looked identical during every silent failure so far (#173, #178,
+    /// #182).
+    func isConnected() -> Bool
 }
 
 extension MqttTransport {
     /// Default no-op, so the fakes in this package's tests and any
     /// transport without a reconnect story need no change.
     public func onReconnected(_ handler: @escaping @Sendable () -> Void) {}
+
+    /// Defaults to `true`: a transport that does not track connection
+    /// state is one that has no way to be *known* disconnected, and
+    /// claiming otherwise would put every test fake permanently into the
+    /// "Disconnected from relay" state.
+    public func isConnected() -> Bool { true }
 }
 
 extension MqttTransport {

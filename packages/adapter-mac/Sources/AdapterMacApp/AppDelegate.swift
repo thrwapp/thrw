@@ -54,6 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Held so its title can be flipped between claim and release.
     private var claimItem: NSMenuItem?
 
+    /// #213. Disabled - it is a readout, not a control.
+    private var statusMenuItem: NSMenuItem?
+
+    /// The running node, kept so the status line can ask it. Nil until
+    /// one starts.
+    private var node: MacNode?
+
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -76,6 +83,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
 
+        // #213. First, because when something is wrong this is the
+        // question you actually have: is it even working? Disabled
+        // because it is a readout. Refreshed in `menuWillOpen` rather
+        // than on a timer - nobody reads a closed menu, and polling would
+        // cost battery to keep a string nobody is looking at current.
+        let status = NSMenuItem(title: NodeStatus.disconnected.displayText, action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        menu.addItem(status)
+        menu.addItem(.separator())
+        statusMenuItem = status
+
         // #212. First item, because it is the thing you reach for when
         // the automation has just got it wrong - ADR 0010's "direct user
         // action always wins", made reachable.
@@ -90,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(setUpItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit thrw", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.delegate = self
         item.menu = menu
 
         statusItem = item
@@ -118,6 +137,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.refreshClaimItem()
         }
+    }
+
+    private func refreshStatusItem() {
+        // No node yet means nothing has connected, which is precisely
+        // what "disconnected" says - true rather than a placeholder.
+        statusMenuItem?.title = (node?.status() ?? .disconnected).displayText
     }
 
     private func refreshClaimItem() {
@@ -249,8 +274,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 bluetooth: bluetooth,
                 routeObserver: routeObserver
             )
+            self.node = node
             manualClaim = ManualClaim(node: node)
             refreshClaimItem()
+            refreshStatusItem()
 
             let voipMonitor = VoipTriggerMonitor(source: NSWorkspaceRunningApplicationSource(), node: node)
             // #166: media (rule 4), via public CoreAudio.
@@ -263,5 +290,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             transport = nil
             provisioningModel?.nodeStopped()
         }
+    }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    /// #213. Refreshed only when the menu opens: the status is read at a
+    /// glance, and recomputing it on a timer would burn battery keeping a
+    /// string current that nobody is looking at.
+    func menuWillOpen(_ menu: NSMenu) {
+        refreshStatusItem()
+        refreshClaimItem()
     }
 }

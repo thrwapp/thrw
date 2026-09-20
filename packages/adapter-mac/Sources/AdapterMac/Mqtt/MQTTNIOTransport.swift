@@ -83,6 +83,13 @@ public final class MQTTNIOTransport: MqttTransport, @unchecked Sendable {
         return body()
     }
 
+    /// #213. `isActive()` reports the channel, which is what actually
+    /// determines whether a publish will reach the relay - not whether a
+    /// reconnect loop happens to be running.
+    public func isConnected() -> Bool {
+        client.isActive()
+    }
+
     public func onReconnected(_ handler: @escaping @Sendable () -> Void) {
         withLock { reconnectedHandler = handler }
     }
