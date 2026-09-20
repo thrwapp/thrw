@@ -258,13 +258,24 @@ jobs:
           asset="${{ steps.package.outputs.path }}"
           name="${{ steps.package.outputs.name }}"
 
-          # The shared-Release contract from release.yml's header (#190).
-          gh release create "$tag" \
-            --title "$tag" \
-            --notes "Adapter artifacts for $tag." \
-            --draft \
-            "$asset#$name" \
-            || gh release upload "$tag" "$asset#$name" --clobber
+          # The shared-Release contract from release.yml's header, as
+          # corrected after v0.0.1: view-then-create-if-absent, never
+          # `create || upload`. A second `create --draft` does not fail on
+          # a taken tag - drafts are not unique by tag - it silently makes
+          # a second draft, which is how v0.0.1 split its artifacts across
+          # two of them.
+          #
+          # The zip is already named `thrw-mac-<version>.zip` on disk, so
+          # no staging copy is needed here; `$asset#$name` would have set
+          # a label rather than a filename in any case.
+          sleep $((RANDOM % 7))
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes "Adapter artifacts for $tag." \
+              --draft || true
+          fi
+          gh release upload "$tag" "$asset" --clobber
 
           # Append the Mac install instructions if they are not already
           # there. Read-modify-write rather than `--notes`, because

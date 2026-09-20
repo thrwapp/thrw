@@ -11,16 +11,32 @@ name: release
 # between them, so whichever runs first would otherwise decide whether the
 # Release is a draft.
 #
-# The contract, which every publisher must follow: **create the Release as
-# a draft if it does not exist, otherwise upload to it.**
+# The contract, which every publisher must follow: **look for a release
+# for this tag; create it as a draft only if there is none; then upload
+# into it.**
 #
-#     gh release create "$tag" --draft ... <asset> \
-#       || gh release upload "$tag" <asset> --clobber
+#     gh release view "$tag" >/dev/null 2>&1 \
+#       || gh release create "$tag" --draft --notes ... || true
+#     gh release upload "$tag" <asset> --clobber
 #
-# Idempotent and order-independent: the outcome is identical whichever
-# workflow wins the race, and the Release stays a draft until a human
-# publishes it - which is the right default for a build nobody has yet
-# installed and confirmed works.
+# The earlier form of this contract was `create ... || upload`, on the
+# assumption that a second `create` fails because the tag is taken. **It
+# does not.** GitHub enforces tag uniqueness only for *published*
+# releases; `create --draft` on a tag that already has a draft happily
+# makes a second one. v0.0.1 - the first tag ever cut - ended up with two
+# drafts, the linux artifact in one and the Android artifacts in the
+# other, each invisible from the other's page.
+#
+# The residual race (two publishers both seeing "none" and both creating)
+# is narrowed by a few seconds of jitter, for the same reason ADR 0020
+# applies jitter to reconnects: decorrelate actors that a single event
+# started simultaneously. It is not eliminated. Duplicates are visible as
+# two drafts with the same tag in `gh api repos/:owner/:repo/releases`,
+# and the fix is to delete one and re-upload - drafts are free.
+#
+# Assets are renamed **on disk** before upload. `path#suffix` sets an
+# asset *label*, not its filename: v0.0.1 attached `app-release.apk`
+# while its notes told the reader to install `thrw-v0.0.1.apk`.
 #
 # A new platform publisher (#189) copies that pattern rather than reaching
 # for `softprops/action-gh-release`, whose default is a *published*
@@ -126,9 +142,15 @@ jobs:
             echo "::error::cargo build produced no libadapter_linux artifact to attach."
             exit 1
           fi
-          gh release create "$tag" \
-            --title "$tag" \
-            --notes "Adapter artifacts for $tag. Draft until a human publishes it." \
-            --draft \
-            "${assets[@]}" \
-            || gh release upload "$tag" "${assets[@]}" --clobber
+          # Ensure exactly one draft exists for this tag, then upload into
+          # it - see this file's header for why `create || upload` was
+          # wrong. Drafts are not unique by tag, so the old form made a
+          # second draft instead of failing.
+          sleep $((RANDOM % 7))
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes "Adapter artifacts for $tag. Draft until a human publishes it." \
+              --draft || true
+          fi
+          gh release upload "$tag" "${assets[@]}" --clobber

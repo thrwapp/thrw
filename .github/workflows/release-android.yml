@@ -266,16 +266,42 @@ jobs:
           # wrong one means either a Play upload that fails or a download
           # that will not install - so the APK is named after the thing a
           # human is trying to do with it.
-          gh release create "$tag" \
-            --title "$tag" \
-            --notes "Android artifacts for $tag (versionCode $code)." \
-            --draft \
-            "$aab#app-release.aab" \
-            "$apk#thrw-$tag.apk" \
-            || gh release upload "$tag" \
-              "$aab#app-release.aab" \
-              "$apk#thrw-$tag.apk" \
-              --clobber
+          #
+          # Renamed on disk, NOT with `path#label`. v0.0.1 shipped an
+          # asset called `app-release.apk` while the notes told the reader
+          # to install `thrw-v0.0.1.apk`: the `#suffix` syntax sets an
+          # asset *label* (UI description), it does not rename the file.
+          staged="$RUNNER_TEMP/release-assets"
+          mkdir -p "$staged"
+          cp "$aab" "$staged/app-release.aab"
+          cp "$apk" "$staged/thrw-$tag.apk"
+
+          # Ensure exactly one draft exists for this tag, then upload into
+          # it. NOT `create || upload`: that was the contract #190 wrote
+          # and it is wrong for drafts. GitHub enforces tag uniqueness
+          # only for *published* releases, so a second `create --draft`
+          # succeeds and silently makes a SECOND draft - which is what
+          # v0.0.1 did, leaving the linux artifact in one draft and the
+          # Android ones in another, each invisible from the other.
+          #
+          # Residual race, stated rather than hidden: two workflows could
+          # both see "no release" and both create. The jitter narrows it
+          # (same reasoning as ADR 0020's reconnect jitter - decorrelate
+          # publishers that were started by one event), and in practice
+          # these jobs finish minutes apart. If duplicates ever do appear,
+          # they are visible as two drafts with the same tag in
+          # `gh api repos/:owner/:repo/releases`.
+          sleep $((RANDOM % 7))
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes "Android artifacts for $tag (versionCode $code)." \
+              --draft || true
+          fi
+          gh release upload "$tag" \
+            "$staged/app-release.aab" \
+            "$staged/thrw-$tag.apk" \
+            --clobber
 
           # Set the notes unconditionally afterwards, rather than relying
           # on `create` above having been the one that ran. A `v*` tag
