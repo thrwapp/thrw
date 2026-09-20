@@ -126,6 +126,26 @@ the docs branch.
 - Worktrees do not share `node_modules`, `.build` or `.gradle`, so a
   fresh worktree needs its own `pnpm install` before it can run tests.
 
+### Claim an issue before you work on it
+
+Worktrees stop two sessions corrupting each other's files. They do
+nothing to stop two sessions doing the *same work*, which has already
+happened once: #190 was implemented twice, in parallel, by two sessions
+neither of which knew the other had started. Both were correct; one had
+to be thrown away, and the survivor had to be conflict-resolved against
+the other's merged version.
+
+- **Before starting an issue, claim it** — assign it to yourself, or
+  comment on it saying you have started. Check for an existing claim
+  first.
+- **A claim is not a lock.** If one is stale, say so on the issue and
+  take it; do not silently work in parallel with someone who is still
+  going.
+- This matters most for the expensive ones. Duplicating a small CI fix
+  costs an afternoon; duplicating something like the ADR 0015 topic
+  migration, which touches five packages and needs a coordinated
+  redeploy, would be far worse.
+
 ## Protocol invariants
 
 The MQTT topic structure and the node interface in `packages/protocol`
