@@ -53,6 +53,38 @@ on:
 permissions:
   contents: write # create the Release and upload assets
 
+# Which workflow builds what, so one tag produces one coherent Release
+# (#190):
+#
+# - **Android** is built by `release-android.yml`, which produces a real
+#   signed bundle and attaches it to this same Release. It is not built
+#   here. Before #190 a tag ran *two* Android jobs, and the one here
+#   attached `thrw-android-<tag>.txt` - a file whose entire contents were
+#   "TODO: fastlane android release lane not yet implemented." - to the
+#   same Release as the signed artifact, with nothing marking which was
+#   which.
+#
+# - **macOS** is not built yet. The job that used to sit here could never
+#   have run: it required `[self-hosted, macOS]` and this repository has
+#   **no self-hosted runners registered**, so on the first real tag it
+#   would have queued until the job timeout and taken `announce` - which
+#   depended on it - down with it. Removing it is what makes a tag
+#   complete at all. #189 adds the real lane, and per the note there it
+#   needs #187's credential steps or the artifact cannot authenticate.
+#
+# - **Linux** is built here, and is real work.
+#
+# The Fastlane TODOs that used to be here have gone with the jobs: there
+# is no Gemfile or Fastfile anywhere in the repository, so they described
+# a plan nobody took up, and a comment pointing at a project that does
+# not exist is worse than no comment.
+#
+# Known race, stated rather than papered over: `announce` can only depend
+# on jobs in *this* workflow, so it may run before `release-android.yml`
+# has finished attaching the bundle. GitHub Actions has no cross-workflow
+# dependency, and the alternatives (polling the Release, merging the two
+# workflows) cost more than the problem is worth while releases are
+# hand-cut.
 jobs:
   linux:
     runs-on: ubuntu-latest
