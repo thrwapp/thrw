@@ -82,6 +82,44 @@ jobs:
           fi
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.jks"
 
+      # #187. Without this the build reads the committed
+      # config/adapter.properties, which ships the credential deliberately
+      # empty (#147), generates RELAY_USERNAME = "" / RELAY_PASSWORD = "",
+      # and produces an artifact that installs and is then rejected at
+      # connect with badUserNameOrPassword - the deployed broker runs
+      # allow_anonymous=false (#80/#93). That is the worst kind of
+      # failure: it looks like a successful release and fails later, far
+      # from the cause.
+      #
+      # Reuses EMQX_RELAY_USERNAME/PASSWORD - the same shared relay
+      # credential deploy.yml gives the relay container - rather than
+      # introducing a second secret holding the same value. Two copies
+      # drift: rotating the relay password would update one and not the
+      # other, leaving a working relay and newly-built adapters that all
+      # fail auth, which reads as an adapter bug nowhere near its cause.
+      # Per-identity credentials are M7 (services/accounts); that is the
+      # point to split them, along with the ACL change that makes it
+      # meaningful.
+      - name: Write relay credentials
+        env:
+          RELAY_USERNAME: ${{ secrets.EMQX_RELAY_USERNAME }}
+          RELAY_PASSWORD: ${{ secrets.EMQX_RELAY_PASSWORD }}
+        run: |
+          if [ -z "$RELAY_USERNAME" ] || [ -z "$RELAY_PASSWORD" ]; then
+            echo "::error::EMQX_RELAY_USERNAME/EMQX_RELAY_PASSWORD are not set." \
+                 "Without them this build would still succeed and produce an" \
+                 "artifact that cannot authenticate against the relay (#187)." \
+                 "Failing early instead."
+            exit 1
+          fi
+          # Written with printf rather than a heredoc so the value is never
+          # echoed, and mode 600 before anything is in it.
+          overlay=packages/adapter-android/config/adapter.local.properties
+          install -m 600 /dev/null "$overlay"
+          printf 'relay.username=%s\n' "$RELAY_USERNAME" >> "$overlay"
+          printf 'relay.password=%s\n' "$RELAY_PASSWORD" >> "$overlay"
+          echo "Wrote $overlay (gitignored, removed after the build)."
+
       - name: Build signed bundle
         working-directory: packages/adapter-android
         env:
@@ -114,6 +152,42 @@ jobs:
 
       # Runs even if the build or verification failed, so key material never
       # outlives the job that needed it.
+      # A green build does not prove the credential landed - the same
+      # reasoning as "Verify the bundle is signed" above. Asserts on the
+      # *generated* config, which is what actually ends up compiled in.
+      - name: Verify the built config carries the credential
+        env:
+          RELAY_USERNAME: ${{ secrets.EMQX_RELAY_USERNAME }}
+        run: |
+          generated=packages/adapter-android/app/build/generated/source/adapterConfig/com/thrw/adapter/android/config/BuildConfig.kt
+          if [ ! -f "$generated" ]; then
+            echo "::error::$generated was not generated - the build config task did not run."
+            exit 1
+          fi
+          username=$(sed -n 's/.*RELAY_USERNAME: String = "\(.*\)"$/\1/p' "$generated")
+          password=$(sed -n 's/.*RELAY_PASSWORD: String = "\(.*\)"$/\1/p' "$generated")
+          if [ -z "$username" ] || [ -z "$password" ]; then
+            echo "::error::The generated config has an empty relay credential -" \
+                 "this artifact could not authenticate (#187)."
+            exit 1
+          fi
+          # Username only. The password is deliberately not compared: the
+          # generator escapes for Java Properties *and* Kotlin, so a value
+          # containing a backslash legitimately differs from the raw
+          # secret (adapter.properties documents this asymmetry between
+          # the two platforms). Comparing it would fail spuriously on a
+          # rotation; the non-empty check above is what catches the actual
+          # bug this issue is about.
+          if [ "$username" != "$RELAY_USERNAME" ]; then
+            echo "::error::The generated relay username does not match the secret."
+            exit 1
+          fi
+          echo "Generated config carries a non-empty credential and the expected username."
+
+      - name: Remove relay credentials
+        if: always()
+        run: rm -f packages/adapter-android/config/adapter.local.properties
+
       - name: Remove decoded keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.jks"
