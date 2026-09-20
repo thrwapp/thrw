@@ -105,26 +105,36 @@ jobs:
       # A green build does not prove the credential landed. Assert on the
       # *generated* config, which is what actually ends up compiled in.
       #
-      # Note the path: SwiftPM writes the plugin's output under
-      # .build/plugins/outputs/<pkg>/<target>/destination/, and there is
-      # also a stale copy under .build/plugins/outputs/pkg/ that is not
-      # regenerated. Asserting against the wrong one silently reads old
-      # values - so this globs for the destination copy and fails if it
-      # finds none, rather than picking whichever it happens to hit.
+      # Finding it is deliberately layout-agnostic. v0.0.1 failed here:
+      # the first version of this step looked for a path containing
+      # `/destination/`, per the layout described on #189, and matched
+      # nothing - SwiftPM's plugin output layout differs by toolchain
+      # version, and pinning to one spelling of it turns a working build
+      # into a failed release.
+      #
+      # So: search the whole .build tree, and take the NEWEST match. The
+      # stale-copy hazard #189 warned about is a local-rebuild problem -
+      # a CI checkout starts with no .build at all, so every copy present
+      # came from this build - and taking the newest is correct in both
+      # cases anyway. Every candidate is printed, so if this ever fails
+      # again the log says what the layout actually is instead of
+      # requiring another tag to find out.
       - name: Verify the built config carries the credential
         env:
           RELAY_USERNAME: ${{ secrets.EMQX_RELAY_USERNAME }}
         run: |
           set -euo pipefail
           # `find`, not a `**` glob: macOS runners run bash 3.2, which has
-          # no globstar, so `**` would silently behave as a single `*` and
-          # match nothing here.
-          generated=$(find packages/adapter-mac/.build/plugins/outputs \
-            -path '*/destination/*' -name AdapterBuildConfig.swift -print -quit)
+          # no globstar, so `**` would silently behave as a single `*`.
+          build_dir=packages/adapter-mac/.build
+          echo "Candidates:"
+          find "$build_dir" -name AdapterBuildConfig.swift -exec ls -l {} \; || true
+          generated=$(find "$build_dir" -name AdapterBuildConfig.swift -print0 \
+            | xargs -0 ls -t 2>/dev/null | head -n 1 || true)
           if [ -z "$generated" ]; then
-            echo "::error::No generated AdapterBuildConfig.swift found under a" \
-                 "destination/ plugin output - the config plugin did not run," \
-                 "or SwiftPM's output layout changed."
+            echo "::error::No generated AdapterBuildConfig.swift anywhere under" \
+                 "$build_dir - the config plugin did not run. Plugin outputs present:"
+            find "$build_dir/plugins" -maxdepth 4 -type d 2>/dev/null | head -20 || true
             exit 1
           fi
           echo "Asserting against $generated"
@@ -160,7 +170,19 @@ jobs:
       - name: Stamp the version into the bundle
         run: |
           set -euo pipefail
-          app="$(swift build -c release --show-bin-path --package-path packages/adapter-mac)/AdapterMac.app"
+          # Locate the bundle the way the previous step locates the
+          # generated config: by searching, not by reconstructing a path
+          # from a toolchain-dependent layout. `--show-bin-path` is
+          # usually right, but v0.0.1 showed what assuming a layout costs,
+          # and the script that builds this bundle is free to move it.
+          app=$(find packages/adapter-mac/.build -maxdepth 3 -name AdapterMac.app -type d -print -quit)
+          if [ -z "$app" ]; then
+            echo "::error::AdapterMac.app not found under packages/adapter-mac/.build -" \
+                 "build-app-bundle.sh did not produce it where expected."
+            find packages/adapter-mac/.build -maxdepth 3 -name '*.app' 2>/dev/null || true
+            exit 1
+          fi
+          echo "Bundle: $app"
           echo "APP_PATH=$app" >> "$GITHUB_ENV"
           plist="$app/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.version.outputs.short }}" "$plist"
