@@ -27,6 +27,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 
 /**
@@ -74,6 +75,27 @@ class AdapterForegroundService : Service() {
     private val scope = CoroutineScope(job + exceptionHandler)
     private var transport: HiveMqttTransport? = null
 
+    /**
+     * The scope for **one** node runtime, so a restart can tear the
+     * previous one down (#182).
+     *
+     * Android calls `onStartCommand` on every service start, and the
+     * provisioning screen's Save button starts the service again. Before
+     * this, each call built a *second* transport and node runtime in the
+     * same process and overwrote [transport] without closing it, leaving
+     * two live MQTT clients sharing one client id.
+     *
+     * That was survivable only because a kicked client used to stay dead:
+     * the broker closes the older session when a duplicate id connects,
+     * and nothing reconnected it. With automatic reconnect (#182) the two
+     * clients fight forever instead - each reconnect kicks the other,
+     * observed on a real device as a registration every 1-6 seconds and
+     * a continuous stream of "Server closed connection without
+     * DISCONNECT". So reconnect turned a quiet latent bug into a loud
+     * one, and the fix belongs with it.
+     */
+    private var runtimeScope: CoroutineScope? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -98,7 +120,18 @@ class AdapterForegroundService : Service() {
             return START_NOT_STICKY
         }
 
+        // Tear down any previous runtime before starting another, so a
+        // repeated start restarts the node rather than duplicating it.
+        val previousScope = runtimeScope
+        val previousTransport = transport
+        transport = null
+        val thisRuntimeScope = CoroutineScope(SupervisorJob(job) + exceptionHandler)
+        runtimeScope = thisRuntimeScope
+
         scope.launch {
+            previousScope?.coroutineContext?.get(Job)?.cancelAndJoin()
+            previousTransport?.let { runCatching { it.close() } }
+
             val relayConfig = RelayConfig.fromBuildConfig()
             val nodeId = DeviceIdentity.nodeId(this@AdapterForegroundService)
             val manifest = DeviceIdentity.manifest(this@AdapterForegroundService)
@@ -144,7 +177,7 @@ class AdapterForegroundService : Service() {
                 node,
             )
 
-            NodeRuntime(node, callMonitor, voipMonitor, mediaMonitor).start(scope, manifest)
+            NodeRuntime(node, callMonitor, voipMonitor, mediaMonitor).start(thisRuntimeScope, manifest)
         }
 
         // Provisioning is re-read from SharedPreferences on every call
