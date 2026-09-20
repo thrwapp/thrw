@@ -1,0 +1,290 @@
+name: release-mac
+
+# Builds AdapterMac.app and attaches it to the tag's GitHub Release
+# (#189), so there is something installable on the reference MacBook
+# rather than a build each person has to produce by hand.
+#
+# Its own workflow rather than a job in release.yml, per #190's decision:
+# per-platform workflows, matching release-android.yml, which is the
+# shape that already works. `macos-14` is the label ci.yml's own Swift
+# job uses - and it is Apple Silicon, matching the reference hardware
+# (MacBook Air M4), which matters for the ad-hoc signing step below.
+#
+# Deliberately NOT notarized, and not Developer ID signed. That needs a
+# real Apple Developer Program identity in CI secrets; #132's enrollment
+# is done but no certificate exists here yet, and for a build going onto
+# one known Mac the one-time Gatekeeper prompt is a smaller cost than
+# managing signing material. The release notes tell the user what to
+# expect. If that friction becomes tiresome across rebuilds, that is the
+# signal to do the signed path - see #189.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+concurrency:
+  group: release-mac
+  cancel-in-progress: false
+
+permissions:
+  contents: write # creating the Release and uploading its asset
+
+jobs:
+  release:
+    name: release
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The bundle version below is the commit count, which a shallow
+          # clone computes wrong - and wrong low, so two different builds
+          # could claim the same version.
+          fetch-depth: 0
+
+      - name: Derive version
+        id: version
+        run: |
+          set -euo pipefail
+          build="$(git rev-list --count HEAD)"
+          # Strip the leading v: CFBundleShortVersionString must be a
+          # dotted numeric string, and "v0.2.0" is not one.
+          short="${GITHUB_REF#refs/tags/}"
+          short="${short#v}"
+          case "$short" in
+            *refs/heads/*|"") short="0.0.0" ;;  # workflow_dispatch has no tag
+          esac
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "short=$short" >> "$GITHUB_OUTPUT"
+          echo "Version $short ($build)"
+
+      # #187, the Mac half - #198 did Android and deliberately left this
+      # until there was a real build for a credential to reach.
+      #
+      # Without it the build reads the committed config/adapter.properties,
+      # which ships the credential deliberately empty (#147), and produces
+      # an app that installs and is then rejected at connect with
+      # badUserNameOrPassword, since the deployed broker runs
+      # allow_anonymous=false. It looks like a successful release and
+      # fails later, far from the cause.
+      #
+      # Reuses EMQX_RELAY_USERNAME/PASSWORD rather than adding Mac-specific
+      # secrets: two copies of one credential drift, and rotating the relay
+      # password would then leave one platform working and the other
+      # failing auth for reasons that read as an adapter bug.
+      - name: Write relay credentials
+        env:
+          RELAY_USERNAME: ${{ secrets.EMQX_RELAY_USERNAME }}
+          RELAY_PASSWORD: ${{ secrets.EMQX_RELAY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RELAY_USERNAME" ] || [ -z "$RELAY_PASSWORD" ]; then
+            echo "::error::EMQX_RELAY_USERNAME/EMQX_RELAY_PASSWORD are not set." \
+                 "Without them this build would still succeed and produce an" \
+                 "app that cannot authenticate against the relay (#187)." \
+                 "Failing early instead."
+            exit 1
+          fi
+          # printf rather than a heredoc so the value is never echoed, and
+          # mode 600 before anything is in it.
+          overlay=packages/adapter-mac/config/adapter.local.properties
+          install -m 600 /dev/null "$overlay"
+          printf 'relay.username=%s\n' "$RELAY_USERNAME" >> "$overlay"
+          printf 'relay.password=%s\n' "$RELAY_PASSWORD" >> "$overlay"
+          echo "Wrote $overlay (gitignored, removed after the build)."
+
+      # Reuses the existing script rather than reimplementing the bundle
+      # layout in YAML: it already encodes why a bare SwiftPM executable
+      # is not enough (Bundle.main is unpopulated outside a real .app, so
+      # NSBluetoothAlwaysUsageDescription is never read and Bluetooth
+      # calls fail with no prompt).
+      - name: Build AdapterMac.app
+        working-directory: packages/adapter-mac
+        run: ./Scripts/build-app-bundle.sh release
+
+      # A green build does not prove the credential landed. Assert on the
+      # *generated* config, which is what actually ends up compiled in.
+      #
+      # Note the path: SwiftPM writes the plugin's output under
+      # .build/plugins/outputs/<pkg>/<target>/destination/, and there is
+      # also a stale copy under .build/plugins/outputs/pkg/ that is not
+      # regenerated. Asserting against the wrong one silently reads old
+      # values - so this globs for the destination copy and fails if it
+      # finds none, rather than picking whichever it happens to hit.
+      - name: Verify the built config carries the credential
+        env:
+          RELAY_USERNAME: ${{ secrets.EMQX_RELAY_USERNAME }}
+        run: |
+          set -euo pipefail
+          # `find`, not a `**` glob: macOS runners run bash 3.2, which has
+          # no globstar, so `**` would silently behave as a single `*` and
+          # match nothing here.
+          generated=$(find packages/adapter-mac/.build/plugins/outputs \
+            -path '*/destination/*' -name AdapterBuildConfig.swift -print -quit)
+          if [ -z "$generated" ]; then
+            echo "::error::No generated AdapterBuildConfig.swift found under a" \
+                 "destination/ plugin output - the config plugin did not run," \
+                 "or SwiftPM's output layout changed."
+            exit 1
+          fi
+          echo "Asserting against $generated"
+          username=$(sed -n 's/.*relayUsername: String = "\(.*\)"$/\1/p' "$generated")
+          password=$(sed -n 's/.*relayPassword: String = "\(.*\)"$/\1/p' "$generated")
+          if [ -z "$username" ] || [ -z "$password" ]; then
+            echo "::error::The generated config has an empty relay credential -" \
+                 "this artifact could not authenticate (#187)."
+            exit 1
+          fi
+          if [ "$username" != "$RELAY_USERNAME" ]; then
+            echo "::error::The generated relay username does not match the secret."
+            exit 1
+          fi
+          # Username compared exactly; password only for non-emptiness.
+          # generate.sh escapes backslashes and quotes for the Swift string
+          # literal, so a password containing either legitimately differs
+          # from the raw secret. Re-implementing that escaping here to
+          # compare exactly would duplicate a rule that can drift - and
+          # the bug #187 is about is an *empty* credential, which the
+          # check above catches.
+          echo "Generated config carries a non-empty credential and the expected username."
+
+      - name: Remove relay credentials
+        if: always()
+        run: rm -f packages/adapter-mac/config/adapter.local.properties
+
+      # The bundle's Info.plist is copied verbatim from source, where the
+      # version is a hardcoded 0.1.0/1. Every release would otherwise
+      # report the same version, so "which build is this?" - the first
+      # question during a multi-day dogfood run - would have no answer.
+      # Patched in the built bundle only; the source file stays as it is.
+      - name: Stamp the version into the bundle
+        run: |
+          set -euo pipefail
+          app="$(swift build -c release --show-bin-path --package-path packages/adapter-mac)/AdapterMac.app"
+          echo "APP_PATH=$app" >> "$GITHUB_ENV"
+          plist="$app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.version.outputs.short }}" "$plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ steps.version.outputs.build }}" "$plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist"
+
+      # Ad-hoc signature, not a Developer ID one. On Apple Silicon every
+      # executable must carry *some* valid signature to run at all, and
+      # editing Info.plist above invalidates whatever the linker applied -
+      # so without this the app would fail to launch on the reference M4
+      # with a SIGKILL (Code Signature Invalid), which looks like a crash
+      # rather than a packaging mistake.
+      #
+      # This is not Gatekeeper bypass: a downloaded zip is still
+      # quarantined and still needs the one-time approval the release
+      # notes describe.
+      - name: Ad-hoc sign the bundle
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      # Checks the packaging mistakes that produce a silent runtime
+      # failure rather than a build error: a bundle whose Info.plist is
+      # missing the Bluetooth usage description fails its connect calls
+      # with no prompt and no log, which is indistinguishable from a
+      # Bluetooth bug.
+      - name: Verify the bundle is complete
+        run: |
+          set -euo pipefail
+          plist="$APP_PATH/Contents/Info.plist"
+          exe="$APP_PATH/Contents/MacOS/AdapterMacApp"
+          [ -x "$exe" ] || { echo "::error::$exe missing or not executable"; exit 1; }
+          file "$exe" | grep -q "Mach-O" || { echo "::error::$exe is not a Mach-O binary"; exit 1; }
+          for key in CFBundleIdentifier NSBluetoothAlwaysUsageDescription LSUIElement; do
+            if ! /usr/libexec/PlistBuddy -c "Print :$key" "$plist" > /dev/null 2>&1; then
+              echo "::error::$plist is missing $key - the app would fail at runtime" \
+                   "with no prompt (see Info.plist's own comments)."
+              exit 1
+            fi
+          done
+          echo "Bundle looks complete: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")"
+
+      # ditto, not zip: it preserves the bundle's symlinks, resource forks
+      # and extended attributes. A .app round-tripped through `zip -r` can
+      # arrive subtly broken, and --keepParent is what keeps the .app
+      # directory itself in the archive rather than its contents.
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          name="thrw-mac-${{ steps.version.outputs.short }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$RUNNER_TEMP/$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "path=$RUNNER_TEMP/$name" >> "$GITHUB_OUTPUT"
+          ls -lh "$RUNNER_TEMP/$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adapter-mac-${{ steps.version.outputs.build }}
+          path: ${{ steps.package.outputs.path }}
+          if-no-files-found: error
+
+      # Only on a tag: a workflow_dispatch run has no version to release
+      # against, and its zip is available as the artifact above.
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          asset="${{ steps.package.outputs.path }}"
+          name="${{ steps.package.outputs.name }}"
+
+          # The shared-Release contract from release.yml's header (#190).
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes "Adapter artifacts for $tag." \
+            --draft \
+            "$asset#$name" \
+            || gh release upload "$tag" "$asset#$name" --clobber
+
+          # Append the Mac install instructions if they are not already
+          # there. Read-modify-write rather than `--notes`, because
+          # release-android.yml owns its own section of this same body and
+          # a blind overwrite would delete it.
+          #
+          # Built with printf into a file rather than a heredoc: the
+          # existing body contains backticks (release-android.yml's notes
+          # name assets in code spans), and interpolating it into an
+          # unquoted heredoc would run those as command substitutions.
+          # printf with %s arguments treats every value as data.
+          #
+          # Honest about the limitation: two workflows appending
+          # concurrently could interleave, and Actions offers no
+          # cross-workflow lock. Releases are hand-cut and rare, the
+          # marker makes a re-run idempotent, and notes are editable by
+          # hand - so this is judged not worth a heavier mechanism. If it
+          # does go wrong, the fix is a static notes file in the repo that
+          # every publisher points at.
+          short="${{ steps.version.outputs.short }}"
+          build="${{ steps.version.outputs.build }}"
+          body="$(gh release view "$tag" --json body -q .body)"
+          case "$body" in
+            *"<!-- mac-install -->"*)
+              echo "Mac section already present - nothing to append."
+              ;;
+            *)
+              notes="$RUNNER_TEMP/notes.md"
+              {
+                printf '%s\n\n' "$body"
+                printf '<!-- mac-install -->\n'
+                printf '### macOS - `%s`\n\n' "$name"
+                printf 'Unzip and drag `AdapterMac.app` to /Applications. It is a\n'
+                printf 'menu-bar app with no Dock icon, so look in the menu bar\n'
+                printf 'rather than the Dock after launching it.\n\n'
+                printf 'It is **not** Developer ID signed or notarized, so the first\n'
+                printf 'launch is blocked. Open System Settings > Privacy & Security\n'
+                printf 'and click "Open Anyway", then launch it again. Once per\n'
+                printf 'install.\n\n'
+                printf 'Version %s (build %s).\n' "$short" "$build"
+              } > "$notes"
+              gh release edit "$tag" --notes-file "$notes"
+              echo "Appended the Mac section."
+              ;;
+          esac
