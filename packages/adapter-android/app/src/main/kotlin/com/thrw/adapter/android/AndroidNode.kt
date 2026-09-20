@@ -149,9 +149,24 @@ class AndroidNode(
      * argument, and docs/handoffs/68.md.
      */
     override suspend fun endEvent(type: EventKind) {
+        // Forgotten locally **before** the cooldown check, and regardless
+        // of whether it is published (#183).
+        //
+        // The trigger really has ended - the monitor has already cleared
+        // its own flag and will never retry. If a suppressed end also
+        // left this entry in place, the node would keep reporting the
+        // trigger as active on every periodic registration, and #178's
+        // reconciliation would *perpetuate* the stranded signal rather
+        // than repair it. For `call` that is the highest-priority signal
+        // in the system, pinned to this device indefinitely.
+        //
+        // Removing it instead creates a deliberate, temporary divergence:
+        // the relay still believes the trigger is active, this node says
+        // otherwise, and the next registration settles it in favour of
+        // the truth - within one interval rather than never.
+        synchronized(activeEventsLock) { activeEvents.remove(type) }
         if (!type.bypassesSelfCooldown() && suppressedBySelfCooldown("endEvent($type)")) return
         publishToEvents(json.encodeToString(EventEndPayload.serializer(), EventEndPayload(type = type)))
-        synchronized(activeEventsLock) { activeEvents.remove(type) }
     }
 
     /**

@@ -44,6 +44,40 @@ private final class Fixture {
 }
 
 final class MacNodeTests: XCTestCase {
+    /// #183, reproduced. A trigger that ends *inside* the self-cooldown
+    /// window used to strand the relay with a signal that never ends.
+    ///
+    /// The monitor has already cleared its own flag by then and will
+    /// never retry, so if the suppressed end also left the entry in
+    /// `activeEvents`, every periodic registration would keep reporting
+    /// the trigger as active - and #178's reconciliation would
+    /// *perpetuate* the stranded signal rather than repair it.
+    func testATriggerEndedInsideTheCooldownIsNotLeftReportedAsActive() async throws {
+        let cooldown = SelfCooldown()
+        let transport = FakeMqttTransport()
+        let node = MacNode(
+            accountId: accountId,
+            nodeId: nodeId,
+            headsetIdentifier: headsetIdentifier,
+            transport: transport,
+            bluetooth: BluetoothConnectionManager(gateway: FakeBluetoothPeripheralGateway()),
+            selfCooldown: cooldown
+        )
+
+        try await node.emitEvent(type: .media, priority: unrankedPriority)
+        cooldown.arm()
+        try await node.endEvent(type: .media)
+        try await node.register(manifest: manifest)
+
+        let sent = try XCTUnwrap(transport.published.last)
+        let decoded = try JSONDecoder().decode(RegistrationPayload.self, from: Data(sent.payload.utf8))
+        XCTAssertEqual(
+            decoded.activeEvents,
+            [],
+            "a suppressed end must not leave the trigger reported as active - #178 would keep it alive"
+        )
+    }
+
     // MARK: - manual claim vs the self-cooldown (#212)
 
     /// The cooldown exists so thrw ignores its **own** side effects (#167).

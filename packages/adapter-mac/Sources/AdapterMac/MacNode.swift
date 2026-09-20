@@ -108,9 +108,24 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// `EventEndPayload` on the same events topic at the same QoS -
     /// mirrors `AndroidNode.kt`'s own `endEvent` (#68).
     public func endEvent(type: EventKind) async throws {
+        // Forgotten locally **before** the cooldown check, and regardless
+        // of whether it is published (#183).
+        //
+        // The trigger really has ended - the monitor has already cleared
+        // its own flag and will never retry. If a suppressed end also
+        // left this entry in place, the node would keep reporting the
+        // trigger as active on every periodic registration, and #178's
+        // reconciliation would *perpetuate* the stranded signal rather
+        // than repair it. For `call` that is the highest-priority signal
+        // in the system, pinned to this device indefinitely.
+        //
+        // Removing it instead creates a deliberate, temporary divergence:
+        // the relay still believes the trigger is active, this node says
+        // otherwise, and the next registration settles it in favour of
+        // the truth - within one interval rather than never.
+        activeEvents.remove(type)
         if selfCooldown.isActive(), !type.bypassesSelfCooldown { return }
         try await publishToEvents(EventEndPayload(type: type))
-        activeEvents.remove(type)
     }
 
     /// This node's observed audio route (#191), or an empty map when it
