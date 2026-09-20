@@ -48,9 +48,22 @@ public struct RegistrationPayload: Codable, Sendable, Equatable {
     public let kind: String
     public let manifest: NodeManifest
 
-    public init(manifest: NodeManifest) {
+    /// The triggers this node has active *right now* (#178).
+    ///
+    /// Registration is re-sent periodically, not only at startup, and
+    /// carrying the active set is what lets a relay that restarted - or
+    /// whose MQTT connection dropped and reconnected - recover a correct
+    /// picture. Without it the relay would infer state from a stream of
+    /// edges it may have missed, and a node mid-playback would stay
+    /// invisible until it happened to stop.
+    ///
+    /// Sent on every registration, including the first, where it is empty.
+    public let activeEvents: [EventKind]
+
+    public init(manifest: NodeManifest, activeEvents: [EventKind] = []) {
         self.kind = registrationKind
         self.manifest = manifest
+        self.activeEvents = activeEvents
     }
 }
 

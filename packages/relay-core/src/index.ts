@@ -135,7 +135,7 @@ export class PriorityEngine {
    * `DEFAULT_AUTO_RETURN_MS` for no reason.
    */
   forgetNode(nodeId: string): void {
-    this.dropSignals(nodeId, { nodeIsGone: true });
+    this.dropSignals(nodeId);
   }
 
   /**
@@ -159,10 +159,61 @@ export class PriorityEngine {
    * `RelayService.handleEvent` does on the back of this.
    */
   restartNode(nodeId: string): void {
-    this.dropSignals(nodeId, { nodeIsGone: false });
+    this.reconcileSignals(nodeId, []);
   }
 
-  private dropSignals(nodeId: string, { nodeIsGone }: { nodeIsGone: boolean }): void {
+  /**
+   * Sets `nodeId`'s active signals to exactly `active`, preserving the
+   * rule-5 fallback (#178).
+   *
+   * Every registration carries the node's currently-active triggers, so
+   * this is what the relay applies on each one. It makes the relay's view
+   * *converge* on the node's own view rather than being inferred from a
+   * stream of edges it may have missed - which is the whole point:
+   * a relay that restarts, or whose MQTT connection drops and
+   * reconnects, has no idea what is playing anywhere, and nothing else
+   * ever tells it.
+   *
+   * A fresh process sends an empty set, which is exactly `restartNode`
+   * above and keeps #173's behaviour intact.
+   *
+   * **Signals present in both keep their original insertion order.** That
+   * order is the tie-break for "same event kind active on more than one
+   * node, most recently started wins", so re-stamping it on every
+   * periodic registration would make whichever node registered last look
+   * like the most recent starter and silently steal the route.
+   */
+  reconcileSignals(nodeId: string, active: readonly EventKind[]): void {
+    const existing = this.signals.get(nodeId);
+    const wanted = new Set(active);
+    if (!existing && wanted.size === 0) return;
+
+    const hadActiveCall = existing?.has("call") ?? false;
+    const nodeSignals = existing ?? new Map<EventKind, number>();
+
+    for (const kind of [...nodeSignals.keys()]) {
+      if (!wanted.has(kind)) nodeSignals.delete(kind);
+    }
+    for (const kind of wanted) {
+      if (!nodeSignals.has(kind)) nodeSignals.set(kind, this.orderCounter++);
+    }
+
+    if (nodeSignals.size === 0) this.signals.delete(nodeId);
+    else this.signals.set(nodeId, nodeSignals);
+
+    // Same auto-return handling as a node going away mid-call: the call
+    // is over and this node is back, so the pre-call holder is released
+    // immediately rather than waiting out the grace period that exists
+    // to protect a *graceful* end.
+    if (hadActiveCall && !this.hasActiveCallSomewhere()) {
+      this.previousHolderBeforeCall = null;
+    }
+
+    this.syncLastClaimed();
+    // lastClaimed is deliberately never cleared here - see restartNode.
+  }
+
+  private dropSignals(nodeId: string): void {
     const nodeSignals = this.signals.get(nodeId);
     if (!nodeSignals) return;
 
@@ -185,7 +236,7 @@ export class PriorityEngine {
     //
     // A restart is precisely the case where it is *not* gone, so the
     // fallback is left pointing at it - see restartNode's own doc.
-    if (nodeIsGone && this.lastClaimed === nodeId) {
+    if (this.lastClaimed === nodeId) {
       this.lastClaimed = this.computeActiveHolder() ?? immediateFallback;
     }
   }

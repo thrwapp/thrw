@@ -29,6 +29,16 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// ADR 0010 point 1 (#167) - armed by ``onClaim()``/``onRelease()``.
     private let selfCooldown: SelfCooldown
 
+    /// What this node has reported as active and not yet ended (#178),
+    /// sent with every registration so the relay can reconcile rather
+    /// than infer.
+    ///
+    /// Only triggers this node actually *published* are tracked: one the
+    /// self-cooldown suppressed was never told to the relay, so including
+    /// it here would leak it out on the next periodic registration and
+    /// undo the suppression (#167).
+    private let activeEvents = ActiveEventSet()
+
     public init(
         accountId: String,
         nodeId: String,
@@ -50,13 +60,16 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// only node-publishes topic in the frozen topic set) inside a
     /// `RegistrationPayload` envelope - see docs/handoffs/67.md.
     public func register(manifest: NodeManifest) async throws {
-        try await publishToEvents(RegistrationPayload(manifest: manifest))
+        try await publishToEvents(
+            RegistrationPayload(manifest: manifest, activeEvents: activeEvents.snapshot())
+        )
     }
 
     /// Publishes a trigger to the events topic at QoS 1 per `TopicQos`.
     public func emitEvent(type: EventKind, priority: Priority) async throws {
         if selfCooldown.isActive() { return }
         try await publishToEvents(EventPayload(type: type, priority: priority))
+        activeEvents.insert(type)
     }
 
     /// The symmetric partner of ``emitEvent(type:priority:)``: the `type`
@@ -66,6 +79,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     public func endEvent(type: EventKind) async throws {
         if selfCooldown.isActive() { return }
         try await publishToEvents(EventEndPayload(type: type))
+        activeEvents.remove(type)
     }
 
     /// Claim won: connect the headset to this device.

@@ -44,6 +44,61 @@ private final class Fixture {
 }
 
 final class MacNodeTests: XCTestCase {
+    // MARK: - activeEvents (#178)
+
+    /// The point of the whole mechanism: a periodic registration has to
+    /// tell the relay what is playing *now*, or a relay that lost its
+    /// state stays blind to a node that is mid-playback.
+    func testRegisterReportsTheTriggersThisNodeHasActive() async throws {
+        let f = Fixture()
+
+        try await f.node.emitEvent(type: .media, priority: unrankedPriority)
+        try await f.node.register(manifest: manifest)
+
+        let decoded = try decodeRegistration(f)
+        XCTAssertEqual(decoded.activeEvents, [.media])
+    }
+
+    func testATriggerThatEndedIsNoLongerReported() async throws {
+        let f = Fixture()
+
+        try await f.node.emitEvent(type: .media, priority: unrankedPriority)
+        try await f.node.endEvent(type: .media)
+        try await f.node.register(manifest: manifest)
+
+        XCTAssertEqual(try decodeRegistration(f).activeEvents, [])
+    }
+
+    /// The subtle one. ``SelfCooldown`` exists so thrw doesn't react to
+    /// its own claim/release (#167) - a suppressed trigger was never told
+    /// to the relay at all. Recording it here would smuggle it out on the
+    /// next periodic registration and undo the suppression entirely.
+    func testATriggerSuppressedByTheSelfCooldownIsNotReported() async throws {
+        let cooldown = SelfCooldown()
+        let transport = FakeMqttTransport()
+        let node = MacNode(
+            accountId: accountId,
+            nodeId: nodeId,
+            headsetIdentifier: headsetIdentifier,
+            transport: transport,
+            bluetooth: BluetoothConnectionManager(gateway: FakeBluetoothPeripheralGateway()),
+            selfCooldown: cooldown
+        )
+        cooldown.arm()
+
+        try await node.emitEvent(type: .media, priority: unrankedPriority)
+        try await node.register(manifest: manifest)
+
+        let sent = try XCTUnwrap(transport.published.first)
+        let decoded = try JSONDecoder().decode(RegistrationPayload.self, from: Data(sent.payload.utf8))
+        XCTAssertEqual(decoded.activeEvents, [], "a suppressed trigger must not leak out via registration")
+    }
+
+    private func decodeRegistration(_ f: Fixture) throws -> RegistrationPayload {
+        let sent = try XCTUnwrap(f.transport.published.last)
+        return try JSONDecoder().decode(RegistrationPayload.self, from: Data(sent.payload.utf8))
+    }
+
     func testRegisterPublishesTheManifestOnTheNodesEventsTopicAtQoS1() async throws {
         let f = Fixture()
 

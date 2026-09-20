@@ -4,6 +4,8 @@ import com.thrw.adapter.android.heartbeat.HeartbeatPublisher
 import com.thrw.adapter.android.heartbeat.HeartbeatRunner
 import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.triggers.CallTriggerMonitor
+import com.thrw.adapter.android.registration.RegistrationPublisher
+import com.thrw.adapter.android.registration.RegistrationRunner
 import com.thrw.adapter.android.triggers.MediaTriggerMonitor
 import com.thrw.adapter.android.triggers.VoipTriggerMonitor
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +30,7 @@ class NodeRuntime(
     private val voipTriggerMonitor: VoipTriggerMonitor,
     private val mediaTriggerMonitor: MediaTriggerMonitor,
     private val heartbeatRunner: HeartbeatRunner = HeartbeatPublisher(node),
+    private val registrationRunner: RegistrationRunner = RegistrationPublisher(),
 ) {
     /**
      * Registers [manifest], starts listening for relay commands, and
@@ -56,6 +59,16 @@ class NodeRuntime(
         scope.launch {
             registration.join()
             heartbeatRunner.run()
+        }
+        // #178: the relay holds its node list purely in memory and learns
+        // of a node only from a registration, so a relay restart (or an
+        // MQTT reconnect) leaves this node invisible until it registers
+        // again. Re-sending periodically is what closes that; each send
+        // carries the currently-active triggers, so it reconciles rather
+        // than merely re-announcing.
+        scope.launch {
+            registration.join()
+            registrationRunner.run { node.register(manifest) }
         }
     }
 }

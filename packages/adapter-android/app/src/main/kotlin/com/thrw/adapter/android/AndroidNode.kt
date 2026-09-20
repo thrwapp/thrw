@@ -63,14 +63,32 @@ class AndroidNode(
      */
     override suspend fun register(manifest: NodeManifest) {
         publishToEvents(
-            json.encodeToString(RegistrationPayload.serializer(), RegistrationPayload(manifest = manifest)),
+            json.encodeToString(
+                RegistrationPayload.serializer(),
+                RegistrationPayload(manifest = manifest, activeEvents = activeEventsSnapshot()),
+            ),
         )
     }
+
+    /**
+     * What this node has reported as active and not yet ended (#178).
+     *
+     * Only triggers this node actually *published* are tracked: a trigger
+     * the self-cooldown suppressed was never told to the relay, so
+     * including it here would leak it out on the next periodic
+     * registration and undo the suppression (#167).
+     */
+    private val activeEvents = linkedSetOf<EventKind>()
+    private val activeEventsLock = Any()
+
+    private fun activeEventsSnapshot(): List<EventKind> =
+        synchronized(activeEventsLock) { activeEvents.toList() }
 
     /** Publishes a trigger to the events topic at QoS 1 per `TopicQos`. */
     override suspend fun emitEvent(type: EventKind, priority: Priority) {
         if (suppressedBySelfCooldown("emitEvent($type)")) return
         publishToEvents(json.encodeToString(EventPayload.serializer(), EventPayload(type, priority)))
+        synchronized(activeEventsLock) { activeEvents.add(type) }
     }
 
     /**
@@ -87,6 +105,7 @@ class AndroidNode(
     override suspend fun endEvent(type: EventKind) {
         if (suppressedBySelfCooldown("endEvent($type)")) return
         publishToEvents(json.encodeToString(EventEndPayload.serializer(), EventEndPayload(type = type)))
+        synchronized(activeEventsLock) { activeEvents.remove(type) }
     }
 
     /**

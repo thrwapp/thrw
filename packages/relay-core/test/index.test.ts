@@ -181,6 +181,67 @@ describe("@thrw/relay-core", () => {
     expect(engine.currentHolder()).toBe("node-a");
   });
 
+  describe("reconcileSignals (#178)", () => {
+    it("adds what the node reports and drops what it no longer reports", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "media");
+      engine.recordEvent("node-b", "voip");
+      // voip outranks media.
+      expect(engine.currentHolder()).toBe("node-b");
+
+      // B re-registers saying it has nothing active any more, and A says
+      // it is now on a call.
+      engine.reconcileSignals("node-b", []);
+      engine.reconcileSignals("node-a", ["call", "media"]);
+
+      expect(engine.currentHolder()).toBe("node-a");
+    });
+
+    it("does not re-stamp the order of a signal the node still reports", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "media"); // started first
+      engine.recordEvent("node-b", "media"); // started later, so B wins
+      expect(engine.currentHolder()).toBe("node-b");
+
+      // A's periodic registration says "still playing" - it is the same
+      // media session it already reported, not a new one. Re-stamping its
+      // order here would make A look like the most recent starter and
+      // silently take the headset off B, every two minutes, for as long
+      // as both are playing.
+      engine.reconcileSignals("node-a", ["media"]);
+
+      expect(engine.currentHolder()).toBe("node-b");
+    });
+
+    it("lets a genuinely new signal win the tie-break", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "media");
+      engine.recordEvent("node-b", "media");
+      expect(engine.currentHolder()).toBe("node-b");
+
+      // A reports media it was NOT previously reporting: that is a new
+      // start and should win, exactly as recordEvent would.
+      engine.reconcileSignals("node-a", []);
+      engine.reconcileSignals("node-a", ["media"]);
+
+      expect(engine.currentHolder()).toBe("node-a");
+    });
+
+    it("clears a stale call that no event_end will ever arrive for", () => {
+      const engine = new PriorityEngine();
+      engine.recordEvent("node-a", "call");
+      engine.recordEvent("node-b", "media");
+      expect(engine.currentHolder()).toBe("node-a");
+
+      // #183: a `call` that was emitted spuriously and never ended pins
+      // the route forever. A periodic registration that simply does not
+      // mention it is what frees it.
+      engine.reconcileSignals("node-a", []);
+
+      expect(engine.currentHolder()).toBe("node-b");
+    });
+  });
+
   describe("restartNode (#173)", () => {
     it("keeps the restarted node as holder, unlike forgetNode which drops it", () => {
       const restarted = new PriorityEngine();

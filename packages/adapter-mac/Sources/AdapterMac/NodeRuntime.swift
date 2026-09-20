@@ -46,6 +46,7 @@ public final class NodeRuntime {
     private let voipTriggerMonitor: VoipTriggerMonitor
     private let mediaTriggerMonitor: MediaTriggerMonitor
     private let heartbeatPublisher: HeartbeatPublisher
+    private let registrationPublisher: RegistrationPublisher
 
     #if canImport(os)
     private static let logger = Logger(subsystem: "app.thrw.mac", category: "NodeRuntime")
@@ -58,12 +59,14 @@ public final class NodeRuntime {
         node: MacNode,
         voipTriggerMonitor: VoipTriggerMonitor,
         mediaTriggerMonitor: MediaTriggerMonitor,
-        heartbeatPublisher: HeartbeatPublisher? = nil
+        heartbeatPublisher: HeartbeatPublisher? = nil,
+        registrationPublisher: RegistrationPublisher? = nil
     ) {
         self.node = node
         self.voipTriggerMonitor = voipTriggerMonitor
         self.mediaTriggerMonitor = mediaTriggerMonitor
         self.heartbeatPublisher = heartbeatPublisher ?? HeartbeatPublisher(sink: node)
+        self.registrationPublisher = registrationPublisher ?? RegistrationPublisher()
     }
 
     /// Registers `manifest`, starts listening for relay commands, and
@@ -106,7 +109,23 @@ public final class NodeRuntime {
             _ = await registerTask.result
             await Self.logErrors(from: "heartbeatPublisher") { try await self.heartbeatPublisher.run() }
         }
-        return NodeRuntimeHandle(tasks: [registerTask, commandsTask, voipTask, mediaTask, heartbeatTask])
+        // #178: the relay holds its node list purely in memory and learns
+        // of a node only from a registration, so a relay restart (or an
+        // MQTT reconnect) leaves this node invisible until it registers
+        // again. Re-sending periodically closes that; each send carries
+        // the currently-active triggers, so it reconciles rather than
+        // merely re-announcing.
+        let reregisterTask = Task {
+            _ = await registerTask.result
+            await Self.logErrors(from: "registrationPublisher") {
+                try await self.registrationPublisher.run {
+                    try await self.node.register(manifest: manifest)
+                }
+            }
+        }
+        return NodeRuntimeHandle(
+            tasks: [registerTask, commandsTask, voipTask, mediaTask, heartbeatTask, reregisterTask]
+        )
     }
 
     private static func logErrors(from label: String, _ body: () async throws -> Void) async {
