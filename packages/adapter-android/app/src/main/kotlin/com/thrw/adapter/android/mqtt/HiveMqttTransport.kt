@@ -1,6 +1,7 @@
 package com.thrw.adapter.android.mqtt
 
 import android.util.Log
+import com.hivemq.client.mqtt.MqttClientState
 import com.hivemq.client.mqtt.MqttWebSocketConfig
 import com.hivemq.client.mqtt.datatypes.MqttQos
 import com.hivemq.client.mqtt.mqtt3.Mqtt3BlockingClient
@@ -73,6 +74,13 @@ class HiveMqttTransport private constructor(
     }
 
     internal class Subscription(val topic: String, val qos: Int, val onMessage: (String) -> Unit)
+
+    /**
+     * #213. CONNECTED alone - the reconnecting states mean publishes are
+     * currently failing, which is what the user needs to be told, not
+     * smoothed over as "probably fine".
+     */
+    override fun isConnected(): Boolean = client.state == MqttClientState.CONNECTED
 
     override fun onReconnected(handler: () -> Unit) {
         hooks.onReconnected = handler

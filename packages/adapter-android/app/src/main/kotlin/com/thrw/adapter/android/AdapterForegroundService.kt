@@ -1,6 +1,7 @@
 package com.thrw.adapter.android
 
 import android.app.Notification
+import android.app.PendingIntent
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -8,6 +9,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
+import com.thrw.adapter.android.claim.ManualClaim
+import com.thrw.adapter.android.status.NodeStatus
+import com.thrw.adapter.android.status.textRes
 import com.thrw.adapter.android.bluetooth.AndroidBluetoothClassicGateway
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.config.RelayConfig
@@ -96,6 +100,12 @@ class AdapterForegroundService : Service() {
      */
     private var runtimeScope: CoroutineScope? = null
 
+    /** #212. Non-null only while a node runtime is running. */
+    private var manualClaim: ManualClaim? = null
+
+    /** The running node, so the notification can ask it for status (#213). */
+    private var node: AndroidNode? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -108,6 +118,24 @@ class AdapterForegroundService : Service() {
         // foreground-service start, before any of the async setup below -
         // so this happens first, unconditionally.
         startForegroundWithNotification()
+
+        // #212. A tap on the notification action re-enters here rather
+        // than arriving anywhere else - a started service has no other
+        // inbound channel. Handled before the provisioning read below so
+        // it never restarts the runtime.
+        if (intent?.action == ACTION_TOGGLE_CLAIM) {
+            val claim = manualClaim
+            if (claim == null) {
+                Log.w(TAG, "Manual claim tapped with no node running - ignoring")
+            } else {
+                scope.launch {
+                    runCatching { claim.toggle() }
+                        .onFailure { Log.e(TAG, "Manual claim failed", it) }
+                    refreshNotification()
+                }
+            }
+            return START_STICKY
+        }
 
         val accountId = AdapterProvisioning.accountId(this)
         val headsetAddress = AdapterProvisioning.headsetAddress(this)
@@ -177,7 +205,10 @@ class AdapterForegroundService : Service() {
                 node,
             )
 
+            this@AdapterForegroundService.node = node
+            manualClaim = ManualClaim(node)
             NodeRuntime(node, callMonitor, voipMonitor, mediaMonitor).start(thisRuntimeScope, manifest)
+            refreshNotification()
         }
 
         // Provisioning is re-read from SharedPreferences on every call
@@ -199,13 +230,48 @@ class AdapterForegroundService : Service() {
         super.onDestroy()
     }
 
-    private fun startForegroundWithNotification() {
-        val notification = Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
+    /**
+     * Re-posts the notification with current status and action label
+     * (#212/#213).
+     *
+     * Called after a claim toggle and when the runtime starts - not on a
+     * timer. A periodic refresh would wake the process to keep a string
+     * current that is only read when the shade is pulled down, and this
+     * is a battery-sensitive foreground service.
+     */
+    private fun refreshNotification() {
+        scope.launch {
+            val status = runCatching { node?.status() }.getOrNull()
+            startForegroundWithNotification(status)
+        }
+    }
+
+    private fun startForegroundWithNotification(status: NodeStatus? = null) {
+        val builder = Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle(getString(R.string.adapter_notification_title))
-            .setContentText(getString(R.string.adapter_notification_text))
+            // #213: the status replaces the old static blurb. That text
+            // said the same thing whether the adapter was working or had
+            // silently lost its connection two hours ago (#182), which is
+            // exactly the failure this is meant to make visible.
+            .setContentText(getString(status?.textRes ?: R.string.adapter_notification_text))
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setOngoing(true)
-            .build()
+
+        // #212. Only once a node exists - an action that silently does
+        // nothing is worse than one that is not there.
+        manualClaim?.let { claim ->
+            val label = getString(if (claim.isHeld()) R.string.release_headset else R.string.claim_headset)
+            val intent = Intent(this, AdapterForegroundService::class.java).setAction(ACTION_TOGGLE_CLAIM)
+            val pending = PendingIntent.getService(
+                this,
+                0,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            builder.addAction(Notification.Action.Builder(null, label, pending).build())
+        }
+
+        val notification = builder.build()
 
         // minSdk is 31, above the API 29 (Q) floor for the type-aware
         // overload, so no version check is needed before calling it.
@@ -223,6 +289,13 @@ class AdapterForegroundService : Service() {
 
     companion object {
         private const val TAG = "AdapterForegroundService"
+
+        /**
+         * #212. A started service has no inbound channel other than
+         * `onStartCommand`, so the notification action re-enters the
+         * service with this action rather than going anywhere else.
+         */
+        const val ACTION_TOGGLE_CLAIM = "com.thrw.adapter.android.TOGGLE_CLAIM"
         private const val NOTIFICATION_CHANNEL_ID = "thrw_adapter"
         private const val NOTIFICATION_ID = 1
     }

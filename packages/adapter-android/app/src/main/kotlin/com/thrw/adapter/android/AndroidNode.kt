@@ -14,11 +14,14 @@ import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.protocol.Priority
 import com.thrw.adapter.android.protocol.ProtocolJson
 import com.thrw.adapter.android.protocol.RESOURCE_AUDIO
+import com.thrw.adapter.android.status.NodeStatus
+import com.thrw.adapter.android.status.nodeStatus
 import com.thrw.adapter.android.protocol.RegistrationPayload
 import com.thrw.adapter.android.protocol.Topics
 import com.thrw.adapter.android.protocol.TopicQos
 import com.thrw.adapter.android.triggers.EventLifecycle
 import com.thrw.adapter.android.triggers.RouteTransition
+import com.thrw.adapter.android.triggers.bypassesSelfCooldown
 import com.thrw.adapter.android.triggers.SelfCooldown
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.json.Json
@@ -90,6 +93,16 @@ class AndroidNode(
     private val activeEventsLock = Any()
 
     /**
+     * This node's current status, for display (#213).
+     *
+     * Asks the transport and the gateway directly rather than caching: a
+     * cached status is exactly what goes stale during the silent
+     * failures this is meant to expose.
+     */
+    suspend fun status(): NodeStatus =
+        nodeStatus(transport.isConnected(), bluetooth.isAudioRouteActive(headsetAddress))
+
+    /**
      * Runs [handler] whenever the transport re-establishes a dropped
      * connection (#182) - see [MqttTransport.onReconnected].
      */
@@ -119,7 +132,7 @@ class AndroidNode(
 
     /** Publishes a trigger to the events topic at QoS 1 per `TopicQos`. */
     override suspend fun emitEvent(type: EventKind, priority: Priority) {
-        if (suppressedBySelfCooldown("emitEvent($type)")) return
+        if (!type.bypassesSelfCooldown() && suppressedBySelfCooldown("emitEvent($type)")) return
         publishToEvents(json.encodeToString(EventPayload.serializer(), EventPayload(type, priority)))
         synchronized(activeEventsLock) { activeEvents.add(type) }
     }
@@ -136,7 +149,7 @@ class AndroidNode(
      * argument, and docs/handoffs/68.md.
      */
     override suspend fun endEvent(type: EventKind) {
-        if (suppressedBySelfCooldown("endEvent($type)")) return
+        if (!type.bypassesSelfCooldown() && suppressedBySelfCooldown("endEvent($type)")) return
         publishToEvents(json.encodeToString(EventEndPayload.serializer(), EventEndPayload(type = type)))
         synchronized(activeEventsLock) { activeEvents.remove(type) }
     }
