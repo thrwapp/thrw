@@ -18,19 +18,53 @@ public actor BluetoothConnectionManager {
     private let gateway: BluetoothPeripheralGateway
     private var states: [UUID: BluetoothConnectionState] = [:]
 
-    public init(gateway: BluetoothPeripheralGateway) {
+    /// #225 / ADR 0018 decision 3 - reads whether a device *actually*
+    /// holds the audio route, so `connect` can second-guess its own
+    /// cached `.connected`. Optional: without one, `connect` behaves
+    /// exactly as it did before #225.
+    private let routeSource: DeviceAudioRouteSource?
+
+    public init(gateway: BluetoothPeripheralGateway, routeSource: DeviceAudioRouteSource? = nil) {
         self.gateway = gateway
+        self.routeSource = routeSource
     }
 
     /// Connects to `deviceIdentifier`. A no-op if that device is already
-    /// connected or a connection attempt is already in flight.
+    /// connected *and still holds the audio route*, or if a connection
+    /// attempt is already in flight.
     ///
     /// On failure, state reverts to `.disconnected` and the underlying
     /// error is rethrown.
+    ///
+    /// ## Why `.connected` is not trusted on its own (#225)
+    ///
+    /// ADR 0018 decision 3: the skip must be decided on the actual
+    /// route, not on this cached belief. The cache is exactly what a
+    /// multipoint headset invalidates - the phone can take the route
+    /// while this Mac keeps its Bluetooth link, leaving `states` saying
+    /// `.connected` while audio plays somewhere else entirely. Measured
+    /// on the reference hardware: the Mac reported the AirPods as
+    /// `Connected` while its default output was `MacBook Air Speakers`
+    /// and the phone held the route.
+    ///
+    /// Skipping in that state silently drops a claim that was genuinely
+    /// needed - no log, no retry, no audio - which is why the ADR calls
+    /// getting this wrong worse than getting decision 2 wrong.
+    ///
+    /// **Only `.connected` is second-guessed.** `.connecting` means a
+    /// claim is already in flight and re-entering would issue a
+    /// duplicate. A `nil` route reading means "cannot tell", which is no
+    /// reason to override a cached state that may well be right.
+    ///
+    /// Mirrors `adapter-android`'s `BluetoothConnectionManager.connect`
+    /// - change both together.
     public func connect(deviceIdentifier: UUID) async throws {
         switch states[deviceIdentifier] {
-        case .connected, .connecting:
+        case .connecting:
             return
+        case .connected:
+            guard routeSource?.holdsAudioRoute(deviceIdentifier: deviceIdentifier) == false else { return }
+            states[deviceIdentifier] = .connecting
         case .disconnected, .disconnecting, .none:
             states[deviceIdentifier] = .connecting
         }
