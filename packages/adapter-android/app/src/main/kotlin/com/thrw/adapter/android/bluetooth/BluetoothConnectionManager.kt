@@ -26,14 +26,37 @@ class BluetoothConnectionManager(
      * On failure, state reverts to [BluetoothConnectionState.DISCONNECTED]
      * and the underlying exception is rethrown.
      */
+    /** Pass-through to the gateway - see [BluetoothClassicGateway.isAudioRouteActive]. */
+    suspend fun isAudioRouteActive(deviceAddress: String): Boolean? =
+        gateway.isAudioRouteActive(deviceAddress)
+
     suspend fun connect(deviceAddress: String) {
-        val shouldConnect = mutex.withLock {
-            when (states[deviceAddress]) {
-                BluetoothConnectionState.CONNECTED, BluetoothConnectionState.CONNECTING -> false
-                else -> {
-                    states[deviceAddress] = BluetoothConnectionState.CONNECTING
-                    true
-                }
+        val previous = mutex.withLock {
+            val previous = states[deviceAddress]
+            if (previous != BluetoothConnectionState.CONNECTED && previous != BluetoothConnectionState.CONNECTING) {
+                states[deviceAddress] = BluetoothConnectionState.CONNECTING
+            }
+            previous
+        }
+        var shouldConnect = previous != BluetoothConnectionState.CONNECTED &&
+            previous != BluetoothConnectionState.CONNECTING
+
+        // ADR 0018 decision 3, corrected by #186: the skip must be
+        // decided on the actual route, not on this cached belief. The
+        // cache is exactly what a multipoint headset invalidates - the
+        // phone can take the route while this device keeps its Bluetooth
+        // link, leaving `states` saying CONNECTED when audio is playing
+        // somewhere else entirely. Skipping then silently drops a claim
+        // that was genuinely needed: no log, no retry, no audio.
+        //
+        // Only CONNECTED is second-guessed. CONNECTING means a claim is
+        // already in flight, and re-entering would issue a duplicate.
+        // A `null` route reading means "cannot tell", which is no reason
+        // to override a cached state that may well be right.
+        if (!shouldConnect && previous == BluetoothConnectionState.CONNECTED) {
+            if (gateway.isAudioRouteActive(deviceAddress) == false) {
+                mutex.withLock { states[deviceAddress] = BluetoothConnectionState.CONNECTING }
+                shouldConnect = true
             }
         }
         if (!shouldConnect) return

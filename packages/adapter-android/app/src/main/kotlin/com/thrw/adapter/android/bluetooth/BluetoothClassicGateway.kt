@@ -18,4 +18,23 @@ interface BluetoothClassicGateway {
     suspend fun connect(deviceAddress: String)
 
     suspend fun disconnect(deviceAddress: String)
+
+    /**
+     * Whether [deviceAddress] is the device audio is actually **routed
+     * to** right now (#191) - not merely whether it is connected.
+     *
+     * That distinction is the point. Multipoint headsets hold links to
+     * several hosts at once: measured on the reference hardware with the
+     * *phone* holding the route, the Mac simultaneously reported the
+     * AirPods as connected while its own output was its speakers. So
+     * connection state answers yes on both devices and is useless as a
+     * holder signal - a relay reconciling against it sees two holders and
+     * corrects forever.
+     *
+     * Returns `null` when it cannot be determined, which must not be
+     * smoothed into `false`: `false` asserts this device does not hold
+     * the headset and is grounds for corrective action, while `null`
+     * means "no information" and leaves the relay's record alone.
+     */
+    suspend fun isAudioRouteActive(deviceAddress: String): Boolean? = null
 }

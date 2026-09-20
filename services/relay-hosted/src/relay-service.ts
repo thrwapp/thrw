@@ -36,6 +36,29 @@ interface RegistrationPayload {
   // Optional on the wire: an adapter that predates this sends none, which
   // reads as "nothing active" - identical to #173's fresh-process case.
   activeEvents?: EventKind[];
+  /**
+   * The node's observed audio route per resource type (#191), keyed by
+   * ADR 0015's vocabulary. A resource is absent when the node cannot
+   * determine it, or while a claim/release is still settling - absent
+   * means "no information", not "no".
+   */
+  observedRoutes?: Record<string, boolean>;
+}
+
+/** ADR 0015's resource type for the headset audio connection. */
+const RESOURCE_AUDIO = "audio";
+
+/**
+ * A disagreement between what the relay records as the holder and what a
+ * node observes about its own audio route (#191).
+ */
+export interface RouteDrift {
+  readonly account: string;
+  readonly node: string;
+  /** What the node says about its own route. */
+  readonly nodeHoldsRoute: boolean;
+  /** Who the relay believed held it at the time. */
+  readonly believedHolder: string | null;
 }
 
 interface EventEndPayload {
@@ -59,6 +82,14 @@ function activeEventsFrom(payload: RegistrationPayload): EventKind[] {
   return raw.filter((kind): kind is EventKind =>
     typeof kind === "string" && (PRIORITY_ORDER as readonly string[]).includes(kind),
   );
+}
+
+// Defensive, like activeEventsFrom: this comes off the wire.
+function observedAudioRoute(payload: RegistrationPayload): boolean | undefined {
+  const routes: unknown = payload.observedRoutes;
+  if (typeof routes !== "object" || routes === null) return undefined;
+  const value: unknown = (routes as Record<string, unknown>)[RESOURCE_AUDIO];
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function isEventEndPayload(payload: unknown): payload is EventEndPayload {
@@ -103,6 +134,16 @@ export interface RelayServiceOptions {
   /** Injectable clock, so heartbeat-timeout tests don't wait on wall time. */
   now?: () => number;
   /**
+   * Called when a node's observed route disagrees with the recorded
+   * holder (#191). Defaults to logging.
+   *
+   * ADR 0018's consequences are explicit that a mismatch is a leading
+   * indicator of a bug rather than routine noise, so it is surfaced
+   * rather than silently corrected. Injectable so tests can assert on it
+   * without scraping stdout.
+   */
+  onRouteDrift?: (drift: RouteDrift) => void;
+  /**
    * Injectable scheduler - used both for each account's `PriorityEngine`
    * (its own auto-return timer) and for the heartbeat sweep, so a test can
    * control both deterministically with one fake, the same pattern
@@ -136,6 +177,7 @@ export class RelayService {
   private readonly client: RelayMqttClient;
   private readonly accounts: readonly string[];
   private readonly now: () => number;
+  private readonly onRouteDrift: (drift: RouteDrift) => void;
   private readonly scheduler: Scheduler;
   private readonly heartbeatTimeoutMs: number;
   private readonly heartbeatSweepIntervalMs: number;
@@ -145,6 +187,15 @@ export class RelayService {
     this.client = options.client;
     this.accounts = options.accounts;
     this.now = options.now ?? (() => Date.now());
+    this.onRouteDrift =
+      options.onRouteDrift ??
+      ((drift) => {
+        console.warn(
+          `relay-hosted: route drift on ${drift.account} - ${drift.node} reports ` +
+            `holdsRoute=${drift.nodeHoldsRoute} while the recorded holder is ` +
+            `${drift.believedHolder ?? "(none)"}`,
+        );
+      });
     this.scheduler = options.scheduler ?? systemScheduler;
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.heartbeatSweepIntervalMs = options.heartbeatSweepIntervalMs ?? DEFAULT_HEARTBEAT_SWEEP_INTERVAL_MS;
@@ -242,6 +293,30 @@ export class RelayService {
       // the claim. `claim` is idempotent for a node that really is
       // connected, which is what makes this safe to send unconditionally
       // here rather than trying to guess the device's true state.
+      // #191 / ADR 0018 decision 2. Detection only - the *correction*
+      // for the case that matters already exists and is not duplicated
+      // here: the claim re-asserted just below is issued on every
+      // registration from the holder, and the adapter now decides
+      // whether to act on it from its actual route rather than a cached
+      // belief (ADR 0018 decision 3). So a holder whose route has gone
+      // repairs itself on the next registration.
+      //
+      // The opposite direction - a node that is *not* the holder
+      // reporting that it does hold the route - is deliberately reported
+      // and not acted on. ADR 0010's "local state wins" is about a
+      // manual override, which ADR 0014's `claimMode` covers and is
+      // still Proposed; and under multipoint two nodes can briefly both
+      // report true. Moving the recorded holder on that basis would turn
+      // a transient into a real switch.
+      const holdsRoute = observedAudioRoute(payload);
+      if (holdsRoute !== undefined) {
+        const believedHolder = state.lastHolder;
+        const disagrees = holdsRoute ? believedHolder !== node : believedHolder === node;
+        if (disagrees) {
+          this.onRouteDrift({ account: state.account, node, nodeHoldsRoute: holdsRoute, believedHolder });
+        }
+      }
+
       if (state.lastHolder === node && holderBefore === node) {
         this.client.publishCommand(state.account, node, { type: "claim" }).catch((error: unknown) => {
           console.error(`relay-hosted: failed to re-publish claim to ${state.account}/${node}`, error);

@@ -45,13 +45,23 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// undo the suppression (#167).
     private let activeEvents = ActiveEventSet()
 
+    /// #191 - reads whether this Mac currently holds the audio route.
+    /// Optional: a node built without one simply reports no observation,
+    /// which the relay treats as "no information" rather than as "no".
+    private let routeObserver: AudioRouteObserver?
+
+    /// #191 - suppresses route observations taken mid-transition.
+    private let routeTransition: RouteTransition
+
     public init(
         accountId: String,
         nodeId: String,
         headsetIdentifier: UUID,
         transport: MqttTransport,
         bluetooth: BluetoothConnectionManager,
-        selfCooldown: SelfCooldown = SelfCooldown()
+        selfCooldown: SelfCooldown = SelfCooldown(),
+        routeObserver: AudioRouteObserver? = nil,
+        routeTransition: RouteTransition = RouteTransition()
     ) {
         self.accountId = accountId
         self.nodeId = nodeId
@@ -59,6 +69,8 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
         self.transport = transport
         self.bluetooth = bluetooth
         self.selfCooldown = selfCooldown
+        self.routeObserver = routeObserver
+        self.routeTransition = routeTransition
     }
 
     /// Publishes this node's manifest so the relay's device registry
@@ -67,7 +79,11 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// `RegistrationPayload` envelope - see docs/handoffs/67.md.
     public func register(manifest: NodeManifest) async throws {
         try await publishToEvents(
-            RegistrationPayload(manifest: manifest, activeEvents: activeEvents.snapshot())
+            RegistrationPayload(
+                manifest: manifest,
+                activeEvents: activeEvents.snapshot(),
+                observedRoutes: observedRoutes()
+            )
         )
     }
 
@@ -88,15 +104,39 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
         activeEvents.remove(type)
     }
 
+    /// This node's observed audio route (#191), or an empty map when it
+    /// cannot honestly be reported.
+    ///
+    /// Omitted in three cases, all meaning "no information" rather than
+    /// "no": no observer was supplied, the route cannot be read, or a
+    /// claim/release is still settling. A snapshot taken mid-transition
+    /// reports "I do not hold this" while the relay correctly believes
+    /// this node does, and the relay would then correct a transition that
+    /// was simply still happening - on a 2-minute cadence, forever.
+    private func observedRoutes() -> [String: Bool] {
+        guard !routeTransition.isSettling(), let holds = routeObserver?.holdsAudioRoute() else {
+            return [:]
+        }
+        return [resourceAudio: holds]
+    }
+
     /// Claim won: connect the headset to this device.
     public func onClaim() async throws {
-        defer { selfCooldown.arm() }
+        routeTransition.begin()
+        defer {
+            routeTransition.end()
+            selfCooldown.arm()
+        }
         try await bluetooth.connect(deviceIdentifier: headsetIdentifier)
     }
 
     /// Claim lost (or released): disconnect the headset from this device.
     public func onRelease() async throws {
-        defer { selfCooldown.arm() }
+        routeTransition.begin()
+        defer {
+            routeTransition.end()
+            selfCooldown.arm()
+        }
         try await bluetooth.disconnect(deviceIdentifier: headsetIdentifier)
     }
 
