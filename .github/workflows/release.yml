@@ -6,7 +6,7 @@ name: release
 # ## One tag, one Release, several workflows
 #
 # A `v*` tag starts more than one workflow - this one and
-# `release-android.yml`, with a Mac equivalent to come (#189). They all
+# `release-android.yml` and `release-mac.yml` (#189). They all
 # attach assets to the same Release, and GitHub Actions gives no ordering
 # between them, so whichever runs first would otherwise decide whether the
 # Release is a draft.
@@ -64,13 +64,13 @@ permissions:
 #   same Release as the signed artifact, with nothing marking which was
 #   which.
 #
-# - **macOS** is not built yet. The job that used to sit here could never
-#   have run: it required `[self-hosted, macOS]` and this repository has
-#   **no self-hosted runners registered**, so on the first real tag it
-#   would have queued until the job timeout and taken `announce` - which
+# - **macOS** is built by `release-mac.yml` (#189), on `macos-14`, and is
+#   not built here. The job that used to sit here could never have run:
+#   it required `[self-hosted, macOS]` and this repository has **no
+#   self-hosted runners registered**, so on the first real tag it would
+#   have queued until the job timeout and taken `announce` - which
 #   depended on it - down with it. Removing it is what makes a tag
-#   complete at all. #189 adds the real lane, and per the note there it
-#   needs #187's credential steps or the artifact cannot authenticate.
+#   complete at all.
 #
 # - **Linux** is built here, and is real work.
 #
