@@ -29,6 +29,15 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// ADR 0010 point 1 (#167) - armed by ``onClaim()``/``onRelease()``.
     private let selfCooldown: SelfCooldown
 
+    /// This node's current status, for display (#213).
+    ///
+    /// Asks the transport and the route observer directly rather than
+    /// caching: a cached status is exactly what goes stale during the
+    /// silent failures this is meant to expose.
+    public func status() -> NodeStatus {
+        nodeStatus(isConnected: transport.isConnected(), holdsRoute: routeObserver?.holdsAudioRoute())
+    }
+
     /// Runs `handler` whenever the transport re-establishes a dropped
     /// connection (#182) - see ``MqttTransport/onReconnected(_:)``.
     public func onReconnected(_ handler: @escaping @Sendable () -> Void) {
