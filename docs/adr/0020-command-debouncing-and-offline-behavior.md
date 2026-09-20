@@ -1,7 +1,8 @@
 # ADR 0020: Command debouncing at the relay, and defined offline behaviour
 
 ## Status
-Accepted
+Accepted — decision 1 amended 2026-09-20 (asymmetric debounce window),
+see ADR 0018's *Revision* note for the hardware evidence behind it.
 
 > **Numbering note.** Drafted as "0018" before 0016 (ambient focus
 > tracking) and 0017 (AI scope) existed; it is 0020. Its companions are
@@ -34,6 +35,18 @@ Two related failure modes, neither currently handled:
    Superseded intermediate commands are dropped, not queued for later
    execution, and are logged as superseded — not as failures — in
    telemetry (ADR 0019's `superseded_by_newer_command`).
+
+   **The window is asymmetric and ~3s is too short for claims.**
+   Measured on the reference hardware: after a *release* the audio
+   route leaves within the 3s window, and that is exactly what stops
+   the released device re-triggering on its own audio and taking the
+   headset straight back. After a *claim*, however, the route takes
+   3-5s to settle, and the claiming device's own media monitor re-fired
+   at +4s and +5s — outside the window, producing duplicate `media`
+   events. Those were harmless only because the relay treated them as a
+   no-op for a node that already held the resource. The claim-side
+   window should be derived from observed settle time rather than
+   inheriting the release-side figure.
 
 2. **Defined offline behaviour: fail safe.** When an adapter cannot
    reach the relay it makes no local switching decisions of its own

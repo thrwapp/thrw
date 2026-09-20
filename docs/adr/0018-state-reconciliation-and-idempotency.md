@@ -1,7 +1,20 @@
 # ADR 0018: State reconciliation and command idempotency
 
 ## Status
-Accepted
+Accepted — decisions 1-3 amended 2026-09-20, see *Revision* below.
+
+> **Revision (2026-09-20).** Decisions 1, 2 and 3 were amended before
+> any implementation began, on evidence from running the existing
+> adapters against real hardware. Three changes: the reconciled signal
+> is the **audio route**, not the Bluetooth link (multipoint headsets
+> make the link reading report two simultaneous holders); commands
+> carry a **relay epoch** (without it, sequence numbers deadlock the
+> system after any relay restart); and reports are suppressed **while a
+> transition is in flight** (a claim takes 3-5s to move the route, and
+> a snapshot inside that window reads as false drift). A prerequisite
+> on #182 was added. The shape of the ADR — periodic reconciliation
+> riding the existing registration message, at the 2-minute cadence —
+> is unchanged.
 
 > **Numbering note.** This ADR was drafted as "0016" before 0016
 > (ambient focus tracking) and 0017 (AI scope) existed. It is 0018;
@@ -36,21 +49,71 @@ arrive out of order, be retried, or arrive more than once.
    whose sequence number is lower than the last one it has already
    processed for that resource.
 
+   **Commands also carry a relay epoch** — an identifier the relay
+   generates once per process start. An adapter resets its high-water
+   mark to zero whenever it sees an epoch different from the one it
+   last recorded, and only then applies the lower-sequence rule.
+   Without this the scheme deadlocks the entire system: the relay
+   holds all its state in memory (that is the premise of #178), so a
+   relay restart resets its counters to zero while adapters still hold
+   persisted high-water marks, and *every* subsequent command is
+   discarded as stale — permanently, curable only by clearing adapter
+   state by hand. That is precisely the "restart every adapter
+   manually" failure #178 exists to remove, and the relay restarts
+   routinely (three times during one day of work on it). The epoch
+   rides the registration message, which already carries node state
+   for the same reason.
+
 2. **Periodic full reconciliation.** Independent of event-driven
-   updates, each adapter reports its actual observed local connection
-   state for every resource type it manages on a fixed interval
-   (proposed: every 2 minutes), regardless of whether anything changed
-   since the last report. The relay compares this against its own
+   updates, each adapter reports its actual observed local state for
+   every resource type it manages on a fixed interval (proposed: every
+   2 minutes), regardless of whether anything changed since the last
+   report.
+
+   **What is reported is the audio route, not the Bluetooth link.**
+   This distinction is the whole correctness of the mechanism, so it is
+   named here rather than left to the implementer:
+
+   - **macOS** — is the headset the current default output device
+     (`kAudioHardwarePropertyDefaultOutputDevice`)?
+   - **Android** — is the headset the A2DP **active device**
+     (`mActiveDevice`)? Explicitly *not*
+     `BluetoothA2dp.getConnectionState() == STATE_CONNECTED`.
+
+   The obvious reading — "am I connected to the headset" — is wrong,
+   because multipoint headsets hold links to several hosts at once.
+   Measured on the reference devices while the **phone** held the
+   route: the Mac reported the AirPods as `Connected`, its default
+   output device was `MacBook Air Speakers`, and the phone reported
+   `mActiveDevice` for the same headset. Under the link reading both
+   adapters report "I hold it", the relay sees two holders, and the
+   drift is unresolvable — it would issue corrective commands forever.
+
+   **A report is suppressed, or marked `transitioning`, while a claim
+   or release is in flight on that resource.** A claim takes roughly
+   3-5 seconds to actually move the audio route on the reference
+   hardware; a snapshot taken inside that window reports "I do not hold
+   this" while the relay correctly believes the node does, and the
+   relay would "correct" a discrepancy that is simply the transition
+   still happening. Drift is only actionable when no transition is
+   outstanding. The relay compares this against its own
    recorded state, corrects any drift, and logs the discrepancy to
    telemetry — a mismatch is a leading indicator of a bug, not routine
    noise (see Consequences).
 
 3. **Local-state-first verification.** Before executing a claim or
-   release, an adapter checks the actual current local Bluetooth
-   connection state directly — not merely its own last-cached belief
-   about that state — and skips execution if the resource is already
-   in the target state, rather than blindly issuing a redundant
-   disconnect/reconnect cycle.
+   release, an adapter checks its actual current local state directly —
+   not merely its own last-cached belief about that state — and skips
+   execution if the resource is already in the target state, rather
+   than blindly issuing a redundant disconnect/reconnect cycle.
+
+   "Already in the target state" means the **audio-route** definition
+   in decision 2, and getting this wrong here is worse than in decision
+   2. Under the Bluetooth-link reading, a Mac that holds a multipoint
+   link but is *not* the audio route would consider itself already
+   claimed and **silently skip a claim it genuinely needs to execute**
+   — nothing logs it, nothing retries it, and the user simply does not
+   get their audio.
 
 ## Rationale
 State desync is the highest-leverage failure class to close, because
@@ -107,6 +170,29 @@ be replaced.
 This ADR does not depend on ADR 0014 (`claimMode`), which is still
 **Proposed**; ADR 0020's relay-independent manual-override path does,
 and is noted there.
+
+## Prerequisite: adapter reconnection (#182)
+
+Everything here is unreachable until adapters reconnect after losing
+their MQTT connection, which today they never do. #182 is therefore a
+**prerequisite of this ADR**, not an unrelated bug.
+
+Observed: deploying the relay restarted the broker, which dropped every
+client, and **neither adapter ever came back**. Both stayed running
+with their foreground notification up, looking healthy, publishing
+nothing — the failure is silent, because the crash-survivability work
+(#161) faithfully keeps the adapter alive while its transport is dead.
+A periodic reconciliation report from a node that cannot reach the
+relay is not a weaker guarantee; it is no guarantee at all.
+
+ADR 0020's decision 3 (reconnect jitter) already presumes this path
+exists. It does not yet.
+
+Re-registration should also fire **on reconnect**, not only on the
+periodic timer: reconnect is precisely the moment the relay's picture
+is most likely to be stale, and #178 made registration a safe,
+repeatable statement of current state rather than an edge, which is
+what makes that safe to do.
 
 ## Consequences
 - Every command message gains a sequence number field. This is a
