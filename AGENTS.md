@@ -88,6 +88,12 @@ The **resource-type segment** in MQTT topics (ADR 0015) and the
 
 Changes require an ADR and human review.
 
+**Command sequence numbers** (ADR 0018) and the **confirmed-outcome
+pattern** for claim/release — every command resolving to succeeded /
+failed / timed_out within a bounded timeout (ADR 0019) — are part of
+that same frozen contract. Changes require an ADR and human review,
+not a routine agent PR.
+
 **Note for whoever picks this up:** the currently-running Mac/Pixel
 implementation was built against the pre-ADR-0015 topic structure, with
 no resource-type segment, and is deployed and working against the live
@@ -97,6 +103,25 @@ adapters, changed together, since the two structures are mutually
 incompatible. With no customers and two devices this is a flag day
 rather than a staged rollout, and it should land **before** any
 peripheral (hid) adapter work is built on the old structure.
+
+**Reliability work comes before new feature surface.** The three
+reliability ADRs — 0018 (state reconciliation and command
+idempotency), 0019 (confirmed switch outcomes and failure telemetry)
+and 0020 (relay-side debouncing and defined offline behaviour) —
+should be implemented and verified against the existing Mac/Pixel
+implementation before peripheral (hid) adapter work or further
+focus-tracking work begins. All three add guarantees to the shared
+claim/release machinery, and retrofitting them gets harder with every
+resource type and adapter layered on top of the current two-node
+system. This sequencing sits alongside the ADR 0015 migration above,
+which is the other thing gating hid work.
+
+ADR 0018's command sequence number and the ADR 0015 topic migration
+change the same payloads in the same packages, and both are flag days
+across `packages/protocol`, `packages/relay-core`,
+`services/relay-hosted` and both adapters. **Land them together**, or
+if they must be split, 0015 first — see ADR 0018's "Sequencing against
+the ADR 0015 migration".
 
 ## Build-time configuration, not hardcoded endpoints
 
