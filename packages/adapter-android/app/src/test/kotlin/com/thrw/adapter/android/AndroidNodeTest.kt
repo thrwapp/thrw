@@ -105,6 +105,45 @@ private class Fixture {
 
 class AndroidNodeTest {
     /**
+     * #183, reproduced. A call that ends *inside* the self-cooldown
+     * window strands the relay with a `call` that never ends.
+     *
+     * 1. The call starts and is published; `activeEvents` gains `call`.
+     * 2. The relay claims, and `onClaim` arms the cooldown.
+     * 3. The call ends within those three seconds, so `endEvent` returns
+     *    early - before removing from `activeEvents`.
+     * 4. `CallTriggerMonitor` has already cleared its own flag, so it
+     *    never retries.
+     *
+     * The relay is left holding the highest-priority signal in the
+     * system forever, and #178's periodic registration *perpetuates* it
+     * by reporting `activeEvents: ["call"]` - the reconciliation that
+     * should repair this instead keeps it alive.
+     */
+    @Test
+    fun `a trigger ended inside the cooldown is not left reported as active`() = runTest {
+        var millis = 0L
+        val transport = FakeMqttTransport()
+        val node = AndroidNode(
+            ACCOUNT, NODE, HEADSET, transport,
+            BluetoothConnectionManager(RecordingGateway()),
+            selfCooldown = SelfCooldown(windowMs = 3_000) { millis },
+        )
+
+        node.emitEvent(EventKind.CALL, 0)
+        node.onClaim()
+        node.endEvent(EventKind.CALL)
+
+        node.register(MANIFEST)
+        assertEquals(
+            emptyList<String>(),
+            activeEventsOf(transport.published.last().payload),
+            "a suppressed end must not leave the trigger reported as active - #178 would keep it alive forever",
+        )
+    }
+
+
+    /**
      * #212. The cooldown exists so thrw ignores its **own** side effects
      * (#167). A manual claim is the user acting, not an echo, and ADR
      * 0010 says direct user action always wins - so it must go out even
