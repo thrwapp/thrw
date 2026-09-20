@@ -38,6 +38,19 @@ name: release
 # asset *label*, not its filename: v0.0.1 attached `app-release.apk`
 # while its notes told the reader to install `thrw-v0.0.1.apk`.
 #
+# **Notes are appended, never replaced.** Each publisher owns one
+# `<!-- platform-install -->` section and leaves the rest of the body
+# alone. `release-android.yml` originally set the whole body with
+# `--notes`, reasoning that a later `edit` is deterministic - it is, and
+# that was the bug: it ran after `release-mac.yml` and deleted the macOS
+# install instructions, so the Mac zip shipped undocumented, including
+# the Gatekeeper step a first install needs.
+#
+# Read-modify-write is not atomic and there is no atomic append in the
+# API, so each publisher re-reads after writing and retries if its own
+# marker has vanished. That self-heals an interleave instead of
+# depending on which workflow happens to finish last.
+#
 # A new platform publisher (#189) copies that pattern rather than reaching
 # for `softprops/action-gh-release`, whose default is a *published*
 # release. Mixing the two is what made this need fixing: the placeholder
