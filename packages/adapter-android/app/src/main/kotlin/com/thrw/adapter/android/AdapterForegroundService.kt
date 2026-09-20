@@ -19,6 +19,8 @@ import com.thrw.adapter.android.config.RelayCredentials
 import com.thrw.adapter.android.identity.AdapterProvisioning
 import com.thrw.adapter.android.identity.DeviceIdentity
 import com.thrw.adapter.android.mqtt.HiveMqttTransport
+import com.thrw.adapter.android.protocol.CommandSequenceGate
+import com.thrw.adapter.android.protocol.SharedPreferencesSequenceStore
 import com.thrw.adapter.android.triggers.AndroidCallStateSource
 import android.content.ComponentName
 import com.thrw.adapter.android.triggers.AndroidMediaSessionSource
@@ -191,7 +193,22 @@ class AdapterForegroundService : Service() {
             transport = hiveTransport
 
             val bluetooth = BluetoothConnectionManager(AndroidBluetoothClassicGateway(this@AdapterForegroundService))
-            val node = AndroidNode(accountId, nodeId, headsetAddress, hiveTransport, bluetooth)
+            // #210: the persisted high-water mark. In-memory is
+            // AndroidNode's default and is not enough here - Android
+            // kills and restarts this service routinely, and a mark
+            // that died with the process would let the broker's QoS 1
+            // redelivery re-run a command already acted on.
+            val sequenceGate = CommandSequenceGate(
+                SharedPreferencesSequenceStore(this@AdapterForegroundService),
+            )
+            val node = AndroidNode(
+                accountId,
+                nodeId,
+                headsetAddress,
+                hiveTransport,
+                bluetooth,
+                sequenceGate = sequenceGate,
+            )
 
             val callMonitor = CallTriggerMonitor(AndroidCallStateSource(this@AdapterForegroundService), node)
             val voipMonitor = VoipTriggerMonitor(AndroidNotificationSource(), node)

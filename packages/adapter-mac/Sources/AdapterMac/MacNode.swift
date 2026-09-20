@@ -69,6 +69,13 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// #191 - suppresses route observations taken mid-transition.
     private let routeTransition: RouteTransition
 
+    /// ADR 0018 decision 1 (#210). Discards a relay command that is
+    /// older than one this node has already acted on. Defaults to an
+    /// in-memory mark so tests and a node built without persistence
+    /// still work; `AppDelegate` supplies the `UserDefaults`-backed
+    /// one, which is what makes the guarantee survive a relaunch.
+    private let sequenceGate: CommandSequenceGate
+
     public init(
         accountId: String,
         nodeId: String,
@@ -77,7 +84,8 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
         bluetooth: BluetoothConnectionManager,
         selfCooldown: SelfCooldown = SelfCooldown(),
         routeObserver: AudioRouteObserver? = nil,
-        routeTransition: RouteTransition = RouteTransition()
+        routeTransition: RouteTransition = RouteTransition(),
+        sequenceGate: CommandSequenceGate = CommandSequenceGate()
     ) {
         self.accountId = accountId
         self.nodeId = nodeId
@@ -87,6 +95,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
         self.selfCooldown = selfCooldown
         self.routeObserver = routeObserver
         self.routeTransition = routeTransition
+        self.sequenceGate = sequenceGate
     }
 
     /// Publishes this node's manifest so the relay's device registry
@@ -188,10 +197,19 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
             guard let command = try? JSONDecoder().decode(CommandPayload.self, from: Data(payload.utf8)) else {
                 continue
             }
+            // ADR 0018 decision 1 (#210). Commands ride QoS 1, so the
+            // broker may redeliver - and does, on reconnect. Acting on
+            // a redelivered claim that arrives after a newer release
+            // would take the headset back from whoever now holds it.
+            guard sequenceGate.accepts(command) else { continue }
             switch command.type {
             case .claim: try await onClaim()
             case .release: try await onRelease()
             }
+            // Only after the command actually succeeded - a `try` that
+            // throws above skips this, so the mark stays where it is
+            // and the broker's redelivery gets to retry.
+            sequenceGate.record(command)
         }
     }
 

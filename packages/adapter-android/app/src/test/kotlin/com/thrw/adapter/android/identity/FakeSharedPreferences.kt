@@ -3,7 +3,8 @@ package com.thrw.adapter.android.identity
 import android.content.SharedPreferences
 
 /**
- * An in-memory [SharedPreferences] for [AdapterProvisioningTest].
+ * An in-memory [SharedPreferences] for [AdapterProvisioningTest] and
+ * [com.thrw.adapter.android.protocol.SharedPreferencesSequenceStoreTest].
  *
  * `SharedPreferences` is a plain interface, so unlike `Context` (an
  * abstract class whose every method is a stub returning null under
@@ -21,9 +22,13 @@ import android.content.SharedPreferences
  * reading a zero.
  */
 class FakeSharedPreferences : SharedPreferences {
-    private val values = mutableMapOf<String, String?>()
+    // `Any?` rather than `String?` since #210: the command sequence
+    // store keeps a Long alongside its String epoch, and a fake that
+    // could only hold strings would have forced the production store to
+    // stringify a number purely to suit the test.
+    private val values = mutableMapOf<String, Any?>()
 
-    override fun getString(key: String, defValue: String?): String? = values[key] ?: defValue
+    override fun getString(key: String, defValue: String?): String? = values[key] as? String ?: defValue
 
     override fun contains(key: String): Boolean = values.containsKey(key)
 
@@ -35,7 +40,7 @@ class FakeSharedPreferences : SharedPreferences {
 
     override fun getInt(key: String, defValue: Int): Int = TODO()
 
-    override fun getLong(key: String, defValue: Long): Long = TODO()
+    override fun getLong(key: String, defValue: Long): Long = values[key] as? Long ?: defValue
 
     override fun getFloat(key: String, defValue: Float): Float = TODO()
 
@@ -50,7 +55,7 @@ class FakeSharedPreferences : SharedPreferences {
     ) = TODO()
 
     private inner class FakeEditor : SharedPreferences.Editor {
-        private val pending = mutableMapOf<String, String?>()
+        private val pending = mutableMapOf<String, Any?>()
         private val removed = mutableSetOf<String>()
         private var cleared = false
 
@@ -79,7 +84,8 @@ class FakeSharedPreferences : SharedPreferences {
 
         override fun putInt(key: String, value: Int): SharedPreferences.Editor = TODO()
 
-        override fun putLong(key: String, value: Long): SharedPreferences.Editor = TODO()
+        override fun putLong(key: String, value: Long): SharedPreferences.Editor =
+            also { pending[key] = value }
 
         override fun putFloat(key: String, value: Float): SharedPreferences.Editor = TODO()
 

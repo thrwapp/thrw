@@ -272,7 +272,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 headsetIdentifier: headsetIdentifier,
                 transport: transport,
                 bluetooth: bluetooth,
-                routeObserver: routeObserver
+                routeObserver: routeObserver,
+                // #210: the persisted high-water mark. In-memory is
+                // MacNode's default and is not enough here - the app is
+                // relaunched at every login (#144's login item), and a
+                // mark that died with the process would let the
+                // broker's QoS 1 redelivery re-run a command already
+                // acted on.
+                sequenceGate: CommandSequenceGate(store: UserDefaultsSequenceStore())
             )
             self.node = node
             manualClaim = ManualClaim(node: node)
