@@ -222,9 +222,10 @@ https://cloud.google.com/vertex-ai/docs/generative-ai/quotas-genai.
 - `deploy.yml` assumes a `Dockerfile` at `services/relay-hosted/` — it
   doesn't exist yet. This runbook doesn't create one; that's separate
   work.
-- `release.yml`'s mac/android jobs are inline placeholders standing in
-  for a real Fastlane project (no `Gemfile`/`Fastfile` exists yet) -
-  also separate work.
+- `release.yml` no longer has mac/android jobs (#190). Android is built
+  by `release-android.yml`; macOS is not built yet and is tracked by
+  #189. The Fastlane placeholders that used to stand here were removed
+  rather than filled in - no `Gemfile`/`Fastfile` was ever added.
 
 ---
 

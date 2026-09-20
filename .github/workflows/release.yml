@@ -9,45 +9,39 @@ permissions:
   contents: write # required to upload release assets
   id-token: write # required for GCP Workload Identity Federation (announce job)
 
+# Which workflow builds what, so one tag produces one coherent Release
+# (#190):
+#
+# - **Android** is built by `release-android.yml`, which produces a real
+#   signed bundle and attaches it to this same Release. It is not built
+#   here. Before #190 a tag ran *two* Android jobs, and the one here
+#   attached `thrw-android-<tag>.txt` - a file whose entire contents were
+#   "TODO: fastlane android release lane not yet implemented." - to the
+#   same Release as the signed artifact, with nothing marking which was
+#   which.
+#
+# - **macOS** is not built yet. The job that used to sit here could never
+#   have run: it required `[self-hosted, macOS]` and this repository has
+#   **no self-hosted runners registered**, so on the first real tag it
+#   would have queued until the job timeout and taken `announce` - which
+#   depended on it - down with it. Removing it is what makes a tag
+#   complete at all. #189 adds the real lane, and per the note there it
+#   needs #187's credential steps or the artifact cannot authenticate.
+#
+# - **Linux** is built here, and is real work.
+#
+# The Fastlane TODOs that used to be here have gone with the jobs: there
+# is no Gemfile or Fastfile anywhere in the repository, so they described
+# a plan nobody took up, and a comment pointing at a project that does
+# not exist is worse than no comment.
+#
+# Known race, stated rather than papered over: `announce` can only depend
+# on jobs in *this* workflow, so it may run before `release-android.yml`
+# has finished attaching the bundle. GitHub Actions has no cross-workflow
+# dependency, and the alternatives (polling the Release, merging the two
+# workflows) cost more than the problem is worth while releases are
+# hand-cut.
 jobs:
-  mac:
-    runs-on: [self-hosted, macOS]
-    steps:
-      - uses: actions/checkout@v4
-
-      # No Fastlane project exists yet (no Gemfile/Fastfile) - this is a
-      # placeholder in place of a real `fastlane mac release` lane.
-      # TODO(release): add a Gemfile + Fastfile with a real mac lane
-      # (signing, notarization, upload) and replace this step with
-      # `bundle exec fastlane mac release`.
-      - name: Placeholder Fastlane mac lane
-        run: |
-          echo "TODO: fastlane mac release lane not yet implemented."
-          mkdir -p dist
-          echo "placeholder mac build for ${{ github.ref_name }}" > dist/thrw-mac-${{ github.ref_name }}.txt
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/thrw-mac-${{ github.ref_name }}.txt
-
-  android:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # TODO(release): add a Gemfile + Fastfile with a real android lane
-      # (signing, Play Store upload) and replace this step with
-      # `bundle exec fastlane android release`.
-      - name: Placeholder Fastlane android lane
-        run: |
-          echo "TODO: fastlane android release lane not yet implemented."
-          mkdir -p dist
-          echo "placeholder android build for ${{ github.ref_name }}" > dist/thrw-android-${{ github.ref_name }}.txt
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/thrw-android-${{ github.ref_name }}.txt
-
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -60,9 +54,18 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: packages/adapter-linux/target/release/libadapter_linux.*
+          # Draft, to agree with `release-android.yml`'s `gh release
+          # create --draft`. Without this the two workflows disagree and
+          # whichever finishes first decides whether the Release is
+          # published: this action defaults to publishing, so a tag could
+          # go public with only half its artifacts attached, depending on
+          # a race. Both now create a draft, and publishing stays a
+          # deliberate act once the assets are there.
+          draft: true
 
   announce:
-    needs: [mac, android, linux]
+    # Only `linux` remains in this workflow - see the note above.
+    needs: [linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
