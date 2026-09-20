@@ -20,6 +20,30 @@ import type { EventKind, NodeManifest, ResourceType } from "@thrw/protocol";
 const REGISTRATION_KIND = "register";
 const EVENT_END_KIND = "event_end";
 
+/**
+ * One structured line per thing the relay decided or failed to do (#207).
+ *
+ * Before this, the only `console.*` calls in this file were four error
+ * paths and a drift warning - so the log recorded what went *wrong* and
+ * never what happened. A handoff that worked left no trace at all, which
+ * makes "why did it switch then?" and "did it switch at all?"
+ * unanswerable after the fact, and those are exactly the questions a
+ * multi-day dogfood run produces.
+ *
+ * JSON rather than prose because these lines are meant to be filtered
+ * (`docker logs relay-service | jq 'select(.event == "claim")'`) and,
+ * later, ingested - ADR 0019's switch-success-rate metric and ADR 0018's
+ * reconciliation-mismatch metric both want this data, and a prose line
+ * would have to be re-parsed to get it. This is deliberately not a
+ * logging library: one function, no dependency, no configuration.
+ *
+ * `ts` is included rather than left to the log driver, so a line keeps
+ * its timestamp once it is copied out of Docker into an archive file.
+ */
+function logEvent(event: string, fields: Record<string, unknown>): void {
+  console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
+}
+
 // Wire shapes riding the (frozen) events topic alongside EventPayload,
 // distinguished by their `kind` discriminator - see
 // AndroidNode.kt/Payloads.kt's own kdoc (docs/handoffs/67.md, 68.md) and
@@ -236,11 +260,15 @@ export class RelayService {
     this.onRouteDrift =
       options.onRouteDrift ??
       ((drift) => {
-        console.warn(
-          `relay-hosted: route drift on ${drift.account} - ${drift.node} reports ` +
-            `holdsRoute=${drift.nodeHoldsRoute} while the recorded holder is ` +
-            `${drift.believedHolder ?? "(none)"}`,
-        );
+        // ADR 0018's consequences: a mismatch is a leading indicator of a
+        // bug, not routine noise. Structured so a nonzero steady-state
+        // rate is countable rather than something you notice by eye.
+        logEvent("route_drift", {
+          account: drift.account,
+          node: drift.node,
+          nodeHoldsRoute: drift.nodeHoldsRoute,
+          believedHolder: drift.believedHolder,
+        });
       });
     this.scheduler = options.scheduler ?? systemScheduler;
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
@@ -389,8 +417,15 @@ export class RelayService {
         this.client
           .publishCommand(state.account, node, resourceState.resource, { type: "claim" })
           .catch((error: unknown) => {
-          console.error(`relay-hosted: failed to re-publish claim to ${state.account}/${node}`, error);
-        });
+            logEvent("publish_failed", {
+              account: state.account,
+              resource: resourceState.resource,
+              node,
+              command: "claim",
+              reason: "reassert",
+              error: String(error),
+            });
+          });
       }
 
       // #222. Registration is the only thing that runs after a relay
@@ -430,7 +465,11 @@ export class RelayService {
         state.lastHeartbeatAt.set(node, this.now());
       })
       .catch((error: unknown) => {
-        console.error(`relay-hosted: heartbeat subscribe failed for ${state.account}/${node}`, error);
+        logEvent("heartbeat_subscribe_failed", {
+          account: state.account,
+          node,
+          error: String(error),
+        });
       });
   }
 
@@ -494,14 +533,33 @@ export class RelayService {
     // doesn't need to block on. Same `.catch` reasoning too - a failed
     // publish must not crash the process out from under every other
     // account this service is still managing.
+    logEvent("holder_change", {
+      account,
+      resource,
+      from: previousHolder,
+      to: nextHolder,
+    });
+
     if (previousHolder !== null) {
       this.client.publishCommand(account, previousHolder, resource, { type: "release" }).catch((error: unknown) => {
-        console.error(`relay-hosted: failed to publish release to ${account}/${previousHolder}`, error);
+        logEvent("publish_failed", {
+          account,
+          resource,
+          node: previousHolder,
+          command: "release",
+          error: String(error),
+        });
       });
     }
     if (nextHolder !== null) {
       this.client.publishCommand(account, nextHolder, resource, { type: "claim" }).catch((error: unknown) => {
-        console.error(`relay-hosted: failed to publish claim to ${account}/${nextHolder}`, error);
+        logEvent("publish_failed", {
+          account,
+          resource,
+          node: nextHolder,
+          command: "claim",
+          error: String(error),
+        });
       });
     }
 

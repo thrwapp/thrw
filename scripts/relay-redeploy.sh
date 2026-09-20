@@ -42,6 +42,43 @@ ACCESS_TOKEN=$(curl -s -H "Metadata-Flavor: Google" \
 echo "$ACCESS_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://${ARTIFACT_HOST}"
 docker pull "$IMAGE_REF"
 docker pull "$RELAY_SERVICE_IMAGE_REF"
+# Archive the outgoing container's logs before removing it (#207).
+#
+# `docker rm` destroys a container's logs with it, and this script runs on
+# every relay change merged to main - so the record of what the relay did
+# was being deleted routinely, and "what happened yesterday" had no
+# answer. Adapters reconnect after a redeploy (#182) but their evidence
+# does not come back.
+#
+# Best-effort by design: a failure to archive must never block a
+# redeploy. Keeps the last 20 archives, which at this cadence is weeks.
+# Under $HOME, not /var/log: nothing in this script uses sudo (docker
+# runs via the SSH user's docker group), so /var/log/thrw would not be
+# writable and archiving would silently do nothing - the failure mode
+# this whole change exists to remove. Adding sudo for a log copy would
+# be a privilege escalation in exchange for a nicer path.
+LOG_ARCHIVE_DIR="${THRW_LOG_ARCHIVE_DIR:-$HOME/thrw-logs}"
+
+archive_logs() {
+  container="$1"
+  if ! mkdir -p "$LOG_ARCHIVE_DIR"; then
+    echo "WARNING: cannot create $LOG_ARCHIVE_DIR - $container logs will be lost on rm" >&2
+    return 0
+  fi
+  if docker inspect "$container" >/dev/null 2>&1; then
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    target="$LOG_ARCHIVE_DIR/${container}-${stamp}.log"
+    if docker logs "$container" > "$target" 2>&1; then
+      echo "Archived $container logs to $target ($(wc -l < "$target") lines)"
+    else
+      echo "WARNING: could not archive $container logs" >&2
+    fi
+  fi
+  # shellcheck disable=SC2012  # names are ours, no odd characters
+  ls -1t "$LOG_ARCHIVE_DIR/${container}"-*.log 2>/dev/null | tail -n +21 | xargs -r rm -f || true
+}
+
+archive_logs relay
 docker stop relay || true
 docker rm relay || true
 
@@ -59,7 +96,11 @@ trap 'rm -f "$ENV_FILE"' EXIT
   printf 'EMQX_RELAY_PASSWORD=%s\n' "$EMQX_RELAY_PASSWORD"
 } > "$ENV_FILE"
 
+# Bounded live logs (#207). Docker's json-file driver is unbounded by
+# default, so a long-lived container can fill the VM's disk - which on
+# this single VM would take the broker down with it.
 docker run -d --name relay --restart unless-stopped \
+  --log-opt max-size=20m --log-opt max-file=5 \
   -p 8083:8083 -p 18083:18083 \
   --env-file "$ENV_FILE" \
   "$IMAGE_REF"
@@ -127,6 +168,7 @@ fi
 # service credential management before services/accounts exists is
 # premature (#129's own acceptance criteria asked this be a documented
 # choice, not necessarily the more elaborate one).
+archive_logs relay-service
 docker stop relay-service || true
 docker rm relay-service || true
 
@@ -144,6 +186,7 @@ trap 'rm -f "$ENV_FILE" "$RELAY_SERVICE_ENV_FILE"' EXIT
 } > "$RELAY_SERVICE_ENV_FILE"
 
 docker run -d --name relay-service --restart unless-stopped \
+  --log-opt max-size=20m --log-opt max-file=5 \
   --network host \
   --env-file "$RELAY_SERVICE_ENV_FILE" \
   "$RELAY_SERVICE_IMAGE_REF"
