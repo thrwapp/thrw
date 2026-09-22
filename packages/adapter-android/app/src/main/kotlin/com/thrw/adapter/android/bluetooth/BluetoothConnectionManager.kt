@@ -1,7 +1,30 @@
 package com.thrw.adapter.android.bluetooth
 
+import android.util.Log
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
+
+/**
+ * The bound every adapter enforces on a claim or release (ADR 0019).
+ *
+ * **This must stay equal to `packages/protocol`'s
+ * `COMMAND_OUTCOME_TIMEOUT_MS` and `adapter-mac`'s
+ * `commandOutcomeTimeout`.** Three hand-written declarations of one
+ * number, and nothing else catches them drifting — the same situation as
+ * the heartbeat interval, which carries the same warning.
+ *
+ * #206 criterion 2 requires it be identical everywhere: an adapter
+ * choosing its own bound makes the aggregate switch success rate
+ * meaningless, because an outcome would not mean the same thing in every
+ * row.
+ *
+ * It guarantees **termination, not latency** — ADR 0007 owns latency,
+ * with its own 3.5-4s p95 SLO, against a 3-5s real switch on the
+ * reference hardware.
+ */
+const val COMMAND_OUTCOME_TIMEOUT_MS = 8_000L
 
 /**
  * Manages Bluetooth Classic connect/disconnect for paired headsets,
@@ -59,11 +82,48 @@ class BluetoothConnectionManager(
                 shouldConnect = true
             }
         }
-        if (!shouldConnect) return
+        if (!shouldConnect) {
+            // #244 criterion 2. Skipping a genuinely concurrent claim, or
+            // one for a device that really does hold the route, is
+            // correct. Doing it *silently* is what made the stuck case
+            // undiagnosable: the only external symptom was a route_drift
+            // every two minutes with no reason attached.
+            Log.i(TAG, "claim skipped for $deviceAddress (state=$previous)")
+            return
+        }
 
         try {
-            gateway.connect(deviceAddress)
+            // #244. Bounded so `states` always resolves. Before this, a
+            // gateway.connect that never returned left the state at
+            // CONNECTING with neither the success nor the catch path
+            // running - and the CONNECTING branch above returns early
+            // *without* the route second-guess that rescues a stale
+            // CONNECTED, so every later claim for this device was skipped
+            // silently for the life of the process.
+            //
+            // Observed on the reference Pixel: relay holder, connected,
+            // registering every 120s, no connection attempt for over half
+            // an hour. Restarting the service - which clears this map and
+            // nothing else - fixed it immediately.
+            withTimeout(COMMAND_OUTCOME_TIMEOUT_MS) {
+                gateway.connect(deviceAddress)
+            }
             mutex.withLock { states[deviceAddress] = BluetoothConnectionState.CONNECTED }
+        } catch (e: TimeoutCancellationException) {
+            // Caught ahead of the general handler below: withTimeout's
+            // exception is a CancellationException, so letting it reach a
+            // bare `catch (e: Exception)` would be indistinguishable from
+            // the caller cancelling us. They need different reason codes
+            // once ADR 0019's outcome reporting lands (`timed_out` vs the
+            // caller going away), and lumping them together is how this
+            // class of failure stayed invisible.
+            mutex.withLock { states[deviceAddress] = BluetoothConnectionState.DISCONNECTED }
+            Log.e(
+                TAG,
+                "connect did not resolve within ${COMMAND_OUTCOME_TIMEOUT_MS}ms for $deviceAddress " +
+                    "- giving up so later claims are not skipped",
+            )
+            throw e
         } catch (e: Exception) {
             mutex.withLock { states[deviceAddress] = BluetoothConnectionState.DISCONNECTED }
             throw e
@@ -96,4 +156,8 @@ class BluetoothConnectionManager(
     /** Current known connection state for [deviceAddress]; unknown devices report DISCONNECTED. */
     suspend fun connectionState(deviceAddress: String): BluetoothConnectionState =
         mutex.withLock { states[deviceAddress] ?: BluetoothConnectionState.DISCONNECTED }
+
+    private companion object {
+        private const val TAG = "BluetoothConnection"
+    }
 }

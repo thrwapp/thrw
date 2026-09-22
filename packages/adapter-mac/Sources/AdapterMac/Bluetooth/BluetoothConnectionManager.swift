@@ -24,9 +24,19 @@ public actor BluetoothConnectionManager {
     /// exactly as it did before #225.
     private let routeSource: DeviceAudioRouteSource?
 
-    public init(gateway: BluetoothPeripheralGateway, routeSource: DeviceAudioRouteSource? = nil) {
+    /// #244. Injectable purely so tests don't wait on wall time - the
+    /// same reasoning `HeartbeatPublisher`'s injectable `sleep` uses.
+    /// Production callers take ``commandOutcomeTimeout``.
+    private let connectTimeout: Duration
+
+    public init(
+        gateway: BluetoothPeripheralGateway,
+        routeSource: DeviceAudioRouteSource? = nil,
+        connectTimeout: Duration = commandOutcomeTimeout
+    ) {
         self.gateway = gateway
         self.routeSource = routeSource
+        self.connectTimeout = connectTimeout
     }
 
     /// Connects to `deviceIdentifier`. A no-op if that device is already
@@ -56,24 +66,73 @@ public actor BluetoothConnectionManager {
     /// duplicate. A `nil` route reading means "cannot tell", which is no
     /// reason to override a cached state that may well be right.
     ///
+    /// ## Why `.connecting` is now bounded (#244)
+    ///
+    /// The `.connecting` skip above is correct for a claim that really
+    /// is in flight, and wrong for one that never completed. Before
+    /// #244 nothing guaranteed the second case could not happen: if
+    /// `gateway.connect` never returned, neither the success nor the
+    /// `catch` path ran, `states` stayed at `.connecting`, and **every
+    /// subsequent claim for that device was skipped silently for the
+    /// life of the process** - no log, no retry, no audio.
+    ///
+    /// That is not hypothetical. On the reference Pixel the phone was
+    /// the relay's holder, connected, registering every 120s, and made
+    /// no Bluetooth connection attempt for over half an hour; the only
+    /// external symptom was a `route_drift` every two minutes with no
+    /// reason attached. Restarting the process - which clears this map
+    /// and nothing else - fixed it immediately.
+    ///
+    /// The bound is ``commandOutcomeTimeout``, so the state machine
+    /// always resolves: either `.connected`, or `.disconnected` with an
+    /// error thrown. ADR 0018 decision 3's route second-guess rescued a
+    /// stale `.connected`; this is the same protection for `.connecting`,
+    /// which it did not cover.
+    ///
     /// Mirrors `adapter-android`'s `BluetoothConnectionManager.connect`
     /// - change both together.
     public func connect(deviceIdentifier: UUID) async throws {
         switch states[deviceIdentifier] {
         case .connecting:
+            // #244 criterion 2. Skipping a genuinely concurrent claim is
+            // correct; doing it silently is what made the stuck case
+            // undiagnosable from outside.
+            logAdapterInfo(
+                category: "BluetoothConnectionManager",
+                "claim skipped: a connect is already in flight for \(deviceIdentifier)"
+            )
             return
         case .connected:
-            guard routeSource?.holdsAudioRoute(deviceIdentifier: deviceIdentifier) == false else { return }
+            guard routeSource?.holdsAudioRoute(deviceIdentifier: deviceIdentifier) == false else {
+                logAdapterInfo(
+                    category: "BluetoothConnectionManager",
+                    "claim skipped: already connected and holding the route for \(deviceIdentifier)"
+                )
+                return
+            }
             states[deviceIdentifier] = .connecting
         case .disconnected, .disconnecting, .none:
             states[deviceIdentifier] = .connecting
         }
 
         do {
-            try await gateway.connect(deviceIdentifier: deviceIdentifier)
+            let gateway = self.gateway
+            try await withBluetoothTimeout(
+                connectTimeout,
+                deviceIdentifier: deviceIdentifier,
+                operation: "connect"
+            ) {
+                try await gateway.connect(deviceIdentifier: deviceIdentifier)
+            }
             states[deviceIdentifier] = .connected
         } catch {
             states[deviceIdentifier] = .disconnected
+            if error is BluetoothOperationTimedOut {
+                logAdapterError(
+                    category: "BluetoothConnectionManager",
+                    "connect did not resolve within \(connectTimeout) for \(deviceIdentifier) - giving up so later claims are not skipped"
+                )
+            }
             throw error
         }
     }

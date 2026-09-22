@@ -188,9 +188,24 @@ class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway
 
     /**
      * `getProfileProxy` is callback-based and can legitimately never call
-     * back (Bluetooth off, profile unsupported), so this resumes with
-     * `null` rather than suspending forever - the caller treats a missing
-     * proxy as "that profile isn't available", not as a hang.
+     * back (Bluetooth off, profile unsupported), so a `false` return
+     * resumes with `null` rather than suspending - the caller treats a
+     * missing proxy as "that profile isn't available".
+     *
+     * **That covers the `false` return only.** If `getProfileProxy`
+     * returns `true` and `onServiceConnected` is then never called, this
+     * suspends indefinitely. An earlier version of this comment claimed
+     * the guarantee unconditionally, which was wrong.
+     *
+     * Whether that is what hung the reference Pixel in #244 was **not**
+     * established: the state was cleared by a restart before it could be
+     * instrumented, and this is only the most plausible of several
+     * candidates. So the fix is deliberately not here —
+     * [BluetoothConnectionManager] bounds the whole connect with
+     * `COMMAND_OUTCOME_TIMEOUT_MS`, which covers a hang wherever it
+     * originates, including one nobody has thought of. Cancellation does
+     * propagate into the [suspendCancellableCoroutine] below, so that
+     * outer bound genuinely unsticks this rather than leaking it.
      */
     @SuppressLint("MissingPermission")
     private suspend fun awaitProxy(profile: Int): BluetoothProfile? =
