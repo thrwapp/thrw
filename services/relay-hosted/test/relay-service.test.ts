@@ -432,6 +432,94 @@ describe("RelayService (real broker)", () => {
     await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }, { type: "release" }]);
   });
 
+  // #236. The production relay logged the headset alternating Mac <->
+  // Pixel every ~90-120s for nine and a half hours overnight with nobody
+  // touching either device. This is that, reproduced deterministically.
+  //
+  // The trigger is an adapter whose heartbeat publisher has died while
+  // its MQTT connection is still up - `HeartbeatPublisher.run()` is a
+  // `while true` loop that exits on the first throw from
+  // `publishHeartbeat()`, and `NodeRuntime` logs that and never restarts
+  // it (`heartbeatPublisher failed: noConnection` was observed on the
+  // deployed Mac adapter, process still alive and still connected).
+  //
+  // Such a node still registers every 120s. That is enough on its own,
+  // because `trackHeartbeat` treats a registration as liveness evidence.
+  it("oscillates the holder when a registering node never heartbeats (#236)", async () => {
+    const account = randomUUID();
+    const nodeA = manifest();
+    const nodeB = manifest();
+    const scheduler = new FakeScheduler();
+    let now = 0;
+    const service = await startService([account], scheduler, () => now);
+
+    const holders: (string | null)[] = [];
+    const record = () => holders.push(service.engineFor(account)?.currentHolder() ?? null);
+
+    // Both nodes are genuinely playing media the whole time. Neither ever
+    // publishes to its heartbeat topic - the only thing either sends is
+    // its periodic registration, carrying the trigger it still has active.
+    await publishRegistration(rawClient, account, nodeA, ["media"]);
+    await expect.poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 }).toBe(nodeA.nodeId);
+    await publishRegistration(rawClient, account, nodeB, ["media"]);
+    await expect.poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 }).toBe(nodeB.nodeId);
+
+    // Registration cycles, offset the way two independent 120s timers
+    // would be, with the 90s reap falling between them.
+    for (const node of [nodeA, nodeB, nodeA, nodeB, nodeA, nodeB]) {
+      now += 90_001;
+      scheduler.fire(5_000); // the sweep reaps whoever last registered
+      record();
+
+      await publishRegistration(rawClient, account, node, ["media"]);
+      await expect.poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 }).toBe(node.nodeId);
+      record();
+    }
+
+    // Every re-registration takes the headset back, because forgetNode
+    // dropped the signal entirely and reconcileSignals re-adds it with a
+    // fresh orderCounter - so it looks like the most recently started
+    // trigger. Nothing about either device changed.
+    const handoffs = holders.filter((h, i) => i > 0 && h !== holders[i - 1]).length;
+    expect(handoffs).toBeGreaterThanOrEqual(6);
+    expect(holders.filter((h) => h === nodeA.nodeId).length).toBeGreaterThan(0);
+    expect(holders.filter((h) => h === nodeB.nodeId).length).toBeGreaterThan(0);
+  });
+
+  it("does not oscillate when the same nodes keep heartbeating (#236 control)", async () => {
+    // The control the test above needs to mean anything: identical
+    // registrations, identical timings, the one difference being that
+    // both nodes actually beat. The holder must not move.
+    const account = randomUUID();
+    const nodeA = manifest();
+    const nodeB = manifest();
+    const scheduler = new FakeScheduler();
+    let now = 0;
+    const service = await startService([account], scheduler, () => now);
+
+    await publishRegistration(rawClient, account, nodeA, ["media"]);
+    await expect.poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 }).toBe(nodeA.nodeId);
+    await publishRegistration(rawClient, account, nodeB, ["media"]);
+    await expect.poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 }).toBe(nodeB.nodeId);
+
+    const holders: (string | null)[] = [];
+    for (const node of [nodeA, nodeB, nodeA, nodeB, nodeA, nodeB]) {
+      // A beat from both, well inside the 90s budget, exactly as a
+      // healthy adapter's 30s loop would send.
+      await publishJson(rawClient, heartbeatTopic(account, nodeA.nodeId), {});
+      await publishJson(rawClient, heartbeatTopic(account, nodeB.nodeId), {});
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      now += 60_000;
+      scheduler.fire(5_000);
+      await publishRegistration(rawClient, account, node, ["media"]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      holders.push(service.engineFor(account)?.currentHolder() ?? null);
+    }
+
+    expect(new Set(holders)).toEqual(new Set([nodeB.nodeId]));
+  });
+
   it("drops an unrecognized payload shape instead of throwing or registering anything", async () => {
     const account = randomUUID();
     const node = randomUUID();

@@ -62,10 +62,61 @@ public final class HeartbeatPublisher {
     /// this loop - the relay doesn't subscribe to a node's heartbeat
     /// topic until it has seen that node register, so a beat sent any
     /// earlier is published to nobody.
+    ///
+    /// ## A failed beat does not end the loop (#236)
+    ///
+    /// This used to be `try await sink.publishHeartbeat()` directly in the
+    /// loop body, so **one** throw ended it permanently. ``NodeRuntime``
+    /// catches and logs that, and nothing ever restarts it; `onReconnected`
+    /// only re-registers. So a single transient publish failure - an MQTT
+    /// drop lasting one beat - silently stopped this node heartbeating for
+    /// the rest of the process's life, while it stayed connected and kept
+    /// re-registering every 120s.
+    ///
+    /// That is not a quiet degradation. The relay seeds node liveness from
+    /// each registration (`relay-service.ts`'s `handleEvent` ->
+    /// `trackHeartbeat`) and reaps at 90s, and reaping drops every signal
+    /// the node had via `PriorityEngine.forgetNode`. A node that registers
+    /// but never beats therefore takes the headset on every registration
+    /// and loses it 90s later, forever. Two such nodes ping-pong: observed
+    /// in production for nine and a half hours overnight, ~30 handoffs an
+    /// hour, with nobody using either device.
+    ///
+    /// Retrying is safe: a heartbeat is a bare liveness ping at QoS 0 with
+    /// no payload state, so a lost one has no consequence beyond being
+    /// lost. The retry cadence is just `interval` - failing still sleeps,
+    /// so a broker that is down cannot turn this into a hot loop, and no
+    /// backoff is needed on top of an already-30s period.
+    ///
+    /// Cancellation still ends the loop, and is deliberately re-thrown
+    /// rather than swallowed by the `catch` - ``NodeRuntime`` distinguishes
+    /// the two, and treating a cancelled task as a publish failure would
+    /// log an error on every ordinary app quit.
     public func run() async throws {
+        // Logged on transition only, not per beat: a broker that is down
+        // for an hour would otherwise write 120 identical lines, and the
+        // signal worth having is "when did it break" and "did it come
+        // back", not "it is still broken".
+        var isFailing = false
         while true {
             try Task.checkCancellation()
-            try await sink.publishHeartbeat()
+            do {
+                try await sink.publishHeartbeat()
+                if isFailing {
+                    isFailing = false
+                    logAdapterInfo(category: "HeartbeatPublisher", "heartbeat resumed")
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if !isFailing {
+                    isFailing = true
+                    logAdapterError(
+                        category: "HeartbeatPublisher",
+                        "heartbeat publish failed, retrying every \(interval): \(String(describing: error))"
+                    )
+                }
+            }
             try await sleep(interval)
         }
     }

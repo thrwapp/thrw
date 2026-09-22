@@ -17,6 +17,7 @@ private final class RecordingHeartbeatSink: HeartbeatSink, @unchecked Sendable {
     private let lock = NSLock()
     private var _beats = 0
     private var _failOnBeat: Int?
+    private var _cancelOnBeat: Int?
 
     struct Boom: Error {}
 
@@ -32,11 +33,22 @@ private final class RecordingHeartbeatSink: HeartbeatSink, @unchecked Sendable {
         _failOnBeat = beat
     }
 
+    /// #236 - distinguishes "the publish failed" from "the task was
+    /// cancelled". ``HeartbeatPublisher/run()`` must swallow the first
+    /// and re-throw the second, so a test needs to provoke each.
+    func failCancellationOnBeat(_ beat: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        _cancelOnBeat = beat
+    }
+
     func publishHeartbeat() async throws {
         lock.lock()
         _beats += 1
         let shouldFail = _beats == _failOnBeat
+        let shouldCancel = _beats == _cancelOnBeat
         lock.unlock()
+        if shouldCancel { throw CancellationError() }
         if shouldFail { throw Boom() }
     }
 }
@@ -106,20 +118,54 @@ final class HeartbeatPublisherTests: XCTestCase {
         XCTAssertEqual(defaultHeartbeatInterval, .seconds(30))
     }
 
-    func testAFailedBeatPropagatesRatherThanSpinningSilently() async {
+    /// #236. This is the reverse of the assertion it replaces, which
+    /// required a failed beat to propagate out of `run()` on the grounds
+    /// that "a transport that can't publish is worth surfacing, not
+    /// swallowing into an invisible retry."
+    ///
+    /// The concern was right; the remedy was not. Propagating ends the
+    /// loop, ``NodeRuntime`` logs it once, and nothing restarts it - so
+    /// the node goes on registering every 120s while never beating again,
+    /// which makes the relay reap it 90s after each registration and hand
+    /// the headset back and forth indefinitely (nine and a half hours of
+    /// it in production - see ``HeartbeatPublisher/run()``'s own kdoc).
+    /// "Surfaced" is now the transition log line inside `run()`, which
+    /// costs nothing and does not stop the node heartbeating.
+    func testAFailedBeatDoesNotEndTheLoop() async {
         let sink = RecordingHeartbeatSink()
         sink.failOnBeat(1)
+        let publisher = HeartbeatPublisher(sink: sink, interval: .seconds(30), sleep: sleepStub(afterSleeps: 5))
+
+        do {
+            try await publisher.run()
+            XCTFail("expected the stub's cancellation to end the loop")
+        } catch is CancellationError {
+            // The only thing that should ever end this loop.
+        } catch {
+            XCTFail("a publish failure must not escape run(): \(error)")
+        }
+
+        // Beat 1 threw; beats 2-5 still went out. Before #236 this was 1.
+        XCTAssertEqual(sink.beats, 5, "expected beating to continue after a failed beat")
+    }
+
+    /// The other half: cancellation must still escape, or nothing can
+    /// stop the loop and ``NodeRuntime`` logs an error on every app quit.
+    func testCancellationFromAPublishIsNotTreatedAsAFailure() async {
+        let sink = RecordingHeartbeatSink()
+        sink.failCancellationOnBeat(1)
         let publisher = HeartbeatPublisher(sink: sink, interval: .seconds(30), sleep: sleepStub(afterSleeps: 10))
 
         do {
             try await publisher.run()
-            XCTFail("expected the publish failure to propagate")
-        } catch is RecordingHeartbeatSink.Boom {
-            // NodeRuntime logs this - a transport that can't publish is
-            // worth surfacing, not swallowing into an invisible retry.
+            XCTFail("expected cancellation to propagate")
+        } catch is CancellationError {
+            // Correct - re-thrown by run()'s `catch is CancellationError`.
         } catch {
             XCTFail("unexpected error: \(error)")
         }
+
+        XCTAssertEqual(sink.beats, 1, "expected no beat after the cancelled one")
     }
 
     func testStopsBeatingOnceTheTaskIsCancelled() async throws {

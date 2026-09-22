@@ -29,3 +29,20 @@ func logAdapterError(category: String, _ message: String) {
     FileHandle.standardError.write(Data("\(category): \(message)\n".utf8))
     #endif
 }
+
+/// The non-error half, for a state change worth recording that isn't a
+/// failure - specifically, recovery from one (#236).
+///
+/// Added because a failure logged once and never followed up reads
+/// identically to a failure that is still ongoing. #236 was exactly that:
+/// a single `heartbeatPublisher failed: noConnection` line, and no way to
+/// tell from the log whether heartbeats had come back. Recording the
+/// recovery is what makes the absence of a recovery line meaningful.
+func logAdapterInfo(category: String, _ message: String) {
+    #if canImport(os)
+    Logger(subsystem: "app.thrw.mac", category: category)
+        .info("\(message, privacy: .public)")
+    #else
+    FileHandle.standardError.write(Data("\(category): \(message)\n".utf8))
+    #endif
+}
