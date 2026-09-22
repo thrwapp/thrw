@@ -1,5 +1,7 @@
 package com.thrw.adapter.android.bluetooth
 
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -20,10 +22,23 @@ private class FakeBluetoothClassicGateway : BluetoothClassicGateway {
     /** What [isAudioRouteActive] reports; null means "cannot tell". */
     var routeActive: Boolean? = null
 
+    /**
+     * #244. Makes the next connect never resolve on its own - the case
+     * that used to strand `states` at CONNECTING and silently disable
+     * every later claim for the life of the process.
+     */
+    var hangNextConnect = false
+
     override suspend fun isAudioRouteActive(deviceAddress: String): Boolean? = routeActive
 
     override suspend fun connect(deviceAddress: String) {
         connectCalls += deviceAddress
+        if (hangNextConnect) {
+            hangNextConnect = false
+            // Suspends until cancelled, which is exactly what the
+            // manager's withTimeout has to do to it.
+            awaitCancellation()
+        }
         if (failNextConnect) {
             failNextConnect = false
             throw IllegalStateException("simulated connect failure")
@@ -43,6 +58,66 @@ private const val ADDRESS = "AA:BB:CC:DD:EE:FF"
 private const val OTHER_ADDRESS = "11:22:33:44:55:66"
 
 class BluetoothConnectionManagerTest {
+    /**
+     * #244, reproduced. A `gateway.connect` that never returns used to
+     * leave `states` at CONNECTING with neither the success nor the
+     * catch path running - and the CONNECTING branch returns early
+     * *without* the route second-guess that rescues a stale CONNECTED,
+     * so every later claim for that device was skipped silently for the
+     * life of the process.
+     *
+     * Observed on the reference Pixel: relay holder, connected,
+     * registering every 120s, no Bluetooth connection attempt for over
+     * half an hour, nothing logged. Restarting the service - which
+     * clears this map and nothing else - fixed it immediately.
+     *
+     * `runTest`'s virtual clock means the real 8s bound is asserted
+     * without waiting 8s, so unlike `adapter-mac` no injectable timeout
+     * is needed here.
+     */
+    @Test
+    fun `a connect that never resolves times out rather than sticking at CONNECTING`() = runTest {
+        val gateway = FakeBluetoothClassicGateway()
+        gateway.hangNextConnect = true
+        val manager = BluetoothConnectionManager(gateway)
+
+        assertFailsWith<TimeoutCancellationException> { manager.connect(ADDRESS) }
+
+        // The property that matters: the state resolved. Before #244 it
+        // stayed CONNECTING forever.
+        assertEquals(BluetoothConnectionState.DISCONNECTED, manager.connectionState(ADDRESS))
+    }
+
+    /**
+     * The consequence of the above, and the actual user-visible bug: a
+     * later claim is attempted rather than silently dropped.
+     */
+    @Test
+    fun `a claim after a timed-out connect is still attempted`() = runTest {
+        val gateway = FakeBluetoothClassicGateway()
+        gateway.hangNextConnect = true
+        val manager = BluetoothConnectionManager(gateway)
+
+        runCatching { manager.connect(ADDRESS) }
+        manager.connect(ADDRESS)
+
+        assertEquals(
+            listOf(ADDRESS, ADDRESS),
+            gateway.connectCalls,
+            "a claim after a hung one must not be skipped - this is #244",
+        )
+        assertEquals(BluetoothConnectionState.CONNECTED, manager.connectionState(ADDRESS))
+    }
+
+    @Test
+    fun `the timeout is the 8 seconds ADR 0019 specifies`() {
+        // Must equal packages/protocol's COMMAND_OUTCOME_TIMEOUT_MS and
+        // adapter-mac's commandOutcomeTimeout. Three hand-written copies
+        // of one number; #206 criterion 2 requires they agree or the
+        // aggregate switch success rate is meaningless.
+        assertEquals(8_000L, COMMAND_OUTCOME_TIMEOUT_MS)
+    }
+
     /**
      * ADR 0018 decision 3, corrected by #186. A multipoint headset can
      * keep its Bluetooth link to this device while the route moves to

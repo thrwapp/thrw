@@ -177,6 +177,73 @@ final class BluetoothConnectionManagerRouteTests: XCTestCase {
         XCTAssertEqual(state, .connected)
     }
 
+    // MARK: - a connect that never resolves (#244)
+
+    /// #244, reproduced. A `gateway.connect` that never returns used to
+    /// leave `states` at `.connecting` with neither the success nor the
+    /// `catch` path running - and the `.connecting` branch returns early
+    /// *without* the route second-guess that rescues a stale
+    /// `.connected`, so every later claim for that device was skipped
+    /// silently for the life of the process.
+    ///
+    /// Observed on the reference Pixel: relay holder, connected,
+    /// registering every 120s, no Bluetooth connection attempt for over
+    /// half an hour, nothing logged. Restarting the process - which
+    /// clears this map and nothing else - fixed it immediately.
+    func testAConnectThatNeverResolvesTimesOutRatherThanStickingAtConnecting() async {
+        let gateway = FakeBluetoothPeripheralGateway()
+        gateway.blockNextConnect = true
+        let manager = BluetoothConnectionManager(
+            gateway: gateway,
+            connectTimeout: .milliseconds(50)
+        )
+
+        do {
+            try await manager.connect(deviceIdentifier: deviceIdentifier)
+            XCTFail("expected the bounded connect to time out")
+        } catch let error as BluetoothOperationTimedOut {
+            XCTAssertEqual(error.deviceIdentifier, deviceIdentifier)
+            XCTAssertEqual(error.operation, "connect")
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        // The property that matters: the state resolved. Before #244 it
+        // stayed `.connecting` for the life of the process.
+        let state = await manager.connectionState(deviceIdentifier: deviceIdentifier)
+        XCTAssertEqual(state, .disconnected)
+    }
+
+    /// The consequence of the above, and the actual user-visible bug: a
+    /// later claim is attempted rather than silently dropped.
+    func testAClaimAfterATimedOutConnectIsStillAttempted() async throws {
+        let gateway = FakeBluetoothPeripheralGateway()
+        gateway.blockNextConnect = true
+        let manager = BluetoothConnectionManager(
+            gateway: gateway,
+            connectTimeout: .milliseconds(50)
+        )
+
+        _ = try? await manager.connect(deviceIdentifier: deviceIdentifier)
+        try await manager.connect(deviceIdentifier: deviceIdentifier)
+
+        XCTAssertEqual(
+            gateway.connectCalls,
+            [deviceIdentifier, deviceIdentifier],
+            "a claim after a hung one must not be skipped - this is #244"
+        )
+        let state = await manager.connectionState(deviceIdentifier: deviceIdentifier)
+        XCTAssertEqual(state, .connected)
+    }
+
+    func testTheTimeoutIsTheEightSecondsAdr0019Specifies() {
+        // Must equal packages/protocol's COMMAND_OUTCOME_TIMEOUT_MS and
+        // adapter-android's. Three hand-written copies of one number;
+        // #206 criterion 2 requires they agree or the aggregate success
+        // rate is meaningless.
+        XCTAssertEqual(commandOutcomeTimeout, .seconds(8))
+    }
+
     func testAClaimIsStillSkippedWhenTheRouteConfirmsTheCache() async throws {
         let gateway = FakeBluetoothPeripheralGateway()
         let manager = BluetoothConnectionManager(gateway: gateway, routeSource: StubRouteSource(true))
