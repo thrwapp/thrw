@@ -22,3 +22,4 @@
 | [0018](./0018-state-reconciliation-and-idempotency.md) | State reconciliation and command idempotency | Accepted |
 | [0019](./0019-switch-outcome-confirmation-and-failure-telemetry.md) | Every switch has a confirmed outcome, not fire-and-forget | Accepted |
 | [0020](./0020-command-debouncing-and-offline-behavior.md) | Command debouncing at the relay, and defined offline behaviour | Accepted |
+| [0021](./0021-preclaim-execution-and-speculative-events.md) | Executing pre-claim — speculative events, and what earns one | Proposed |
