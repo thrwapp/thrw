@@ -152,10 +152,12 @@ jobs:
       # previously only needed Java. Installed by hand from Google's own
       # cmdline-tools archive (no third-party Action) so the exact
       # platform/build-tools versions match what app/build.gradle.kts
-      # declares (compileSdk 35 / build-tools 35.0.1). If those versions
-      # change, this step's `platforms;android-NN` / `build-tools;NN.N.N`
-      # arguments need updating to match, or the build fails on a package
-      # this step never installed.
+      # declares (compileSdk 36 / buildToolsVersion 36.0.0). If those
+      # versions change, this step's `platforms;android-NN` /
+      # `build-tools;NN.N.N` arguments need updating to match, or the
+      # build fails on a package this step never installed - and so does
+      # release-android.yml's copy of this step, which additionally
+      # builds a path to `apksigner` out of the build-tools version.
       - name: Install Android SDK
         run: |
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
@@ -166,7 +168,7 @@ jobs:
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
             --sdk_root="$ANDROID_SDK_ROOT" --licenses > /dev/null
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-35" "build-tools;35.0.1"
+            --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
           echo "sdk.dir=$ANDROID_SDK_ROOT" > packages/adapter-android/local.properties
 
       # `assembleDebug` alongside `test`, not instead of it: they are

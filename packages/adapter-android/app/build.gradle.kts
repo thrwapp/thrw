@@ -78,7 +78,15 @@ if (uploadKeyConfigured) {
 
 android {
     namespace = "com.thrw.adapter.android"
-    compileSdk = 35
+    compileSdk = 36
+
+    // Pinned rather than left to AGP's default (#237). Both workflows
+    // hand-roll the SDK install and name an exact build-tools version,
+    // and release-android.yml additionally builds a path to `apksigner`
+    // out of it - so the version needs to be stated in one place they
+    // can be checked against, which their own comments already assume
+    // is this file.
+    buildToolsVersion = "36.0.0"
 
     defaultConfig {
         // Play Store identity (#132) - deliberately distinct from `namespace`
@@ -99,7 +107,14 @@ android {
         // carry the deprecated PhoneStateListener fallback path for older
         // releases - a judgment call, documented in docs/handoffs/96.md.
         minSdk = 31
-        targetSdk = 35
+        // 36 since #237: Play rejects anything lower for a new app as of
+        // 31 August 2026, including on the internal testing track. See
+        // that issue for the Android 16 targeting changes that were
+        // checked against this code and found not to apply - the short
+        // version is that edge-to-edge enforcement and the
+        // BOOT_COMPLETED foreground-service restrictions both began at
+        // targetSdk 35, which this already was.
+        targetSdk = 36
         versionCode = releaseVersionCode
         versionName = "0.1.0"
     }
