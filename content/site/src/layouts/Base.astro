@@ -8,14 +8,18 @@
 //
 // `path` is passed explicitly rather than read from `Astro.url` so the
 // canonical and og:url are the same deterministic strings in dev, in a
-// static build, and in the tests that assert on them.
+// static build, and in the tests that assert on them. It must carry a
+// trailing slash on sub-pages: this Pages project 308-redirects /privacy to
+// /privacy/ (confirmed live against the deployed site), and a canonical
+// pointing at a redirect is a canonical pointing at the wrong URL.
 interface Props {
   title: string;
   description: string;
   path: string;
+  noindex?: boolean;
 }
 
-const { title, description, path } = Astro.props;
+const { title, description, path, noindex = false } = Astro.props;
 
 // `site` is set in astro.config.mjs; without it these would be relative,
 // and Open Graph consumers reject relative og:url / og:image.
@@ -30,7 +34,10 @@ const ogImage = new URL("/og.png", Astro.site).href;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
-    <link rel="canonical" href={canonical} />
+    {/* A noindex page (the 404) is served at whatever path was mistyped, so
+        it has no canonical URL of its own to claim — naming one would point
+        at a URL that does not exist. */}
+    {noindex ? <meta name="robots" content="noindex" /> : <link rel="canonical" href={canonical} />}
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -44,7 +51,7 @@ const ogImage = new URL("/og.png", Astro.site).href;
     <meta property="og:site_name" content="thrw" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:url" content={canonical} />
+    {!noindex && <meta property="og:url" content={canonical} />}
     <meta property="og:image" content={ogImage} />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
@@ -75,7 +82,7 @@ const ogImage = new URL("/og.png", Astro.site).href;
         {/* test/privacy.test.ts matches this link as `<a ... href="/privacy"
             ...>Privacy</a>`, so href must come first and the text must sit
             directly against the tags — keep it on one line. */}
-        <a href="/privacy" aria-current={path === "/privacy" ? "page" : undefined}>Privacy</a>
+        <a href="/privacy" aria-current={path === "/privacy/" ? "page" : undefined}>Privacy</a>
         <span aria-hidden="true">·</span>
         <a href="https://github.com/thrwapp/thrw">Source</a>
       </p>

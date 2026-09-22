@@ -8,11 +8,16 @@
 // AGENTS.md.
 import type { APIRoute } from "astro";
 
-const pageFiles = Object.keys(import.meta.glob("./**/*.astro"));
+// 404.astro is a real page file but not a URL anyone should be pointed at.
+const pageFiles = Object.keys(import.meta.glob("./**/*.astro")).filter(
+  (file) => !file.endsWith("/404.astro"),
+);
 
+// Trailing slash on sub-pages: Cloudflare Pages 308-redirects /privacy to
+// /privacy/, and a sitemap listing the redirecting form wastes a crawl hop.
 function routeFor(file: string): string {
   const route = file.replace(/^\.\//, "").replace(/\.astro$/, "");
-  return route === "index" ? "/" : `/${route}`;
+  return route === "index" ? "/" : `/${route}/`;
 }
 
 export const GET: APIRoute = ({ site }) => {

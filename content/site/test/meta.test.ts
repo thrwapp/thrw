@@ -38,8 +38,10 @@ describe("built site metadata", () => {
   it("gives every page a description and an absolute canonical URL", () => {
     expect(metaContent(index, "name", "description")).toBeTruthy();
     expect(metaContent(privacy, "name", "description")).toBeTruthy();
+    // Trailing slash: Cloudflare Pages 308-redirects /privacy to /privacy/,
+    // so the canonical has to name the URL that actually serves a 200.
     expect(index).toContain(`<link rel="canonical" href="${ORIGIN}/">`);
-    expect(privacy).toContain(`<link rel="canonical" href="${ORIGIN}/privacy">`);
+    expect(privacy).toContain(`<link rel="canonical" href="${ORIGIN}/privacy/">`);
   });
 
   it("carries Open Graph tags with an absolute image on both pages", () => {
@@ -103,7 +105,20 @@ describe("built site metadata", () => {
     const sitemap = readFileSync(join(dist, "sitemap.xml"), "utf8");
     expect(sitemap).toContain("http://www.sitemaps.org/schemas/sitemap/0.9");
     expect(sitemap).toContain(`<loc>${ORIGIN}/</loc>`);
-    expect(sitemap).toContain(`<loc>${ORIGIN}/privacy</loc>`);
+    expect(sitemap).toContain(`<loc>${ORIGIN}/privacy/</loc>`);
+    // The 404 is a built page but never a URL to advertise.
+    expect(sitemap).not.toContain("/404");
+  });
+
+  it("builds a 404 page so unknown paths are not soft-200s", () => {
+    // Without dist/404.html, Cloudflare Pages answers an unknown path with
+    // the landing page and a 200 — confirmed live on the deployed site.
+    const notFound = readFileSync(join(dist, "404.html"), "utf8");
+    expect(notFound).toContain('<meta name="robots" content="noindex">');
+    expect(notFound).toContain("Not found");
+    // It is served at whatever path was mistyped, so it has no canonical
+    // URL of its own to claim.
+    expect(notFound).not.toContain('rel="canonical"');
   });
 
   it("exposes the diagram to assistive technology it is labelled for", () => {
