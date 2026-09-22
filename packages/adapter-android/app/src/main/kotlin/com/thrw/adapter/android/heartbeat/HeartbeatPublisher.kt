@@ -1,5 +1,7 @@
 package com.thrw.adapter.android.heartbeat
 
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 /**
@@ -60,14 +62,64 @@ class HeartbeatPublisher(
     private val sink: HeartbeatSink,
     private val intervalMs: Long = DEFAULT_INTERVAL_MS,
 ) : HeartbeatRunner {
+    /**
+     * Beats forever. **A failed beat does not end the loop** (#236).
+     *
+     * This used to call [HeartbeatSink.publishHeartbeat] bare in the loop
+     * body, so one throw ended it permanently -
+     * [com.thrw.adapter.android.NodeRuntime] catches and logs that, and
+     * nothing restarts it. A single transient publish failure therefore
+     * stopped this node heartbeating for the rest of the process's life
+     * while it stayed connected and kept re-registering.
+     *
+     * The consequence is not a quiet degradation. The relay seeds node
+     * liveness from each registration (`relay-service.ts`'s `handleEvent`
+     * -> `trackHeartbeat`) and reaps at 90s, and reaping drops every
+     * signal the node had via `PriorityEngine.forgetNode`. A node that
+     * registers but never beats takes the headset on every registration
+     * and loses it 90s later, forever; two of them ping-pong. Observed in
+     * production for nine and a half hours overnight with nobody using
+     * either device.
+     *
+     * Retrying is safe: the beat is a bare liveness ping at QoS 0 carrying
+     * no state, so a lost one has no consequence beyond being lost. The
+     * retry cadence is just [intervalMs] - a failure still falls through
+     * to the [delay], so a broker that is down cannot make this a hot
+     * loop.
+     *
+     * [CancellationException] is re-thrown rather than caught as a
+     * failure: it is how structured concurrency stops this coroutine, and
+     * swallowing it would both break cancellation and log an error on
+     * every ordinary service shutdown. Mirrors `adapter-mac`'s
+     * `HeartbeatPublisher.run`.
+     */
     override suspend fun run() {
+        // Logged on transition only, not per beat: a broker down for an
+        // hour would otherwise write 120 identical lines, and the signal
+        // worth having is "when did it break" and "did it come back".
+        var isFailing = false
         while (true) {
-            sink.publishHeartbeat()
+            try {
+                sink.publishHeartbeat()
+                if (isFailing) {
+                    isFailing = false
+                    Log.i(TAG, "heartbeat resumed")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (!isFailing) {
+                    isFailing = true
+                    Log.e(TAG, "heartbeat publish failed, retrying every ${intervalMs}ms", e)
+                }
+            }
             delay(intervalMs)
         }
     }
 
     companion object {
+        private const val TAG = "HeartbeatPublisher"
+
         /**
          * architecture.md's "MQTT topic design" table specifies this
          * topic as `QoS 0, ~30s`. `services/relay-hosted`'s
