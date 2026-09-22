@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMMAND_OUTCOME_KIND,
+  COMMAND_OUTCOME_TIMEOUT_MS,
   commandsTopic,
   ConnectionStateMachine,
   eventsTopic,
@@ -65,6 +67,33 @@ describe("@thrw/protocol", () => {
       const expected: EventKind[] = ["call", "manual_claim", "voip", "media"];
       expect(PRIORITY_ORDER).toEqual(expected);
       expect(PRIORITY_ORDER).toHaveLength(4);
+    });
+  });
+
+  describe("command outcomes (ADR 0019)", () => {
+    it("pins the 8s bound every adapter must enforce identically", () => {
+      // ADR 0019 fixes this at 8s and #206 criterion 2 requires it be the
+      // same everywhere: an adapter choosing its own bound makes the
+      // aggregate success rate meaningless, because an outcome would not
+      // mean the same thing in every row.
+      //
+      // It guarantees *termination*, not latency - ADR 0007 owns latency,
+      // with its own 3.5-4s p95 SLO. If this ever looks wrong because
+      // switches are slow, the bug is elsewhere; changing this only
+      // changes when a stuck command gives up.
+      //
+      // adapter-mac and adapter-android each assert against this same
+      // number in their own suites - three hand-written implementations,
+      // nothing else catches them drifting.
+      expect(COMMAND_OUTCOME_TIMEOUT_MS).toBe(8_000);
+    });
+
+    it("uses a kind discriminator on the events topic rather than a new topic", () => {
+      // The events topic is the only node-publishes topic in the frozen
+      // set (ADR 0001/0015), and already carries several kinds. An
+      // outcome follows that precedent - so ADR 0019 needs no topic
+      // change, which is what let it land without a second flag day.
+      expect(COMMAND_OUTCOME_KIND).toBe("command_outcome");
     });
   });
 

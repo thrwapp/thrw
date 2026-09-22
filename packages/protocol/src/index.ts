@@ -85,6 +85,86 @@ export interface NodeManifest {
   supportedResourceTypes: ResourceType[];
 }
 
+/**
+ * How a claim or release ended (ADR 0019, #206).
+ *
+ * Every command resolves to exactly one of these within
+ * {@link COMMAND_OUTCOME_TIMEOUT_MS}. Reported for **every** command,
+ * not only failures: a success rate needs its denominator, and
+ * "reliability" is otherwise inferred from the absence of complaints,
+ * which lags real problems by however long a user tolerates silent
+ * failure before reporting it.
+ */
+export type CommandOutcome = "succeeded" | "failed" | "timed_out";
+
+/**
+ * Why a `failed` outcome failed.
+ *
+ * A closed set rather than free text, because the whole point is to
+ * aggregate: a rising rate for one reason on one device pairing is the
+ * actionable signal (ADR 0019), and free-form strings do not group.
+ */
+export type CommandFailureReason =
+  /** The local Bluetooth stack is off, unavailable, or refused the call. */
+  | "bluetooth_unavailable"
+  /** The headset did not accept the connection - off, out of range, busy. */
+  | "target_device_unreachable"
+  /**
+   * A newer command for the same resource arrived first. ADR 0020's
+   * coalescing produces this, and per that ADR it is tracked separately
+   * from real failures - a superseded command is the debouncer working
+   * correctly, not a switch that went wrong. The code exists now so it
+   * is not retrofitted into data already being collected (#206
+   * criterion 5).
+   */
+  | "superseded_by_newer_command";
+
+/**
+ * The bound every adapter enforces, identically (ADR 0019).
+ *
+ * Deliberately well above the 3-5s a claim actually takes to move the
+ * audio route on the reference hardware. **It guarantees termination,
+ * not latency** - latency has its own SLO and alert threshold in ADR
+ * 0007, and conflating the two would report every slow-but-working
+ * switch as a failure.
+ *
+ * Shared here rather than per-adapter so an outcome means the same
+ * thing in every row of the resulting data. An adapter that picked its
+ * own bound would silently make the aggregate meaningless.
+ */
+export const COMMAND_OUTCOME_TIMEOUT_MS = 8_000;
+
+/**
+ * A node's report of how a command ended (ADR 0019, #206).
+ *
+ * Rides the **events** topic. That is the only node-publishes topic in
+ * the frozen set (ADR 0001/0015), and it already carries several
+ * message kinds discriminated by `kind` (`register`, `event_end`), so
+ * this follows that precedent rather than introducing a topic - no
+ * change to the topic structure.
+ *
+ * `epoch` and `seq` identify *which* command this answers. They are the
+ * same pair ADR 0018 point 1 added for idempotency (#211/#224), so a
+ * relay that has restarted can tell an outcome for one of its own
+ * commands from a late outcome for a previous process's.
+ */
+export interface CommandOutcomePayload {
+  kind: "command_outcome";
+  /** The relay epoch the answered command carried. */
+  epoch: string;
+  /** The sequence number the answered command carried. */
+  seq: number;
+  resourceType: ResourceType;
+  outcome: CommandOutcome;
+  /** Present when and only when `outcome` is `failed`. */
+  reason?: CommandFailureReason;
+  /** Wall time from receiving the command to resolving it. */
+  durationMs: number;
+}
+
+/** The `kind` discriminator for {@link CommandOutcomePayload}. */
+export const COMMAND_OUTCOME_KIND = "command_outcome";
+
 // Method signatures only, per architecture.md's "System components" section.
 // The connection state machine (idle/pre-claim/claim/active/cooldown) is a
 // frozen contract (ADR 0010/0011) and is intentionally not implemented here.

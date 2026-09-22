@@ -18,6 +18,7 @@ import mqtt, { type MqttClient } from "mqtt";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   RelayService,
+  type CommandOutcomeReported,
   type NodeEventObserved,
   type NodeReaped,
   type RegistrationObserved,
@@ -261,6 +262,7 @@ describe("RelayService (real broker)", () => {
       onRegistration?: (registration: RegistrationObserved) => void;
       onNodeEvent?: (event: NodeEventObserved) => void;
       onNodeReaped?: (reaped: NodeReaped) => void;
+      onCommandOutcome?: (outcome: CommandOutcomeReported) => void;
     } = {},
   ): Promise<RelayService> {
     const client = await RelayMqttClient.connect(BROKER_URL);
@@ -641,6 +643,137 @@ describe("RelayService (real broker)", () => {
       expect(seen).toHaveLength(1);
       expect(seen[0]).toMatchObject({ account, node: nodeA.nodeId });
       expect(seen[0]?.silentForMs).toBeGreaterThanOrEqual(90_001);
+    });
+  });
+
+  // ADR 0019 / #206. Before this a command was fire-and-forget: the relay
+  // published it and never learned whether the switch happened.
+  describe("command outcomes (#206)", () => {
+    function publishOutcome(
+      client: MqttClient,
+      account: string,
+      node: string,
+      body: Record<string, unknown>,
+    ): Promise<void> {
+      return publishJson(client, eventsTopic(account, node, "audio"), {
+        kind: "command_outcome",
+        ...body,
+      });
+    }
+
+    it("records a succeeded outcome, which is what gives a success rate its denominator", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const seen: CommandOutcomeReported[] = [];
+      await startService([account], undefined, undefined, undefined, {
+        onCommandOutcome: (o) => seen.push(o),
+      });
+
+      await publishRegistration(rawClient, account, nodeA);
+      await publishOutcome(rawClient, account, nodeA.nodeId, {
+        epoch: "epoch-1",
+        seq: 7,
+        resourceType: "audio",
+        outcome: "succeeded",
+        durationMs: 3_120,
+      });
+
+      await expect.poll(() => seen.length, { timeout: 2000 }).toBe(1);
+      expect(seen[0]).toMatchObject({
+        account,
+        node: nodeA.nodeId,
+        resource: "audio",
+        epoch: "epoch-1",
+        seq: 7,
+        outcome: "succeeded",
+        durationMs: 3_120,
+      });
+    });
+
+    it("records a failure with its reason code", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const seen: CommandOutcomeReported[] = [];
+      await startService([account], undefined, undefined, undefined, {
+        onCommandOutcome: (o) => seen.push(o),
+      });
+
+      await publishRegistration(rawClient, account, nodeA);
+      await publishOutcome(rawClient, account, nodeA.nodeId, {
+        epoch: "epoch-1",
+        seq: 8,
+        resourceType: "audio",
+        outcome: "failed",
+        reason: "target_device_unreachable",
+        durationMs: 1_400,
+      });
+
+      await expect.poll(() => seen.length, { timeout: 2000 }).toBe(1);
+      expect(seen[0]).toMatchObject({
+        outcome: "failed",
+        reason: "target_device_unreachable",
+      });
+    });
+
+    it("does not let an outcome touch arbitration", async () => {
+      // An outcome is a report *about* a command, not a trigger. If it
+      // moved the holder, a late outcome from a superseded command could
+      // yank the headset back - so this asserts the absence of an effect,
+      // which is the whole safety property.
+      const account = randomUUID();
+      const nodeA = manifest();
+      const nodeB = manifest();
+      const service = await startService([account]);
+
+      await publishRegistration(rawClient, account, nodeA);
+      await publishRegistration(rawClient, account, nodeB);
+      await publishEvent(rawClient, account, nodeB.nodeId, "media");
+      await expect
+        .poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 })
+        .toBe(nodeB.nodeId);
+
+      await publishOutcome(rawClient, account, nodeA.nodeId, {
+        epoch: "epoch-1",
+        seq: 1,
+        resourceType: "audio",
+        outcome: "failed",
+        reason: "bluetooth_unavailable",
+        durationMs: 200,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      expect(service.engineFor(account)?.currentHolder()).toBe(nodeB.nodeId);
+    });
+
+    it("drops a malformed outcome rather than skewing the data with it", async () => {
+      // This is the one payload treated as evidence about reliability, so
+      // a `failed` with no reason - unaggregatable - is dropped rather
+      // than recorded as a failure of unknown cause.
+      const account = randomUUID();
+      const nodeA = manifest();
+      const seen: CommandOutcomeReported[] = [];
+      await startService([account], undefined, undefined, undefined, {
+        onCommandOutcome: (o) => seen.push(o),
+      });
+
+      await publishRegistration(rawClient, account, nodeA);
+      await publishOutcome(rawClient, account, nodeA.nodeId, {
+        epoch: "epoch-1",
+        seq: 9,
+        resourceType: "audio",
+        outcome: "failed",
+        durationMs: 500,
+      });
+      await publishOutcome(rawClient, account, nodeA.nodeId, {
+        epoch: "epoch-1",
+        seq: 10,
+        resourceType: "audio",
+        outcome: "not_a_real_outcome",
+        durationMs: 500,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      expect(seen).toEqual([]);
     });
   });
 
