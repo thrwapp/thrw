@@ -43,8 +43,9 @@ jobs:
       # reason: it pins the exact platform/build-tools versions
       # app/build.gradle.kts declares rather than trusting a third-party
       # setup action's defaults (AGENTS.md: no new dependency without
-      # justification). If compileSdk or build-tools change there, these
-      # arguments need updating to match - and so does ci.yml's copy.
+      # justification). If compileSdk or buildToolsVersion change there,
+      # these arguments need updating to match - and so does ci.yml's
+      # copy, and the `apksigner` path further down this file.
       - name: Install Android SDK
         run: |
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
@@ -55,7 +56,7 @@ jobs:
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
             --sdk_root="$ANDROID_SDK_ROOT" --licenses > /dev/null
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-35" "build-tools;35.0.1"
+            --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
           echo "sdk.dir=$ANDROID_SDK_ROOT" > packages/adapter-android/local.properties
 
       # Commit count rather than github.run_number: it's reproducible
@@ -175,7 +176,7 @@ jobs:
             echo "::error::$apk was not produced by assembleRelease."
             exit 1
           fi
-          apksigner="$ANDROID_SDK_ROOT/build-tools/35.0.1/apksigner"
+          apksigner="$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"
           if [ ! -x "$apksigner" ]; then
             echo "::error::apksigner not found at $apksigner - the build-tools" \
                  "version installed above has changed without this step following."
