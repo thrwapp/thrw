@@ -91,6 +91,67 @@ export interface RouteDrift {
   readonly believedHolder: string | null;
 }
 
+/**
+ * A registration the relay acted on (#245).
+ *
+ * The relay's four original log events are all *outputs* - what it
+ * decided. None of its *inputs* were recorded, and over one day of live
+ * debugging that gap blocked diagnosis four separate times: "why did the
+ * holder change", "why did it *not* change", "which version is that node
+ * running" and "was that node reaped" were all unanswerable from the
+ * logs, and each produced a wrong hypothesis before the real cause was
+ * found some other way.
+ *
+ * This is the highest-value of the three: it records what each node is
+ * claiming, once per registration, per node.
+ *
+ * **`displayName` is deliberately omitted.** It is user-chosen and
+ * routinely personal ("Tom's MacBook Air"), nothing here needs it, and
+ * #207's open question about `{account}` already being a user identifier
+ * says to add no more identifying content than the account id every
+ * existing line already carries.
+ */
+export interface RegistrationObserved {
+  readonly account: string;
+  readonly node: string;
+  readonly resource: ResourceType;
+  readonly platform: string;
+  /** From `NodeManifest` - answers "is the fix on the device yet?" (#242). */
+  readonly adapterVersion: string;
+  /** What the node says it currently has active. */
+  readonly activeEvents: readonly EventKind[];
+  /** What the node says about its own routes; `{}` means "no information". */
+  readonly observedRoutes: Record<string, boolean>;
+  readonly holderBefore: string | null;
+  readonly holderAfter: string | null;
+}
+
+/** A trigger start or end the relay acted on (#245). */
+export interface NodeEventObserved {
+  readonly account: string;
+  readonly node: string;
+  readonly resource: ResourceType;
+  readonly kind: "event" | "event_end";
+  readonly type: EventKind;
+  readonly holderBefore: string | null;
+  readonly holderAfter: string | null;
+}
+
+/**
+ * A node dropped by the heartbeat sweep (#245).
+ *
+ * `sweepHeartbeats` previously logged nothing at all, which is why
+ * #236's nine-hour holder oscillation was invisible: every reap surfaced
+ * as a bare `holder_change` with no recorded cause, and reconstructing
+ * it afterwards took a day of log archaeology.
+ */
+export interface NodeReaped {
+  readonly account: string;
+  readonly node: string;
+  /** How long since its last heartbeat, at the moment it was dropped. */
+  readonly silentForMs: number;
+}
+
 interface EventEndPayload {
   kind: typeof EVENT_END_KIND;
   type: EventKind;
@@ -174,6 +235,17 @@ export interface RelayServiceOptions {
    */
   onRouteDrift?: (drift: RouteDrift) => void;
   /**
+   * Called for every registration the relay acts on (#245). Defaults to
+   * logging. Same injectable-sink shape as `onRouteDrift` above, for the
+   * same reason: tests assert on a structured object rather than
+   * scraping stdout.
+   */
+  onRegistration?: (registration: RegistrationObserved) => void;
+  /** Called for every trigger start/end the relay acts on (#245). */
+  onNodeEvent?: (event: NodeEventObserved) => void;
+  /** Called for every node the heartbeat sweep drops (#245). */
+  onNodeReaped?: (reaped: NodeReaped) => void;
+  /**
    * Injectable scheduler - used both for each account's `PriorityEngine`
    * (its own auto-return timer) and for the heartbeat sweep, so a test can
    * control both deterministically with one fake, the same pattern
@@ -248,6 +320,9 @@ export class RelayService {
   private readonly accounts: readonly string[];
   private readonly now: () => number;
   private readonly onRouteDrift: (drift: RouteDrift) => void;
+  private readonly onRegistration: (registration: RegistrationObserved) => void;
+  private readonly onNodeEvent: (event: NodeEventObserved) => void;
+  private readonly onNodeReaped: (reaped: NodeReaped) => void;
   private readonly scheduler: Scheduler;
   private readonly heartbeatTimeoutMs: number;
   private readonly heartbeatSweepIntervalMs: number;
@@ -268,6 +343,46 @@ export class RelayService {
           node: drift.node,
           nodeHoldsRoute: drift.nodeHoldsRoute,
           believedHolder: drift.believedHolder,
+        });
+      });
+    // #245. One line per registration: at two nodes on the 120s cadence
+    // that is ~1/minute, well inside the 20m x 5 json-file rotation
+    // scripts/relay-redeploy.sh sets.
+    this.onRegistration =
+      options.onRegistration ??
+      ((registration) => {
+        logEvent("registration", {
+          account: registration.account,
+          node: registration.node,
+          resource: registration.resource,
+          platform: registration.platform,
+          adapterVersion: registration.adapterVersion,
+          activeEvents: registration.activeEvents,
+          observedRoutes: registration.observedRoutes,
+          holderBefore: registration.holderBefore,
+          holderAfter: registration.holderAfter,
+        });
+      });
+    this.onNodeEvent =
+      options.onNodeEvent ??
+      ((event) => {
+        logEvent("node_event", {
+          account: event.account,
+          node: event.node,
+          resource: event.resource,
+          kind: event.kind,
+          type: event.type,
+          holderBefore: event.holderBefore,
+          holderAfter: event.holderAfter,
+        });
+      });
+    this.onNodeReaped =
+      options.onNodeReaped ??
+      ((reaped) => {
+        logEvent("node_reaped", {
+          account: reaped.account,
+          node: reaped.node,
+          silentForMs: reaped.silentForMs,
         });
       });
     this.scheduler = options.scheduler ?? systemScheduler;
@@ -434,16 +549,50 @@ export class RelayService {
       // process. A no-op once this process has published the current
       // holder - see `publishHolder`.
       this.publishHolder(resourceState);
+
+      // #245. Last in the branch, so `holderAfter` reflects everything
+      // above - reconcile, sync, the drift check and the re-assert.
+      this.onRegistration({
+        account: state.account,
+        node,
+        resource: resourceState.resource,
+        platform: payload.manifest.platform,
+        adapterVersion: payload.manifest.adapterVersion,
+        activeEvents: activeEventsFrom(payload),
+        observedRoutes: payload.observedRoutes ?? {},
+        holderBefore,
+        holderAfter: resourceState.lastHolder,
+      });
       return;
     }
     if (isEventEndPayload(payload)) {
+      const holderBefore = resourceState.lastHolder;
       resourceState.engine.endEvent(node, payload.type);
       this.syncHolder(state.account, resourceState.resource);
+      this.onNodeEvent({
+        account: state.account,
+        node,
+        resource: resourceState.resource,
+        kind: "event_end",
+        type: payload.type,
+        holderBefore,
+        holderAfter: resourceState.lastHolder,
+      });
       return;
     }
     if (isEventPayload(payload)) {
+      const holderBefore = resourceState.lastHolder;
       resourceState.engine.recordEvent(node, payload.type);
       this.syncHolder(state.account, resourceState.resource);
+      this.onNodeEvent({
+        account: state.account,
+        node,
+        resource: resourceState.resource,
+        kind: "event",
+        type: payload.type,
+        holderBefore,
+        holderAfter: resourceState.lastHolder,
+      });
       return;
     }
     // Unrecognized payload shape - dropped, not thrown, mirroring every
@@ -496,6 +645,14 @@ export class RelayService {
         }
         state.lastHeartbeatAt.delete(node);
         state.heartbeatSubscribed.delete(node);
+        // #245. Emitted before the syncHolder below, so a reader sees the
+        // cause immediately ahead of the holder_change it produces -
+        // which is exactly the pairing #236 spent a day reconstructing.
+        this.onNodeReaped({
+          account: state.account,
+          node,
+          silentForMs: this.now() - lastSeenAt,
+        });
         forgotAny = true;
       }
     }
