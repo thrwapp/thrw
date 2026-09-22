@@ -18,7 +18,14 @@ public enum DeviceIdentity {
     /// "Known gaps". `adapter-android`'s equivalent reads
     /// `BuildConfig.VERSION_NAME`, which Gradle derives automatically;
     /// SwiftPM has no equivalent for a plain package target.
-    static let adapterVersion = "0.1.0"
+    ///
+    /// **Bump this in the same PR as the tag it ships under.** v0.1.0's
+    /// tag exists precisely because this literal had read 0.1.0 since #96
+    /// while every build was tagged v0.0.1, so the version the relay saw
+    /// in `NodeManifest.adapterVersion` was not the version on the release
+    /// page. `adapter-android`'s `versionName` is the same literal on the
+    /// other side of the same contract - change both together.
+    static let adapterVersion = "0.1.1"
 
     public static func nodeId(defaults: UserDefaults = .standard) -> String {
         if let existing = defaults.string(forKey: nodeIdKey) {
