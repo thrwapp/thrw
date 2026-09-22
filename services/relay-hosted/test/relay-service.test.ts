@@ -16,7 +16,13 @@ import {
 } from "@thrw/relay-core";
 import mqtt, { type MqttClient } from "mqtt";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { RelayService, type RouteDrift } from "../src/relay-service";
+import {
+  RelayService,
+  type NodeEventObserved,
+  type NodeReaped,
+  type RegistrationObserved,
+  type RouteDrift,
+} from "../src/relay-service";
 
 // Integration tests against a real MQTT broker, same pattern
 // packages/relay-core's own tests use (acceptance criterion 4) - CI
@@ -247,6 +253,15 @@ describe("RelayService (real broker)", () => {
     scheduler?: Scheduler,
     now?: () => number,
     onRouteDrift?: (drift: RouteDrift) => void,
+    // #245. Grouped into one optional bag rather than three more
+    // positional parameters - this helper already takes four, and a
+    // fifth/sixth/seventh would make every existing call site an
+    // exercise in counting commas.
+    observers: {
+      onRegistration?: (registration: RegistrationObserved) => void;
+      onNodeEvent?: (event: NodeEventObserved) => void;
+      onNodeReaped?: (reaped: NodeReaped) => void;
+    } = {},
   ): Promise<RelayService> {
     const client = await RelayMqttClient.connect(BROKER_URL);
     clients.push(client);
@@ -256,6 +271,7 @@ describe("RelayService (real broker)", () => {
       scheduler,
       now,
       onRouteDrift,
+      ...observers,
       heartbeatSweepIntervalMs: 5_000,
     });
     await service.start();
@@ -518,6 +534,114 @@ describe("RelayService (real broker)", () => {
     }
 
     expect(new Set(holders)).toEqual(new Set([nodeB.nodeId]));
+  });
+
+  // #245. The relay's original four log events are all outputs. These
+  // cover the inputs - what it was actually told - which is what four
+  // separate live diagnoses needed and could not get.
+  describe("input observability (#245)", () => {
+    it("reports what a node claimed on registration, and the holder either side", async () => {
+      const account = randomUUID();
+      const nodeA = manifest({ platform: "android", adapterVersion: "0.1.1" });
+      const seen: RegistrationObserved[] = [];
+      await startService([account], undefined, undefined, undefined, {
+        onRegistration: (r) => seen.push(r),
+      });
+
+      await publishRegistration(rawClient, account, nodeA, ["media"], { audio: true });
+      await expect.poll(() => seen.length, { timeout: 2000 }).toBe(1);
+
+      // The whole point: which node, on what version, claiming what.
+      expect(seen[0]).toMatchObject({
+        account,
+        node: nodeA.nodeId,
+        resource: "audio",
+        platform: "android",
+        adapterVersion: "0.1.1",
+        activeEvents: ["media"],
+        observedRoutes: { audio: true },
+        holderBefore: null,
+        holderAfter: nodeA.nodeId,
+      });
+    });
+
+    it("reports a node that reports nothing active, which is the case that reads as a bug", async () => {
+      // A node reporting `[]` is indistinguishable in the old logs from a
+      // node that never registered at all - and "media played but the
+      // holder never moved" was exactly the question that could not be
+      // answered.
+      const account = randomUUID();
+      const nodeA = manifest();
+      const seen: RegistrationObserved[] = [];
+      await startService([account], undefined, undefined, undefined, {
+        onRegistration: (r) => seen.push(r),
+      });
+
+      await publishRegistration(rawClient, account, nodeA);
+      await expect.poll(() => seen.length, { timeout: 2000 }).toBe(1);
+
+      expect(seen[0]).toMatchObject({
+        node: nodeA.nodeId,
+        activeEvents: [],
+        observedRoutes: {},
+        holderAfter: null,
+      });
+    });
+
+    it("reports each trigger start and end with the holder either side", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const seen: NodeEventObserved[] = [];
+      await startService([account], undefined, undefined, undefined, {
+        onNodeEvent: (e) => seen.push(e),
+      });
+
+      await publishRegistration(rawClient, account, nodeA);
+      await publishEvent(rawClient, account, nodeA.nodeId, "media");
+      await expect.poll(() => seen.length, { timeout: 2000 }).toBe(1);
+      expect(seen[0]).toMatchObject({
+        node: nodeA.nodeId,
+        kind: "event",
+        type: "media",
+        holderBefore: null,
+        holderAfter: nodeA.nodeId,
+      });
+
+      await publishEventEnd(rawClient, account, nodeA.nodeId, "media");
+      await expect.poll(() => seen.length, { timeout: 2000 }).toBe(2);
+      expect(seen[1]).toMatchObject({
+        kind: "event_end",
+        type: "media",
+        holderBefore: nodeA.nodeId,
+        // Rule 5: the last claimer keeps it once the signal ends.
+        holderAfter: nodeA.nodeId,
+      });
+    });
+
+    it("reports a reaped node and how long it had been silent", async () => {
+      // The line whose absence made #236 invisible: before this, a reap
+      // produced only a bare holder_change with no recorded cause.
+      const account = randomUUID();
+      const nodeA = manifest();
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      const seen: NodeReaped[] = [];
+      const service = await startService([account], scheduler, () => now, undefined, {
+        onNodeReaped: (r) => seen.push(r),
+      });
+
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      await expect
+        .poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 })
+        .toBe(nodeA.nodeId);
+
+      now += 90_001;
+      scheduler.fire(5_000);
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ account, node: nodeA.nodeId });
+      expect(seen[0]?.silentForMs).toBeGreaterThanOrEqual(90_001);
+    });
   });
 
   it("drops an unrecognized payload shape instead of throwing or registering anything", async () => {
