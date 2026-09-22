@@ -1,0 +1,53 @@
+---
+// Without this page Cloudflare Pages answers every unknown path with the
+// landing page and a 200 — confirmed live against the deployed site:
+// https://thrw.app/definitely-not-a-page returned 200 text/html, not 404.
+// That makes every typo'd URL an indexable duplicate of the homepage. Pages
+// serves a built 404.html with a real 404 status instead.
+//
+// noindex as well as the 404, because a crawler that reached this page
+// followed a link from somewhere and should drop the URL rather than keep
+// it.
+import Base from "../layouts/Base.astro";
+---
+
+<Base
+  title="Not found — thrw"
+  description="That page isn't here."
+  path="/404/"
+  noindex
+>
+  <main>
+    <h1>Not found</h1>
+    <p>
+      That page isn't here — it may have moved, or it may never have existed.
+      The <a href="/">homepage</a> has the waitlist and everything else.
+    </p>
+  </main>
+</Base>
+
+<style>
+  main {
+    max-width: var(--measure);
+    margin: 0 auto;
+    padding: var(--space-20) var(--space-6);
+    text-align: center;
+  }
+
+  h1 {
+    margin: 0 0 var(--space-4);
+    font-size: var(--font-size-h1);
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+  }
+
+  p {
+    margin: 0;
+    font-size: var(--font-size-body);
+    color: var(--color-text-muted);
+  }
+
+  a {
+    color: var(--color-accent);
+  }
+</style>

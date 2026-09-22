@@ -1,0 +1,47 @@
+<!doctype html>
+<!--
+  Source for public/apple-touch-icon.png (180x180). Same glyph as
+  public/favicon.svg, but full-bleed and square: iOS applies its own corner
+  radius, so a pre-rounded icon ends up with a visible dark border.
+
+  Regenerate with:
+
+    chrome-headless-shell --headless --disable-gpu --hide-scrollbars \
+      --force-color-profile=srgb --window-size=180,180 \
+      --screenshot=content/site/public/apple-touch-icon.png \
+      content/site/assets/apple-touch-icon.html
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 180px;
+        height: 180px;
+        overflow: hidden;
+        background: #e0522a;
+      }
+
+      svg {
+        display: block;
+        width: 180px;
+        height: 180px;
+        color: #fffaf6;
+      }
+    </style>
+  </head>
+  <body>
+    <svg viewBox="-24 -28 128 112" fill="none">
+      <path
+        d="M 4 28 C 4 8, 20 -4, 40 -4 C 60 -4, 76 8, 76 28"
+        stroke="currentColor"
+        stroke-width="9"
+        stroke-linecap="round"
+      />
+      <rect x="-4" y="22" width="16" height="30" rx="8" fill="currentColor" />
+      <rect x="68" y="22" width="16" height="30" rx="8" fill="currentColor" />
+    </svg>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="thrw">
+  <!-- The headset glyph from the landing page diagram, scaled down: same
+       arc and earcup geometry, thicker stroke so it survives at 16px. -->
+  <rect width="32" height="32" rx="7" fill="#e0522a" />
+  <g transform="translate(7 10) scale(0.25)" fill="#fffaf6">
+    <path
+      d="M 4 28 C 4 8, 20 -4, 40 -4 C 60 -4, 76 8, 76 28"
+      fill="none"
+      stroke="#fffaf6"
+      stroke-width="10"
+      stroke-linecap="round"
+    />
+    <rect x="-4" y="22" width="16" height="32" rx="8" />
+    <rect x="68" y="22" width="16" height="32" rx="8" />
+  </g>
+</svg>

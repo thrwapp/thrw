@@ -1,0 +1,254 @@
+---
+// The shared page shell: <head> metadata, the glow, the header wordmark, the
+// footer, and every design token. Both pages previously carried their own
+// copy of all of this, and the copies had already drifted — privacy.astro's
+// wordmark was a link home with a focus ring, index.astro's was an inert
+// <p> — so the shell lives here once and each page contributes only its own
+// content and its own scoped styles.
+//
+// `path` is passed explicitly rather than read from `Astro.url` so the
+// canonical and og:url are the same deterministic strings in dev, in a
+// static build, and in the tests that assert on them. It must carry a
+// trailing slash on sub-pages: this Pages project 308-redirects /privacy to
+// /privacy/ (confirmed live against the deployed site), and a canonical
+// pointing at a redirect is a canonical pointing at the wrong URL.
+interface Props {
+  title: string;
+  description: string;
+  path: string;
+  noindex?: boolean;
+}
+
+const { title, description, path, noindex = false } = Astro.props;
+
+// `site` is set in astro.config.mjs; without it these would be relative,
+// and Open Graph consumers reject relative og:url / og:image.
+const canonical = new URL(path, Astro.site).href;
+const ogImage = new URL("/og.png", Astro.site).href;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    {/* A noindex page (the 404) is served at whatever path was mistyped, so
+        it has no canonical URL of its own to claim — naming one would point
+        at a URL that does not exist. */}
+    {noindex ? <meta name="robots" content="noindex" /> : <link rel="canonical" href={canonical} />}
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    {/* Matches --color-bg in each scheme, so mobile browser chrome doesn't
+        sit in a different colour to the page it's framing. */}
+    <meta name="theme-color" content="#f7f6f3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#14161a" media="(prefers-color-scheme: dark)" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="thrw" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    {!noindex && <meta property="og:url" content={canonical} />}
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="thrw — one headset. Every device you actually use."
+    />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+
+    <slot name="head" />
+  </head>
+  <body>
+    <div class="glow" aria-hidden="true"></div>
+
+    <header class="site-header">
+      <a class="wordmark" href="/" aria-current={path === "/" ? "page" : undefined}>thrw</a>
+    </header>
+
+    <slot />
+
+    <footer class="site-footer">
+      <p>thrw — built for the devices you actually own, not the ones in one company's lineup.</p>
+      <p class="footer-links">
+        {/* test/privacy.test.ts matches this link as `<a ... href="/privacy"
+            ...>Privacy</a>`, so href must come first and the text must sit
+            directly against the tags — keep it on one line. */}
+        <a href="/privacy" aria-current={path === "/privacy/" ? "page" : undefined}>Privacy</a>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/thrwapp/thrw">Source</a>
+      </p>
+    </footer>
+
+    <style is:global>
+      :root {
+        color-scheme: light dark;
+
+        --color-bg: #f7f6f3;
+        --color-surface: #ffffff;
+        --color-text: #16181d;
+        --color-text-muted: #4a4e57;
+        --color-border: #e6e3dc;
+        --color-accent: #e0522a;
+        --color-accent-contrast: #fffaf6;
+        --color-focus-ring: #e0522a;
+        --color-glow: rgb(224 82 42 / 16%);
+
+        --space-1: 0.25rem;
+        --space-2: 0.5rem;
+        --space-3: 0.75rem;
+        --space-4: 1rem;
+        --space-6: 1.5rem;
+        --space-8: 2rem;
+        --space-12: 3rem;
+        --space-16: 4rem;
+        --space-20: 5rem;
+
+        --font-size-wordmark: 0.9375rem;
+        --font-size-body: clamp(1rem, 0.95rem + 0.2vw, 1.125rem);
+        --font-size-cta: 1.0625rem;
+        --font-size-h1: clamp(2.25rem, 1.7rem + 2.75vw, 3.5rem);
+        --font-size-h2: clamp(1.5rem, 1.35rem + 0.75vw, 1.875rem);
+
+        --measure: 38rem;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --color-bg: #14161a;
+          --color-surface: #1c1f24;
+          --color-text: #f1efe9;
+          --color-text-muted: #a9adb6;
+          --color-border: #2a2d33;
+          --color-accent: #ff7d54;
+          --color-accent-contrast: #1a0d08;
+          --color-focus-ring: #ff7d54;
+          --color-glow: rgb(255 125 84 / 14%);
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        position: relative;
+        margin: 0;
+        min-height: 100dvh;
+        background: var(--color-bg);
+        color: var(--color-text);
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+        line-height: 1.6;
+        overflow-x: hidden;
+      }
+
+      .glow {
+        position: absolute;
+        top: -12rem;
+        left: 50%;
+        width: 60rem;
+        height: 34rem;
+        transform: translateX(-50%);
+        background: radial-gradient(closest-side, var(--color-glow), transparent);
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      .site-header,
+      main,
+      .site-footer {
+        position: relative;
+        z-index: 1;
+      }
+
+      .site-header {
+        display: flex;
+        justify-content: center;
+        padding: var(--space-8) var(--space-6) 0;
+      }
+
+      .wordmark {
+        margin: 0;
+        font-size: var(--font-size-wordmark);
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--color-accent);
+        text-decoration: none;
+      }
+
+      a:focus-visible,
+      button:focus-visible,
+      input:focus-visible,
+      summary:focus-visible {
+        outline: 2px solid var(--color-focus-ring);
+        outline-offset: 3px;
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .site-footer {
+        border-top: 1px solid var(--color-border);
+        margin-top: var(--space-12);
+        padding: var(--space-8) var(--space-6) var(--space-12);
+        text-align: center;
+      }
+
+      .site-footer p {
+        margin: 0;
+        font-size: 0.875rem;
+        color: var(--color-text-muted);
+      }
+
+      .footer-links {
+        margin-top: var(--space-3);
+        display: flex;
+        justify-content: center;
+        gap: var(--space-3);
+      }
+
+      .footer-links a {
+        color: var(--color-text-muted);
+      }
+
+      .footer-links a:hover,
+      .footer-links a[aria-current="page"] {
+        color: var(--color-accent);
+      }
+
+      /* The CTA depresses on :active and the FAQ rows animate open; neither
+         is load-bearing, so drop them for anyone who asked for less motion. */
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </body>
+</html>
