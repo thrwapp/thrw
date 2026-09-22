@@ -38,33 +38,41 @@ jobs:
       - name: Build site
         run: pnpm turbo build --filter=@thrw/site
 
-      # Confirmed live on the first real run (PR #50's merge, run 35134374618):
-      # secrets/vars were already correctly set, the build succeeded, but
-      # cloudflare/pages-action still failed - it also creates a GitHub
-      # Deployment via the REST API (POST /repos/.../deployments) using
-      # gitHubToken below, which needs the `deployments: write` permission.
-      # This job's permissions block only granted `contents: read`, so the
-      # default GITHUB_TOKEN got a 403 "Resource not accessible by
-      # integration" (response header named the missing scope explicitly:
-      # x-accepted-github-permissions: deployments=write). Added above.
-      # `directory` was `content/site/dist` with no `workingDirectory`, so
-      # this ran Wrangler from the repo root. Wrangler Pages looks for a
-      # `functions/` directory relative to its own cwd, not relative to
-      # `directory` - so it was looking for ./functions at the repo root,
-      # which doesn't exist, and silently never deployed
+      # Was `cloudflare/pages-action@v1` until #233. Cloudflare archived
+      # that action and its repository now 404s, so it stopped resolving -
+      # and action resolution happens before any step runs, so the job
+      # failed at "Set up job" on a workflow file nobody had touched since
+      # 18 September. `wrangler-action` running `pages deploy` is the
+      # migration Cloudflare documents.
+      #
+      # Two hard-won details survive the swap unchanged:
+      #
+      # `workingDirectory: content/site`, not the repo root. Wrangler Pages
+      # looks for a `functions/` directory relative to its own cwd, not
+      # relative to the output directory. The original config ran from the
+      # repo root with `directory: content/site/dist`, so it looked for
+      # ./functions at the root, found none, and silently never deployed
       # content/site/functions/waitlist.ts at all. The live symptom: POSTing
       # to /waitlist got Cloudflare's default 404 (HTML, not JSON), which
       # the client's `.json().catch(() => ({}))` swallowed into the generic
-      # "Something went wrong" message - issue #70's own HANDOFF doc flagged
-      # this exact risk as unverified. Setting workingDirectory makes both
-      # `directory` and Wrangler's functions/ auto-detection resolve
-      # relative to content/site, where the function file actually lives.
+      # "Something went wrong" message. `dist` in the command below is
+      # relative to this directory, so it and functions/ both resolve
+      # against content/site.
+      #
+      # `gitHubToken`, and `deployments: write` in the permissions block
+      # above. This action also creates a GitHub Deployment via
+      # POST /repos/.../deployments, which 403s without that scope -
+      # confirmed live on PR #50's merge (run 35134374618), where the
+      # response header named the missing scope outright:
+      # x-accepted-github-permissions: deployments=write.
+      #
+      # packageManager: pnpm per AGENTS.md - it is what fetches wrangler.
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/pages-action@v1
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
           workingDirectory: content/site
-          directory: dist
+          command: pages deploy dist --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          packageManager: pnpm
