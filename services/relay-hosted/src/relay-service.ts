@@ -7,8 +7,15 @@ import {
   type Scheduler,
 } from "@thrw/relay-core";
 import { PRIORITY_ORDER } from "@thrw/protocol";
-import { RESOURCE_AUDIO } from "@thrw/protocol";
-import type { EventKind, NodeManifest, ResourceType } from "@thrw/protocol";
+import { COMMAND_OUTCOME_KIND, RESOURCE_AUDIO } from "@thrw/protocol";
+import type {
+  CommandFailureReason,
+  CommandOutcome,
+  CommandOutcomePayload,
+  EventKind,
+  NodeManifest,
+  ResourceType,
+} from "@thrw/protocol";
 
 // #118: the actual long-running decision service - subscribes to every
 // registered node's events per account, drives one PriorityEngine per
@@ -152,6 +159,30 @@ export interface NodeReaped {
   readonly silentForMs: number;
 }
 
+/**
+ * How a claim or release a node was sent actually ended (ADR 0019, #206).
+ *
+ * Before this, a command was fire-and-forget: the relay published it and
+ * never learned whether the switch happened. "Did that work?" was
+ * unanswerable except by looking at the headset, and switch success rate
+ * — the number that says whether thrw is reliable — could not be
+ * measured at all.
+ *
+ * Reported for **every** command, not only failures: a rate needs its
+ * denominator.
+ */
+export interface CommandOutcomeReported {
+  readonly account: string;
+  readonly node: string;
+  readonly resource: ResourceType;
+  /** Identifies which command this answers - see `CommandOutcomePayload`. */
+  readonly epoch: string;
+  readonly seq: number;
+  readonly outcome: CommandOutcome;
+  readonly reason?: CommandFailureReason;
+  readonly durationMs: number;
+}
+
 interface EventEndPayload {
   kind: typeof EVENT_END_KIND;
   type: EventKind;
@@ -189,6 +220,26 @@ function isEventEndPayload(payload: unknown): payload is EventEndPayload {
     payload !== null &&
     (payload as { kind?: unknown }).kind === EVENT_END_KIND
   );
+}
+
+/**
+ * ADR 0019 / #206. Validated field by field rather than trusted on the
+ * `kind` alone: this is the one payload the relay treats as *evidence
+ * about reliability*, and a malformed one silently skewing the success
+ * rate is worse than no data. An outcome that fails this check falls
+ * through to the unrecognized-payload path and is dropped.
+ */
+function isCommandOutcomePayload(payload: unknown): payload is CommandOutcomePayload {
+  if (typeof payload !== "object" || payload === null) return false;
+  const p = payload as Record<string, unknown>;
+  if (p.kind !== COMMAND_OUTCOME_KIND) return false;
+  if (typeof p.epoch !== "string" || typeof p.seq !== "number") return false;
+  if (typeof p.durationMs !== "number") return false;
+  if (p.outcome !== "succeeded" && p.outcome !== "failed" && p.outcome !== "timed_out") return false;
+  // A reason is meaningful only on a failure, and a failure without one
+  // is unaggregatable - which is the entire purpose of the field.
+  if (p.outcome === "failed" && typeof p.reason !== "string") return false;
+  return true;
 }
 
 function isEventPayload(payload: unknown): payload is EventPayload {
@@ -245,6 +296,16 @@ export interface RelayServiceOptions {
   onNodeEvent?: (event: NodeEventObserved) => void;
   /** Called for every node the heartbeat sweep drops (#245). */
   onNodeReaped?: (reaped: NodeReaped) => void;
+  /**
+   * Called for every command outcome a node reports (ADR 0019, #206).
+   * Defaults to logging.
+   *
+   * This is the seam a real telemetry sink plugs into without touching
+   * arbitration logic — `services/telemetry` is still a placeholder, and
+   * ADR 0019 explicitly sanctions landing the reporting first and
+   * emitting into the existing logging path until it is real.
+   */
+  onCommandOutcome?: (outcome: CommandOutcomeReported) => void;
   /**
    * Injectable scheduler - used both for each account's `PriorityEngine`
    * (its own auto-return timer) and for the heartbeat sweep, so a test can
@@ -323,6 +384,7 @@ export class RelayService {
   private readonly onRegistration: (registration: RegistrationObserved) => void;
   private readonly onNodeEvent: (event: NodeEventObserved) => void;
   private readonly onNodeReaped: (reaped: NodeReaped) => void;
+  private readonly onCommandOutcome: (outcome: CommandOutcomeReported) => void;
   private readonly scheduler: Scheduler;
   private readonly heartbeatTimeoutMs: number;
   private readonly heartbeatSweepIntervalMs: number;
@@ -383,6 +445,20 @@ export class RelayService {
           account: reaped.account,
           node: reaped.node,
           silentForMs: reaped.silentForMs,
+        });
+      });
+    this.onCommandOutcome =
+      options.onCommandOutcome ??
+      ((outcome) => {
+        logEvent("command_outcome", {
+          account: outcome.account,
+          node: outcome.node,
+          resource: outcome.resource,
+          epoch: outcome.epoch,
+          seq: outcome.seq,
+          outcome: outcome.outcome,
+          reason: outcome.reason,
+          durationMs: outcome.durationMs,
         });
       });
     this.scheduler = options.scheduler ?? systemScheduler;
@@ -562,6 +638,25 @@ export class RelayService {
         observedRoutes: payload.observedRoutes ?? {},
         holderBefore,
         holderAfter: resourceState.lastHolder,
+      });
+      return;
+    }
+    // ADR 0019 / #206. Checked before the event guards below because an
+    // outcome is a report *about* a command, not a trigger: it must not
+    // touch arbitration. Deliberately no engine call and no syncHolder -
+    // the relay records what happened and nothing else. Acting on an
+    // outcome (retrying a failure, correcting on a timeout) is a
+    // separate decision that ADR 0019 does not make.
+    if (isCommandOutcomePayload(payload)) {
+      this.onCommandOutcome({
+        account: state.account,
+        node,
+        resource: resourceState.resource,
+        epoch: payload.epoch,
+        seq: payload.seq,
+        outcome: payload.outcome,
+        reason: payload.reason,
+        durationMs: payload.durationMs,
       });
       return;
     }
