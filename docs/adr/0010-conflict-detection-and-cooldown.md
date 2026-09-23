@@ -55,3 +55,58 @@ adapters are built. This ADR also introduces the concept extended by
 ADR 0012 (proactive conflict resolution): detecting a conflicting app
 is necessary but not sufficient — the product should actively help the
 user resolve it, not just warn and stop.
+
+## Amendment (2026-09-23): the window is 6 seconds, and `call` is exempt
+
+Decision point 1 above specifies the self-cooldown as "a short window
+(~3 seconds)". That number was an estimate of how long thrw's own side
+effect takes to play out. **It is too short, and the measurement that
+shows so is in a later ADR.**
+
+ADR 0018 records that "a claim takes 3-5s to move the route" on the
+reference hardware — measured, not estimated. So the window that exists
+to cover our own route change closes *before* that change has finished
+happening. Any audio-routing event from the tail of the transition —
+between 3s and 5s — arrives outside the cooldown and is read as a fresh
+trigger.
+
+Observed on the reference Mac/Pixel pair on 2026-09-23 (#251), with
+media playing on both devices: the Mac emitted `media` start/end pairs
+1-5 seconds apart while YouTube played continuously, and because the
+tie-break is most-recently-started, each restart took the headset back
+while each end handed it to the phone. The headset bounced
+indefinitely. The relay arbitrated correctly throughout; the trigger
+was lying to it.
+
+**The window becomes 6 seconds** — covering ADR 0018's measured 3-5s
+upper bound with margin, and staying clear of ADR 0019's 8s command
+bound so the two do not interact confusingly.
+
+**`call` joins `manual_claim` as exempt.** Lengthening a window that
+suppresses *every* non-exempt trigger would otherwise mean a genuine
+incoming call within 6 seconds of a switch is dropped — and a call is
+the signal this product can least afford to miss, being first in
+`PRIORITY_ORDER`.
+
+The exemption is safe on principle, not merely convenient. The cooldown
+exists because *connecting the headset changes audio routing*, which
+route-derived triggers misread. Neither platform's call trigger is
+route-derived: Android's comes from `TelephonyCallback` (telephony
+state), macOS's from running-application detection. A real call cannot
+be an echo of our own route change, so there is nothing here for the
+cooldown to protect against.
+
+This corrects the number against decision point 1's own stated intent —
+"so it doesn't misread the side effects of its own action as a new
+trigger" — rather than reversing the decision. The mechanism stands;
+the estimate did not survive contact with hardware.
+
+**Still open, deliberately not decided here.** A fixed window is blunt
+either way: it suppresses genuine triggers for its whole duration, and
+covers echoes only if it happens to be long enough. The sharper design
+is to end suppression when the route observation *confirms* the
+transition landed, with a time bound only as a backstop —
+`RouteTransition` already implements that shape for route *reporting*.
+That is a larger change and is not made here. ADR 0020's debouncing and
+command coalescing attacks the same symptom from the relay side and is
+also still unimplemented. #251 records both as follow-ups.

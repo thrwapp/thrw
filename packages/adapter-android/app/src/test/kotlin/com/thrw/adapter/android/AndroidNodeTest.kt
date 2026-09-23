@@ -196,19 +196,22 @@ class AndroidNodeTest {
     }
 
     /**
-     * The exemption is for `manual_claim` alone. Every other kind is
-     * observed rather than requested, so every other kind can legitimately
-     * be an echo of thrw's own action - suppressing those is the whole
-     * point of #167 and must not regress.
+     * `voip` and `media` remain suppressed. Both derive from audio
+     * state, so both can legitimately be an echo of thrw's own action -
+     * suppressing them is the whole point of #167 and must not regress.
+     * `media` is exactly what chattered in #251.
+     *
+     * `call` used to be in this list. It moved to the exempt set when
+     * #251 lengthened the window to 6s - see the test below for why.
      */
     @Test
-    fun `every other trigger is still suppressed by the cooldown`() = runTest {
-        for (kind in listOf(EventKind.MEDIA, EventKind.VOIP, EventKind.CALL)) {
+    fun `audio-derived triggers are still suppressed by the cooldown`() = runTest {
+        for (kind in listOf(EventKind.MEDIA, EventKind.VOIP)) {
             val transport = FakeMqttTransport()
             val node = AndroidNode(
                 ACCOUNT, NODE, HEADSET, transport,
                 BluetoothConnectionManager(RecordingGateway()),
-                selfCooldown = SelfCooldown(windowMs = 3_000) { 0L },
+                selfCooldown = SelfCooldown(windowMs = 6_000) { 0L },
             )
 
             node.onClaim()
@@ -216,6 +219,33 @@ class AndroidNodeTest {
 
             assertTrue(transport.published.isEmpty(), "$kind must still be suppressed")
         }
+    }
+
+    /**
+     * #251. At a 3s window, a call suppressed by the cooldown was a
+     * narrow enough gap to live with. At 6s it is not - and a call is
+     * the signal this product can least afford to miss, being first in
+     * `PRIORITY_ORDER`.
+     *
+     * Exempting it is safe on principle rather than merely convenient:
+     * the cooldown exists because connecting the headset changes audio
+     * routing, and Android's call signal is `TelephonyCallback`
+     * (telephony state), not a route observation. A real call cannot be
+     * an echo of our own action.
+     */
+    @Test
+    fun `a call is not suppressed by the cooldown`() = runTest {
+        val transport = FakeMqttTransport()
+        val node = AndroidNode(
+            ACCOUNT, NODE, HEADSET, transport,
+            BluetoothConnectionManager(RecordingGateway()),
+            selfCooldown = SelfCooldown(windowMs = 6_000) { 0L },
+        )
+
+        node.onClaim()
+        node.emitEvent(EventKind.CALL, 0)
+
+        assertEquals(1, transport.published.size, "a call must reach the relay even mid-cooldown")
     }
 
     private fun activeEventsOf(payload: String): List<String> =

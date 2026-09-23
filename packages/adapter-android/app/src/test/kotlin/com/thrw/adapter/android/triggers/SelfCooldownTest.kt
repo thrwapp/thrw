@@ -61,8 +61,21 @@ class SelfCooldownTest {
         assertTrue(cooldown.isActive(), "re-arming at 2500 should extend to 5500")
     }
 
+    /**
+     * #251. Was 3 seconds; ADR 0010's 2026-09-23 amendment makes it 6.
+     *
+     * The original *estimated* ~3s for thrw's own side effect to play
+     * out. ADR 0018 later *measured* a claim taking 3-5s to move the
+     * route, so the window closed before the transition it exists to
+     * cover had finished - and on hardware the tail of that transition
+     * read as a fresh `media` trigger, bouncing the headset between
+     * devices indefinitely.
+     *
+     * `adapter-mac`'s `defaultSelfCooldown` is the same number on the
+     * other side of the same behaviour.
+     */
     @Test
-    fun `the default window is the 3 seconds ADR 0010 specifies`() {
-        assertEquals(3_000L, SelfCooldown.DEFAULT_WINDOW_MS)
+    fun `the default window is the 6 seconds ADR 0010 specifies`() {
+        assertEquals(6_000L, SelfCooldown.DEFAULT_WINDOW_MS)
     }
 }

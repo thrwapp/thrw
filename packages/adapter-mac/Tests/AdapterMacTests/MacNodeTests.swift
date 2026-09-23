@@ -133,12 +133,16 @@ final class MacNodeTests: XCTestCase {
         XCTAssertEqual(transport.published.count, 1, "releasing must not be suppressed either")
     }
 
-    /// The exemption is for `manual_claim` alone. Every other kind is
-    /// observed rather than requested, so every other kind can legitimately
-    /// be an echo of thrw's own action - suppressing those is the whole
-    /// point of #167 and must not regress.
-    func testEveryOtherTriggerIsStillSuppressedByTheCooldown() async throws {
-        for kind in [EventKind.media, .voip, .call] {
+    /// `voip` and `media` remain suppressed. Both derive from audio
+    /// state, so both can legitimately be an echo of thrw's own action -
+    /// suppressing them is the whole point of #167 and must not regress.
+    /// `media` is exactly what chattered in #251.
+    ///
+    /// `call` used to be in this list. It moved to the exempt set when
+    /// #251 lengthened the window to 6s - see
+    /// ``testACallIsNotSuppressedByTheCooldown`` below for why.
+    func testAudioDerivedTriggersAreStillSuppressedByTheCooldown() async throws {
+        for kind in [EventKind.media, .voip] {
             let cooldown = SelfCooldown()
             let transport = FakeMqttTransport()
             let node = MacNode(
@@ -155,6 +159,34 @@ final class MacNodeTests: XCTestCase {
 
             XCTAssertTrue(transport.published.isEmpty, "\(kind) must still be suppressed")
         }
+    }
+
+    /// #251. At a 3s window, a call suppressed by the cooldown was a
+    /// narrow enough gap to live with. At 6s it is not - and a call is
+    /// the signal this product can least afford to miss, being first in
+    /// `PRIORITY_ORDER`.
+    ///
+    /// Exempting it is safe on principle rather than merely convenient:
+    /// the cooldown exists because connecting the headset changes audio
+    /// routing, and macOS's call signal is running-application detection,
+    /// not a route observation. A real call cannot be an echo of our own
+    /// action.
+    func testACallIsNotSuppressedByTheCooldown() async throws {
+        let cooldown = SelfCooldown()
+        let transport = FakeMqttTransport()
+        let node = MacNode(
+            accountId: accountId,
+            nodeId: nodeId,
+            headsetIdentifier: headsetIdentifier,
+            transport: transport,
+            bluetooth: BluetoothConnectionManager(gateway: FakeBluetoothPeripheralGateway()),
+            selfCooldown: cooldown
+        )
+        cooldown.arm()
+
+        try await node.emitEvent(type: .call, priority: unrankedPriority)
+
+        XCTAssertEqual(transport.published.count, 1, "a call must reach the relay even mid-cooldown")
     }
 
     // MARK: - activeEvents (#178)

@@ -58,14 +58,32 @@ class SelfCooldown(
 
     companion object {
         /**
-         * ~3 seconds, per ADR 0010. Long enough to cover a Bluetooth
-         * profile connect/disconnect and the audio stack settling
-         * afterwards; short enough that a genuine user action suppressed
-         * by it is a rare, brief inconsistency rather than a lasting one.
+         * 6 seconds, per ADR 0010's 2026-09-23 amendment.
          *
          * `adapter-mac`'s `defaultSelfCooldown` is the same constant on
          * the other side of the same behaviour - change both together.
+         *
+         * **Was 3 seconds, which was too short (#251).** The old value
+         * claimed to be "long enough to cover a Bluetooth profile
+         * connect/disconnect and the audio stack settling afterwards".
+         * It was not: ADR 0010 *estimated* ~3s, and ADR 0018 later
+         * *measured* a claim taking 3-5s to move the route. The window
+         * closed before the transition it exists to cover had finished,
+         * and that transition's tail was read as a fresh trigger.
+         *
+         * On hardware, with media playing on both devices, the Mac
+         * emitted `media` start/end pairs 1-5 seconds apart while
+         * YouTube played continuously. Most-recently-started wins, so
+         * each restart took the headset and each end gave it back -
+         * bouncing indefinitely, with the relay arbitrating correctly
+         * throughout.
+         *
+         * 6s covers ADR 0018's measured upper bound with margin and
+         * stays clear of ADR 0019's 8s command bound. The "short enough
+         * that a suppressed genuine action is rare" half of the old
+         * reasoning is now carried by exempting `call` as well as
+         * `manual_claim` - see [EventKind.bypassesSelfCooldown].
          */
-        const val DEFAULT_WINDOW_MS = 3_000L
+        const val DEFAULT_WINDOW_MS = 6_000L
     }
 }
