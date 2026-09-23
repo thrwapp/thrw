@@ -124,3 +124,65 @@ out loud in a shared space is not.
   hardware has one media session at a time, so the distinction has not
   been exercised, and guessing at it now would be inventing a
   requirement.
+
+## Amendment (2026-09-23): the macOS spike ran, and macOS mutes for now
+
+The spike this ADR's Consequences called for has been done, on the
+reference Mac. Three findings, and they change the macOS half.
+
+**1. Pausing on macOS works — with Accessibility.** Synthesising
+`NX_KEYTYPE_PLAY` through `CGEvent` had no effect from an untrusted
+process (YouTube kept playing). With Terminal granted Accessibility,
+`AXIsProcessTrusted()` returned true and the same post paused playback
+immediately. The mechanism is real; its cost is the permission that lets
+an application control the whole computer.
+
+**2. Media keys are a toggle, not a pause.** There is no distinct pause
+keycode — `NX_KEYTYPE_PLAY` flips whatever the current state is. On
+release, where this ADR wants "pause", toggling a device whose media is
+*already* paused would start it playing, on a device thrw has just taken
+the headset from. Exactly backwards. Any media-key implementation must
+gate on a separate read of whether audio is actually flowing.
+
+**3. The Accessibility grant would not survive an update.** The macOS
+app is ad-hoc signed today (`Signature=adhoc`, `TeamIdentifier=not
+set`). macOS TCC keys a grant to the code signature, falling back to the
+cdhash for an ad-hoc binary — and that changes on every build. "Grant
+Accessibility once" would in practice be "re-grant after every update",
+which is worse than the problem this ADR exists to fix. Proper Developer
+ID signing (#132, in progress) is the unblock.
+
+### Revised decision for macOS
+
+**macOS mutes and restores; Android pauses and resumes.** The behaviour
+this ADR specifies — suppress audio across the window, resume on the
+claiming side when the outcome resolves — is unchanged. Only the
+mechanism differs per platform:
+
+- **Android**: `MediaController.transportControls.pause()` / `.play()`,
+  through controllers the adapter already holds for trigger detection.
+  No new permission, explicit rather than a toggle.
+- **macOS**: set the default output device's volume to zero and restore
+  it. Public CoreAudio, no TCC grant of any kind, no toggle ambiguity.
+
+**This is explicitly temporary.** Pausing remains the target on macOS
+too, for the reasons the original decision gives — no content is lost,
+and a stuck pause is visible where a stuck mute is mysterious. It is
+blocked on #132 and should be revisited the moment the app is Developer
+ID signed.
+
+The original Rationale argued against muting on failure mode, and that
+argument still stands rather than having been abandoned. It is mitigated,
+not answered: the pre-mute volume is persisted, restored in a `defer`,
+**and** restored again at adapter startup, so a crash inside the window
+self-heals on next launch instead of leaving someone silently muted with
+no explanation. That mitigation is a requirement of this amendment, not
+an optional extra — without it, muting is the wrong trade.
+
+### What this costs, stated plainly
+
+For as long as macOS mutes, a handover loses roughly 2.7 seconds of
+content on that device rather than pausing over it, and the two platforms
+behave differently in a way a user could notice. Both are accepted
+deliberately, in exchange for shipping the fix now and asking for no new
+permissions, and both end when #132 does.
