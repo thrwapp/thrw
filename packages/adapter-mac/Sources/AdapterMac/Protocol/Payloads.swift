@@ -129,3 +129,76 @@ public struct EventEndPayload: Codable, Sendable, Equatable {
         self.type = type
     }
 }
+
+public let commandOutcomeKind = "command_outcome"
+
+/// ADR 0019 / #206 stage 2. How a claim or release actually ended.
+///
+/// Same `kind`-discriminator trick as ``RegistrationPayload`` and
+/// ``EventEndPayload``, for the same reason: the topic set is frozen, so
+/// this rides the events topic rather than getting one of its own.
+/// Mirrors `packages/protocol`'s `CommandOutcomePayload` and
+/// `adapter-android`'s own copy - three hand-written implementations of
+/// one wire format, and nothing else catches them drifting.
+///
+/// `epoch` and `seq` identify *which* command this answers, reusing the
+/// pair ADR 0018 point 1 added for idempotency (#210/#224). Optional for
+/// exactly the reason ``CommandPayload``'s are: a command carrying
+/// neither is still acted on, so an outcome for it must still be
+/// reportable rather than silently dropped.
+public struct CommandOutcomePayload: Codable, Sendable, Equatable {
+    public let kind: String
+    public let epoch: String?
+    public let seq: Int?
+    public let resourceType: String
+    public let outcome: String
+    public let reason: String?
+    public let durationMs: Int
+
+    public init(
+        epoch: String?,
+        seq: Int?,
+        resourceType: String,
+        outcome: CommandOutcome,
+        reason: CommandFailureReason?,
+        durationMs: Int
+    ) {
+        self.kind = commandOutcomeKind
+        self.epoch = epoch
+        self.seq = seq
+        self.resourceType = resourceType
+        self.outcome = outcome.rawValue
+        self.reason = reason?.rawValue
+        self.durationMs = durationMs
+    }
+}
+
+/// Mirror of `packages/protocol`'s `CommandOutcome`.
+public enum CommandOutcome: String, Sendable {
+    case succeeded
+    case failed
+    case timedOut = "timed_out"
+}
+
+/// Mirror of `packages/protocol`'s `CommandFailureReason`.
+///
+/// **Only two of the three are emitted today, deliberately.**
+/// Distinguishing `bluetooth_unavailable` from
+/// `target_device_unreachable` needs the gateways to surface typed,
+/// *comparable* errors, and they do not: macOS throws
+/// `BluetoothGatewayError` cases about pairing, Android throws
+/// `IllegalStateException` with prose in the message. Classifying each
+/// platform by whatever it happens to throw would make one reason code
+/// mean different things on each side - and ADR 0019's premise is that
+/// an outcome means the same thing in every row, or the aggregate is
+/// meaningless.
+///
+/// So both platforms report `target_device_unreachable` for any
+/// non-timeout failure until the gateways can tell these apart. Coarse
+/// and comparable beats precise and incomparable; typed gateway errors
+/// are the follow-up that unlocks the finer split.
+public enum CommandFailureReason: String, Sendable {
+    case bluetoothUnavailable = "bluetooth_unavailable"
+    case targetDeviceUnreachable = "target_device_unreachable"
+    case supersededByNewerCommand = "superseded_by_newer_command"
+}

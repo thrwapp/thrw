@@ -54,7 +54,14 @@ final class FakeMqttTransport: MqttTransport, @unchecked Sendable {
         commandsContinuation = continuation
     }
 
+    /// #206. Makes every publish throw, so a test can prove that a lost
+    /// outcome report does not take the command loop down with it.
+    var failPublishes = false
+
+    struct PublishFailed: Error {}
+
     func publish(topic: String, payload: String, qos: Int, retained: Bool) async throws {
+        if failPublishes { throw PublishFailed() }
         published.append(PublishedMessage(topic: topic, payload: payload, qos: qos, retained: retained))
     }
 

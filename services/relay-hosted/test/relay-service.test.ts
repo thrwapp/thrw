@@ -745,6 +745,33 @@ describe("RelayService (real broker)", () => {
       expect(service.engineFor(account)?.currentHolder()).toBe(nodeB.nodeId);
     });
 
+    it("accepts an outcome for an unsequenced command", async () => {
+      // Both adapters still act on a command carrying neither epoch nor
+      // seq (ADR 0018 point 1 shipped relay-first, so builds exist that
+      // ran against a relay stamping nothing). Rejecting the outcome for
+      // one would make acting on it an unmeasurable switch - the exact
+      // gap this mechanism exists to close. The first version of this
+      // guard required both fields and would have failed here.
+      const account = randomUUID();
+      const nodeA = manifest();
+      const seen: CommandOutcomeReported[] = [];
+      await startService([account], undefined, undefined, undefined, {
+        onCommandOutcome: (o) => seen.push(o),
+      });
+
+      await publishRegistration(rawClient, account, nodeA);
+      await publishOutcome(rawClient, account, nodeA.nodeId, {
+        resourceType: "audio",
+        outcome: "succeeded",
+        durationMs: 2_400,
+      });
+
+      await expect.poll(() => seen.length, { timeout: 2000 }).toBe(1);
+      expect(seen[0]).toMatchObject({ outcome: "succeeded", durationMs: 2_400 });
+      expect(seen[0]?.epoch).toBeUndefined();
+      expect(seen[0]?.seq).toBeUndefined();
+    });
+
     it("drops a malformed outcome rather than skewing the data with it", async () => {
       // This is the one payload treated as evidence about reliability, so
       // a `failed` with no reason - unaggregatable - is dropped rather
