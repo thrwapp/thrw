@@ -175,9 +175,15 @@ export interface CommandOutcomeReported {
   readonly account: string;
   readonly node: string;
   readonly resource: ResourceType;
-  /** Identifies which command this answers - see `CommandOutcomePayload`. */
-  readonly epoch: string;
-  readonly seq: number;
+  /**
+   * Identifies which command this answers - see `CommandOutcomePayload`.
+   *
+   * Optional for the same reason the payload's are: a command carrying
+   * neither is still acted on by both adapters, and its outcome has to
+   * stay reportable rather than being dropped as malformed.
+   */
+  readonly epoch?: string;
+  readonly seq?: number;
   readonly outcome: CommandOutcome;
   readonly reason?: CommandFailureReason;
   readonly durationMs: number;
