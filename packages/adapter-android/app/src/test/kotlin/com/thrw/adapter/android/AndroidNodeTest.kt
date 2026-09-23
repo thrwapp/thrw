@@ -1,5 +1,8 @@
 package com.thrw.adapter.android
 
+import kotlinx.coroutines.awaitCancellation
+import com.thrw.adapter.android.audio.HandoverAudioGate
+import com.thrw.adapter.android.audio.NoOpHandoverAudioGate
 import com.thrw.adapter.android.bluetooth.BluetoothClassicGateway
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionState
@@ -82,7 +85,15 @@ private class RecordingGateway(private var failConnectTimes: Int = 0) : Bluetoot
     val connectCalls = mutableListOf<String>()
     val disconnectCalls = mutableListOf<String>()
 
+    /** #254 - drives the `timed_out` path, so restore-on-timeout is reachable. */
+    var hangNextConnect = false
+
     override suspend fun connect(deviceAddress: String) {
+        if (hangNextConnect) {
+            hangNextConnect = false
+            connectCalls += deviceAddress
+            awaitCancellation()
+        }
         connectCalls += deviceAddress
         // #210: a headset that is off, out of range or busy makes the
         // real gateway throw (#161). The call is still recorded, so a
@@ -116,11 +127,22 @@ private val MANIFEST = NodeManifest(
     supportedResourceTypes = listOf(ResourceType.AUDIO),
 )
 
-private class Fixture(failConnectTimes: Int = 0) {
+/** #254. Records the order of gate calls, which is the whole contract. */
+private class RecordingAudioGate : HandoverAudioGate {
+    val calls = mutableListOf<String>()
+    override suspend fun silence() { calls += "silence" }
+    override suspend fun restore() { calls += "restore" }
+}
+
+private class Fixture(
+    failConnectTimes: Int = 0,
+    hangConnect: Boolean = false,
+    audioGate: HandoverAudioGate = NoOpHandoverAudioGate,
+) {
     val transport = FakeMqttTransport()
-    val gateway = RecordingGateway(failConnectTimes)
+    val gateway = RecordingGateway(failConnectTimes).also { it.hangNextConnect = hangConnect }
     val bluetooth = BluetoothConnectionManager(gateway)
-    val node = AndroidNode(ACCOUNT, NODE, HEADSET, transport, bluetooth)
+    val node = AndroidNode(ACCOUNT, NODE, HEADSET, transport, bluetooth, audioGate = audioGate)
 }
 
 class AndroidNodeTest {
@@ -484,6 +506,108 @@ class AndroidNodeTest {
         f.node.onRelease()
 
         assertTrue(f.transport.published.isEmpty())
+    }
+
+    // ADR 0022 / #254 - silencing audio across the handover window.
+
+    /**
+     * On release, silence and **do not** restore. The user has moved to
+     * another device; continuing to play here is never what they wanted,
+     * and it mirrors what the platform itself does on
+     * AUDIO_BECOMING_NOISY when headphones are unplugged.
+     */
+    @Test
+    fun `a release silences and does not restore`() = runTest {
+        val gate = RecordingAudioGate()
+        val f = Fixture(audioGate = gate)
+        f.transport.commands.send("""{"type":"release"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(listOf("silence"), gate.calls)
+    }
+
+    /**
+     * On claim, silence then restore once the outcome is known - brief
+     * silence beats ~5s through the phone speaker, and nothing is lost.
+     */
+    @Test
+    fun `a claim silences and then restores`() = runTest {
+        val gate = RecordingAudioGate()
+        val f = Fixture(audioGate = gate)
+        f.transport.commands.send("""{"type":"claim"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(listOf("silence", "restore"), gate.calls)
+    }
+
+    /**
+     * ADR 0022 requires restoring on *every* terminal outcome. A user
+     * left silenced because a claim failed would be a worse bug than the
+     * audio leak this prevents - and a failed claim is exactly when the
+     * headset did not arrive, so the audio has nowhere to go but here.
+     */
+    @Test
+    fun `a failed claim still restores`() = runTest {
+        val gate = RecordingAudioGate()
+        val f = Fixture(failConnectTimes = 1, audioGate = gate)
+        f.transport.commands.send("""{"type":"claim"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(listOf("silence", "restore"), gate.calls)
+    }
+
+    /** The other terminal outcome: #244's bound firing. Same rule. */
+    @Test
+    fun `a timed-out claim still restores`() = runTest {
+        val gate = RecordingAudioGate()
+        val f = Fixture(hangConnect = true, audioGate = gate)
+        f.transport.commands.send("""{"type":"claim"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(listOf("silence", "restore"), gate.calls)
+    }
+
+    /**
+     * A command the sequence gate discards never happened, so it must
+     * not touch audio at all. Silencing for a superseded command would
+     * pause the user's media for a claim that was never executed.
+     */
+    @Test
+    fun `a superseded command does not touch audio`() = runTest {
+        val gate = RecordingAudioGate()
+        val f = Fixture(audioGate = gate)
+        f.transport.commands.send("""{"type":"claim","seq":2,"epoch":"e1"}""")
+        f.transport.commands.send("""{"type":"release","seq":1,"epoch":"e1"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        // The claim's pair only - the stale release contributes nothing.
+        assertEquals(listOf("silence", "restore"), gate.calls)
+    }
+
+    /**
+     * Without a gate the node behaves exactly as it did before ADR 0022.
+     * Leaking audio as it always has is a better failure than refusing
+     * to hand over at all.
+     */
+    @Test
+    fun `without a gate the node still hands over`() = runTest {
+        val f = Fixture()
+        f.transport.commands.send("""{"type":"claim"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(listOf(HEADSET), f.gateway.connectCalls)
     }
 
     // ADR 0019 / #206 stage 2 - command outcomes.

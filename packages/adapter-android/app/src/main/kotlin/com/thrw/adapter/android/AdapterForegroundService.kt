@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
+import com.thrw.adapter.android.audio.MediaSessionHandoverAudioGate
 import com.thrw.adapter.android.claim.ManualClaim
 import com.thrw.adapter.android.status.NodeStatus
 import com.thrw.adapter.android.status.textRes
@@ -208,6 +209,17 @@ class AdapterForegroundService : Service() {
                 hiveTransport,
                 bluetooth,
                 sequenceGate = sequenceGate,
+                // ADR 0022 (#254). Uses the same notification-listener
+                // grant the VoIP and media triggers already need, so this
+                // adds no new permission - which is most of why ADR 0022
+                // pauses here while macOS mutes.
+                audioGate = MediaSessionHandoverAudioGate(
+                    this@AdapterForegroundService,
+                    ComponentName(
+                        this@AdapterForegroundService,
+                        AndroidNotificationListenerService::class.java,
+                    ),
+                ),
             )
 
             val callMonitor = CallTriggerMonitor(AndroidCallStateSource(this@AdapterForegroundService), node)
