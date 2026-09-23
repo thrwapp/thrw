@@ -52,16 +52,100 @@ docker pull "$RELAY_SERVICE_IMAGE_REF"
 #
 # Best-effort by design: a failure to archive must never block a
 # redeploy. Keeps the last 20 archives, which at this cadence is weeks.
-# Under $HOME, not /var/log: nothing in this script uses sudo (docker
-# runs via the SSH user's docker group), so /var/log/thrw would not be
-# writable and archiving would silently do nothing - the failure mode
-# this whole change exists to remove. Adding sudo for a log copy would
-# be a privilege escalation in exchange for a nicer path.
-LOG_ARCHIVE_DIR="${THRW_LOG_ARCHIVE_DIR:-$HOME/thrw-logs}"
+#
+# /var/log/thrw, world-readable. The comment that used to sit here
+# argued for $HOME over /var/log because "nothing in this script uses
+# sudo", so /var/log/thrw would not be writable. That premise was
+# false: deploy.yml invokes this script as `sudo bash
+# ~/relay-redeploy.sh`, so it runs as root and $HOME is /root. The one
+# path it chose to avoid was writable all along, and the path it chose
+# instead is mode 0700 - `gcloud compute ssh` lands an interactive user
+# as themselves, not root, so $HOME/thrw-logs did not exist for the
+# humans the archive exists for. The archives were being written
+# correctly and reported in the deploy output, and were still
+# unreachable (#241). That cost a real investigation during #236, where
+# they looked absent rather than unreadable.
+#
+# So: a fixed, world-readable path outside any home directory, plus the
+# readability probe below. "Wrote the file" and "a human can read the
+# file" are different claims, and only the second one is the point.
+#
+# What lands here is operational events only - holder changes, route
+# drift, broker connection lines carrying account and node ids. The
+# shared EMQX credential does not appear in either container's stdout:
+# docker-entrypoint-relay.sh writes it to a mode-0600 file inside the
+# container, and this script passes it through a mode-0600 env file
+# rather than argv.
+#
+# THRW_LOG_ARCHIVE_DIR still overrides, for a manual recovery run made
+# without root where /var/log is not writable.
+LOG_ARCHIVE_DIR="${THRW_LOG_ARCHIVE_DIR:-/var/log/thrw}"
+# Where archives landed before #241. Both entries, because a CI run has
+# $HOME=/root while a by-hand run does not; when they coincide the
+# second pass simply finds nothing.
+LEGACY_LOG_ARCHIVE_DIRS=(/root/thrw-logs "$HOME/thrw-logs")
+
+ensure_archive_dir() {
+  if ! mkdir -p "$LOG_ARCHIVE_DIR" 2>/dev/null; then
+    return 1
+  fi
+  # mkdir -p honours umask, so root's umask would otherwise decide who
+  # can reach this directory - which is the entire bug in #241.
+  chmod 755 "$LOG_ARCHIVE_DIR" 2>/dev/null || true
+}
+
+# Can an ordinary, non-root user actually read $1? Probed by reading it
+# as `nobody`, not by inspecting one path's mode bits: readability also
+# depends on traversal permission on every ancestor directory, which a
+# single stat cannot tell you - and an unreadable ancestor is exactly
+# how #241 happened.
+#
+# Returns 2 for "cannot tell" when this run is not root (dropping
+# privileges needs root), which is reported as such rather than as a
+# failure - a manual recovery run should not print a warning it has no
+# evidence for.
+readable_without_sudo() {
+  if [ "$(id -u)" -ne 0 ]; then
+    return 2
+  fi
+  su -s /bin/sh -c "head -c 1 -- '$1' >/dev/null" nobody >/dev/null 2>&1
+}
+
+# One-time move of the pre-#241 archives into the readable location.
+# Moved rather than copied: a second copy left behind in an unreadable
+# directory is how this went unnoticed for as long as it did. Names are
+# timestamped per container, so `mv -n` cannot quietly drop a distinct
+# archive - and it will not overwrite one if it somehow collides.
+migrate_legacy_archives() {
+  if ! ensure_archive_dir; then
+    return 0
+  fi
+  for legacy in "${LEGACY_LOG_ARCHIVE_DIRS[@]}"; do
+    if [ ! -d "$legacy" ] || [ "$legacy" = "$LOG_ARCHIVE_DIR" ]; then
+      continue
+    fi
+    moved=0
+    for f in "$legacy"/*.log; do
+      [ -e "$f" ] || continue
+      if mv -n "$f" "$LOG_ARCHIVE_DIR/" 2>/dev/null; then
+        moved=$((moved + 1))
+      else
+        echo "WARNING: could not move $f to $LOG_ARCHIVE_DIR - it stays unreadable there" >&2
+      fi
+    done
+    if [ "$moved" -gt 0 ]; then
+      chmod 644 "$LOG_ARCHIVE_DIR"/*.log 2>/dev/null || true
+      echo "Migrated $moved archived log file(s) from $legacy to $LOG_ARCHIVE_DIR (#241)"
+    fi
+    if rmdir "$legacy" 2>/dev/null; then
+      echo "Removed now-empty $legacy"
+    fi
+  done
+}
 
 archive_logs() {
   container="$1"
-  if ! mkdir -p "$LOG_ARCHIVE_DIR"; then
+  if ! ensure_archive_dir; then
     echo "WARNING: cannot create $LOG_ARCHIVE_DIR - $container logs will be lost on rm" >&2
     return 0
   fi
@@ -69,7 +153,17 @@ archive_logs() {
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
     target="$LOG_ARCHIVE_DIR/${container}-${stamp}.log"
     if docker logs "$container" > "$target" 2>&1; then
+      chmod 644 "$target" 2>/dev/null || true
       echo "Archived $container logs to $target ($(wc -l < "$target") lines)"
+      # #241: say in the deploy output whether the thing just written is
+      # reachable, instead of succeeding quietly into a path no human
+      # can open. This line is the difference between the two.
+      readable_without_sudo "$target" && probe=0 || probe=$?
+      case "$probe" in
+        0) echo "  Readable without sudo: yes - verified by reading it as an unprivileged user" ;;
+        2) echo "  Readable without sudo: not checked - this run is not root, so it cannot drop privileges to test" ;;
+        *) echo "WARNING: $target is NOT readable without sudo - an interactive SSH user cannot read this archive (#241)" >&2 ;;
+      esac
     else
       echo "WARNING: could not archive $container logs" >&2
     fi
@@ -78,6 +172,7 @@ archive_logs() {
   ls -1t "$LOG_ARCHIVE_DIR/${container}"-*.log 2>/dev/null | tail -n +21 | xargs -r rm -f || true
 }
 
+migrate_legacy_archives
 archive_logs relay
 docker stop relay || true
 docker rm relay || true
