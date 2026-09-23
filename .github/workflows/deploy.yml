@@ -7,6 +7,18 @@ on:
       - "packages/relay-core/**"
       - "services/relay-hosted/**"
       - "services/licensing/**"
+      # The two files this workflow uploads to the VM and runs there.
+      # Without them, a fix to the deploy script itself merges, reports
+      # green, and never reaches the VM - it waits for an unrelated
+      # relay change to carry it, silently. #241 was found this way: its
+      # fix to relay-redeploy.sh would have merged into a repo that
+      # believed itself deployed, which is the same shape as the bug
+      # #241 is about. The Caddyfile has the same problem - #119 put it
+      # under services/relay-hosted, so it is already covered by the
+      # line above, but it is listed explicitly so that moving either
+      # file does not quietly re-open this gap.
+      - "scripts/relay-redeploy.sh"
+      - "services/relay-hosted/Caddyfile"
   # Re-running a completed workflow run replays the workflow file as it
   # existed at that run's original commit, not the current tip of main -
   # confirmed on deploy-site.yml (see its matching comment). workflow_dispatch
