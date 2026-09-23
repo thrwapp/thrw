@@ -1,9 +1,27 @@
 import Foundation
 
-/// ~3 seconds, per ADR 0010. `adapter-android`'s
+/// 6 seconds, per ADR 0010's 2026-09-23 amendment. `adapter-android`'s
 /// `SelfCooldown.DEFAULT_WINDOW_MS` is the same constant on the other
 /// side of the same behaviour - change both together.
-public let defaultSelfCooldown: Duration = .seconds(3)
+///
+/// **Was 3 seconds, which was too short (#251).** ADR 0010 estimated
+/// "~3 seconds" as how long thrw's own side effect takes to play out;
+/// ADR 0018 later *measured* a claim taking 3-5s to move the route. So
+/// the window closed before the transition it exists to cover had
+/// finished, and the tail of that transition was read as a fresh
+/// trigger.
+///
+/// What that looked like on hardware: media playing on both devices,
+/// and the Mac emitting `media` start/end pairs 1-5 seconds apart while
+/// YouTube played continuously. Since the tie-break is
+/// most-recently-started, each restart took the headset back and each
+/// end handed it to the phone - bouncing indefinitely, with the relay
+/// arbitrating correctly the whole time.
+///
+/// 6s covers ADR 0018's measured upper bound with margin and stays
+/// clear of ADR 0019's 8s command bound, so the two do not interact
+/// confusingly.
+public let defaultSelfCooldown: Duration = .seconds(6)
 
 /// ADR 0010 point 1: after thrw initiates a claim or release, it
 /// suppresses processing of its own resulting connection-state-changed
