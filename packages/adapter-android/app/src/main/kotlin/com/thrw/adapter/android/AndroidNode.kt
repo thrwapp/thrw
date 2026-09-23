@@ -4,6 +4,8 @@ import android.util.Log
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.heartbeat.HeartbeatSink
 import com.thrw.adapter.android.mqtt.MqttTransport
+import com.thrw.adapter.android.audio.HandoverAudioGate
+import com.thrw.adapter.android.audio.NoOpHandoverAudioGate
 import com.thrw.adapter.android.protocol.CommandFailureReason
 import com.thrw.adapter.android.protocol.CommandOutcome
 import com.thrw.adapter.android.protocol.CommandOutcomePayload
@@ -74,6 +76,16 @@ class AndroidNode(
      * which is what makes the guarantee survive a process restart.
      */
     private val sequenceGate: CommandSequenceGate = CommandSequenceGate(),
+    /**
+     * ADR 0022 (#254). Silences this device's audio across the handover
+     * window, so the ~2.7s where no device holds the headset does not
+     * come out of the built-in speaker.
+     *
+     * Defaults to a no-op rather than a failure: a node built without
+     * one behaves exactly as it did before ADR 0022 - leaking audio as
+     * it always has - rather than refusing to hand over at all.
+     */
+    private val audioGate: HandoverAudioGate = NoOpHandoverAudioGate,
 ) : NodeInterface, EventLifecycle, HeartbeatSink {
 
     /**
@@ -286,6 +298,16 @@ class AndroidNode(
                 // mid-claim would otherwise produce a negative or wildly
                 // inflated reading that silently skews it.
                 val startedAt = System.nanoTime()
+                // ADR 0022. Silence before the mechanical work, because
+                // the window opens the moment the old host lets go - not
+                // when the new one finishes. Both commands silence; only
+                // a claim restores, and only once the outcome is known.
+                //
+                // On release we deliberately never restore: the user has
+                // moved to another device, and continuing to play here
+                // is never what they wanted. That is what the platform
+                // itself does on AUDIO_BECOMING_NOISY.
+                if (command != null) audioGate.silence()
                 try {
                     when (command?.type) {
                         CommandType.CLAIM -> onClaim()
@@ -296,6 +318,7 @@ class AndroidNode(
                     // that threw has not happened, and leaving the mark
                     // where it is lets a redelivery retry it.
                     if (command != null) sequenceGate.record(command)
+                    if (command?.type == CommandType.CLAIM) audioGate.restore()
                     reportOutcome(command, CommandOutcome.SUCCEEDED, null, elapsedMs(startedAt))
                 } catch (e: TimeoutCancellationException) {
                     // Caught ahead of CancellationException below: #244's
@@ -304,11 +327,24 @@ class AndroidNode(
                     // Falling through to the cancellation branch would
                     // lose the measurement *and* kill the loop.
                     Log.e(TAG, "Command ${command?.type} timed out - staying subscribed", e)
+                    // ADR 0022: restore on *every* terminal outcome, not
+                    // only success. A user left silenced because a claim
+                    // timed out would be a worse bug than the leak this
+                    // prevents - and a timeout is exactly when the
+                    // headset did not arrive, so the audio has nowhere
+                    // to go but here.
+                    if (command?.type == CommandType.CLAIM) audioGate.restore()
                     reportOutcome(command, CommandOutcome.TIMED_OUT, null, elapsedMs(startedAt))
                 } catch (e: CancellationException) {
+                    // Restored before rethrowing: the runtime is shutting
+                    // us down, and leaving the user's media paused as a
+                    // parting gesture would be indistinguishable from a
+                    // bug.
+                    if (command?.type == CommandType.CLAIM) audioGate.restore()
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "Command ${command?.type} failed - staying subscribed", e)
+                    if (command?.type == CommandType.CLAIM) audioGate.restore()
                     reportOutcome(
                         command,
                         CommandOutcome.FAILED,

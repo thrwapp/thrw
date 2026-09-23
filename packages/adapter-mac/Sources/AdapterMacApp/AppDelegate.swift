@@ -278,6 +278,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 gateway: IOBluetoothPeripheralGateway(),
                 routeSource: routeSource
             )
+            // ADR 0022 / #254: silences this Mac across the ~2.7s of a
+            // handover where neither device holds the headset, so audio
+            // does not fall back to the built-in speakers.
+            //
+            // `UserDefaults`-backed rather than in-memory, and for a
+            // sharper reason than the sequence store below: the record
+            // is what the pre-mute volume gets restored *from*. Losing
+            // it with the process would leave the user muted with
+            // nothing on screen explaining why, which is why ADR 0022's
+            // amendment makes durability a requirement of choosing to
+            // mute at all.
+            let audioGate = MutingHandoverAudioGate(
+                volume: CoreAudioSystemOutputVolume(),
+                store: UserDefaultsMutedVolumeStore()
+            )
+            // The other half of that requirement: a crash inside a
+            // handover window self-heals on this launch rather than
+            // persisting.
+            //
+            // Unstructured, so it is *not* ordered against the runtime
+            // starting below - a command could beat it. That is safe
+            // because the gate is an actor, so this and `silence()`
+            // cannot interleave, and both orderings end correctly:
+            // recovery-first restores and clears, leaving the claim to
+            // record afresh; claim-first finds the record already held,
+            // leaves it alone, and its own restore consumes it - after
+            // which recovery finds nothing to do.
+            Task { await audioGate.restoreAfterPreviousRun() }
             let node = MacNode(
                 accountId: accountId,
                 nodeId: nodeId,
@@ -291,7 +319,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // mark that died with the process would let the
                 // broker's QoS 1 redelivery re-run a command already
                 // acted on.
-                sequenceGate: CommandSequenceGate(store: UserDefaultsSequenceStore())
+                sequenceGate: CommandSequenceGate(store: UserDefaultsSequenceStore()),
+                audioGate: audioGate
             )
             self.node = node
             manualClaim = ManualClaim(node: node)

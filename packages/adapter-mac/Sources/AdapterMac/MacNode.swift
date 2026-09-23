@@ -76,6 +76,14 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// one, which is what makes the guarantee survive a relaunch.
     private let sequenceGate: CommandSequenceGate
 
+    /// ADR 0022 (#254). Silences this device across the ~2.7s of a
+    /// handover where no device holds the headset, so audio does not fall
+    /// back to the built-in speakers. Defaults to a no-op, so a node
+    /// built without one behaves exactly as it did before ADR 0022 -
+    /// leaking that audio, as it always has, rather than refusing to
+    /// hand over.
+    private let audioGate: HandoverAudioGate
+
     public init(
         accountId: String,
         nodeId: String,
@@ -85,7 +93,8 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
         selfCooldown: SelfCooldown = SelfCooldown(),
         routeObserver: AudioRouteObserver? = nil,
         routeTransition: RouteTransition = RouteTransition(),
-        sequenceGate: CommandSequenceGate = CommandSequenceGate()
+        sequenceGate: CommandSequenceGate = CommandSequenceGate(),
+        audioGate: HandoverAudioGate = NoOpHandoverAudioGate()
     ) {
         self.accountId = accountId
         self.nodeId = nodeId
@@ -96,6 +105,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
         self.routeObserver = routeObserver
         self.routeTransition = routeTransition
         self.sequenceGate = sequenceGate
+        self.audioGate = audioGate
     }
 
     /// Publishes this node's manifest so the relay's device registry
@@ -242,9 +252,11 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
             // inflated reading that silently skews it.
             let startedAt = ContinuousClock.now
             do {
-                switch command.type {
-                case .claim: try await onClaim()
-                case .release: try await onRelease()
+                try await withHandoverAudioSuppressed(for: command.type) {
+                    switch command.type {
+                    case .claim: try await onClaim()
+                    case .release: try await onRelease()
+                    }
                 }
             } catch is CancellationError {
                 throw CancellationError()
@@ -281,6 +293,41 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
                 durationMs: Self.elapsedMs(since: startedAt)
             )
         }
+    }
+
+    /// Runs the mechanical claim/release with this device's audio
+    /// silenced (ADR 0022, #254).
+    ///
+    /// ## Why a closure rather than a `defer`
+    ///
+    /// ADR 0022's amendment asks for restore-in-a-`defer`, and that is
+    /// the right shape - but Swift's `defer` body cannot `await`, and
+    /// ``HandoverAudioGate/restore()`` is asynchronous. This is the
+    /// closure-scoped equivalent: every way out of `body` - returning,
+    /// throwing, and the cancellation rethrow - passes through a restore
+    /// below. The Kotlin side gets the same guarantee from explicit
+    /// calls on each path in `AndroidNode`'s command loop; keep the two
+    /// in step.
+    ///
+    /// ## Why release does not restore
+    ///
+    /// Asymmetric on purpose. A release means the user has moved to
+    /// another device, so this one stays silent until it is claimed
+    /// again - and the claim's ``HandoverAudioGate/silence()`` is a
+    /// no-op that keeps the record it already holds, so the eventual
+    /// restore still returns the original volume rather than zero.
+    private func withHandoverAudioSuppressed(
+        for type: CommandType,
+        _ body: () async throws -> Void
+    ) async rethrows {
+        await audioGate.silence()
+        do {
+            try await body()
+        } catch {
+            if type == .claim { await audioGate.restore() }
+            throw error
+        }
+        if type == .claim { await audioGate.restore() }
     }
 
     /// ``HeartbeatSink`` conformance (#142) - liveness only, so the

@@ -34,15 +34,58 @@ private final class Fixture {
 
     /// `gateway` overrides the recording fake for the one test that
     /// needs a gateway which *cancels* rather than fails (#223).
-    init(gateway underlying: BluetoothPeripheralGateway? = nil) {
-        bluetooth = BluetoothConnectionManager(gateway: underlying ?? gateway)
+    ///
+    /// `audioGate` and `connectTimeout` are for ADR 0022 / #254: the
+    /// first records silence/restore calls, the second lets the
+    /// timed-out-claim test finish in milliseconds instead of the real
+    /// 8s bound.
+    init(
+        gateway underlying: BluetoothPeripheralGateway? = nil,
+        audioGate: HandoverAudioGate = NoOpHandoverAudioGate(),
+        connectTimeout: Duration = commandOutcomeTimeout
+    ) {
+        bluetooth = BluetoothConnectionManager(
+            gateway: underlying ?? gateway,
+            connectTimeout: connectTimeout
+        )
         node = MacNode(
             accountId: accountId,
             nodeId: nodeId,
             headsetIdentifier: headsetIdentifier,
             transport: transport,
-            bluetooth: bluetooth
+            bluetooth: bluetooth,
+            audioGate: audioGate
         )
+    }
+}
+
+/// Records the order of ``HandoverAudioGate`` calls for #254.
+///
+/// Order, not just counts: "silenced then restored" and "restored then
+/// silenced" would pass an equal-counts assertion, and the second is a
+/// device left muted.
+private final class RecordingAudioGate: HandoverAudioGate, @unchecked Sendable {
+    enum Call: String, Equatable { case silence, restore }
+
+    private let lock = NSLock()
+    private var recorded: [Call] = []
+
+    var calls: [Call] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    func silence() async {
+        lock.lock()
+        defer { lock.unlock() }
+        recorded.append(.silence)
+    }
+
+    func restore() async {
+        lock.lock()
+        defer { lock.unlock() }
+        recorded.append(.restore)
     }
 }
 
@@ -433,6 +476,100 @@ final class MacNodeTests: XCTestCase {
             [headsetIdentifier],
             "the second command must still be acted on after the first outcome failed to publish"
         )
+    }
+
+    // MARK: - handover audio suppression (ADR 0022, #254)
+
+    /// Asymmetric on purpose, and the asymmetry is the decision: the user
+    /// has moved to another device, so this one stays silent rather than
+    /// resuming out of the built-in speakers the moment the headset
+    /// leaves.
+    func testAReleaseSilencesAndDoesNotRestore() async throws {
+        let audio = RecordingAudioGate()
+        let f = Fixture(audioGate: audio)
+        f.transport.sendCommand(#"{"type":"release"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(audio.calls, [.silence])
+    }
+
+    /// The claim half: silenced for the ~2.7s where neither device holds
+    /// the headset, restored once the command resolves.
+    func testAClaimSilencesAndThenRestores() async throws {
+        let audio = RecordingAudioGate()
+        let f = Fixture(audioGate: audio)
+        f.transport.sendCommand(#"{"type":"claim"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(audio.calls, [.silence, .restore])
+    }
+
+    /// A user left silenced because a claim failed would be a worse bug
+    /// than the one #254 fixes - on macOS especially, where the
+    /// suppression is a *mute* and therefore invisible (#265).
+    func testAFailedClaimStillRestores() async throws {
+        let audio = RecordingAudioGate()
+        let f = Fixture(audioGate: audio)
+        f.gateway.failNextConnect = true
+        f.transport.sendCommand(#"{"type":"claim"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(audio.calls, [.silence, .restore])
+    }
+
+    /// The third of ADR 0019's three terminal outcomes. This is the one
+    /// that would leak through a naive "restore on success or thrown
+    /// error" - #244's bound resolves the claim without either.
+    func testATimedOutClaimStillRestores() async throws {
+        let audio = RecordingAudioGate()
+        let f = Fixture(audioGate: audio, connectTimeout: .milliseconds(50))
+        f.gateway.blockNextConnect = true
+        f.transport.sendCommand(#"{"type":"claim"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(audio.calls, [.silence, .restore])
+        let sent = try XCTUnwrap(f.transport.published.last)
+        let decoded = try JSONDecoder().decode(CommandOutcomePayload.self, from: Data(sent.payload.utf8))
+        XCTAssertEqual(decoded.outcome, "timed_out", "the restore above must be the timeout path, not a failure path")
+    }
+
+    /// A superseded command is idempotency working correctly - nothing
+    /// mechanical happens, so nothing audible should either. Silencing
+    /// here would mute a device for a handover that is not taking place,
+    /// and on the release path nothing would ever restore it.
+    func testASupersededCommandDoesNotTouchAudio() async throws {
+        let audio = RecordingAudioGate()
+        let f = Fixture(audioGate: audio)
+        f.transport.sendCommand(#"{"type":"claim","seq":2,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"release","seq":1,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(audio.calls, [.silence, .restore], "only the claim should have touched audio")
+    }
+
+    /// The default. A node built without a gate behaves exactly as it did
+    /// before ADR 0022 - leaking audio across the window, as it always
+    /// has - rather than refusing to hand over at all.
+    func testWithoutAGateTheNodeStillHandsOver() async throws {
+        let f = Fixture()
+        f.transport.sendCommand(#"{"type":"claim"}"#)
+        f.transport.sendCommand(#"{"type":"release"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(f.gateway.connectCalls, [headsetIdentifier])
+        XCTAssertEqual(f.gateway.disconnectCalls, [headsetIdentifier])
     }
 
     func testPublishHeartbeatPublishesAnEmptyPayloadOnTheHeartbeatTopicAtQoS0() async throws {
