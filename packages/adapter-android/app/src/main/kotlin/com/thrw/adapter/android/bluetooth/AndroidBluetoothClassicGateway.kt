@@ -11,6 +11,7 @@ import android.content.Context
 import android.util.Log
 import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -80,23 +81,123 @@ class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway
     private var headset: BluetoothHeadset? = null
 
     override suspend fun connect(deviceAddress: String) = withContext(Dispatchers.IO) {
-        applyToProfiles(deviceAddress, "connect")
+        val driven = applyToProfiles(deviceAddress, "connect")
+        awaitProfileState(deviceAddress, driven, BluetoothProfile.STATE_CONNECTED, "connect")
     }
 
     override suspend fun disconnect(deviceAddress: String) = withContext(Dispatchers.IO) {
-        applyToProfiles(deviceAddress, "disconnect")
+        val driven = applyToProfiles(deviceAddress, "disconnect")
+        awaitProfileState(deviceAddress, driven, BluetoothProfile.STATE_DISCONNECTED, "disconnect")
     }
 
     /**
-     * Invokes [method] on every available audio profile proxy.
+     * Suspends until one of the profiles actually driven reports
+     * [targetState] for [deviceAddress] (#257).
+     *
+     * ## Why this has to exist
+     *
+     * `BluetoothA2dp.connect(device)` returns a boolean meaning *"the
+     * request was accepted"*, not *"the device is connected"* - the
+     * connection completes asynchronously. Without this wait, [connect]
+     * returned in ~18ms on the reference Pixel while the headset took
+     * roughly 9-10 seconds to actually attach.
+     *
+     * That was not merely an inaccurate number. ADR 0019's outcome
+     * reporting (#206) then logged `succeeded` for a claim before
+     * anything had happened, so:
+     *
+     * - a claim that was accepted and *then refused* - observed three
+     *   times in a row on 2026-09-22, ACL up and A2DP declined - was
+     *   recorded as a success;
+     * - aggregate switch success rate and ADR 0007's
+     *   `claim_roundtrip_ms` would have shown Android as ~100x faster
+     *   than macOS and near-perfectly reliable, breaking ADR 0019's
+     *   central premise that an outcome means the same thing in every
+     *   row;
+     * - #244's 8s bound had nothing to bound, since a call returning in
+     *   18ms can never time out.
+     *
+     * ## Why polling rather than a broadcast receiver
+     *
+     * `getConnectionState` is **public** API - no new hidden-API
+     * dependency, unlike the `connect`/`disconnect` above. A
+     * `BroadcastReceiver` on `ACTION_CONNECTION_STATE_CHANGED` would be
+     * more event-driven but adds registration lifecycle to a class that
+     * has none, for a wait that is already bounded elsewhere.
+     *
+     * **Deliberately no timeout of its own.**
+     * `BluetoothConnectionManager` wraps every call in
+     * `withTimeout(COMMAND_OUTCOME_TIMEOUT_MS)` (#244), so a device that
+     * never reaches the target state surfaces as that bound firing -
+     * which is exactly the `timed_out` outcome ADR 0019 wants, rather
+     * than a second competing deadline with its own semantics.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun awaitProfileState(
+        deviceAddress: String,
+        driven: List<Pair<String, BluetoothProfile>>,
+        targetState: Int,
+        method: String,
+    ) {
+        val device = adapter.getRemoteDevice(deviceAddress)
+        // Only meaningful while waiting for CONNECTED: a refusal shows up
+        // as the state going CONNECTING and then back to DISCONNECTED.
+        // Tracked so that is reported as the failure it is, immediately,
+        // rather than spinning until the outer 8s bound and surfacing as
+        // `timed_out` - a wrong reason code *and* eight seconds spent
+        // waiting for something already known to have failed.
+        //
+        // Only concluded *after* CONNECTING has been observed, because
+        // the state is legitimately still DISCONNECTED for a moment
+        // right after the request is accepted.
+        var sawConnecting = false
+        while (true) {
+            val states = driven.map { (_, proxy) ->
+                try {
+                    proxy.getConnectionState(device)
+                } catch (e: SecurityException) {
+                    // Permission revoked mid-operation. Treated as
+                    // "reached" rather than "not there yet", so the outer
+                    // bound ends this instead of it spinning silently
+                    // with no explanation.
+                    Log.w(TAG, "getConnectionState denied while awaiting $method for $deviceAddress", e)
+                    targetState
+                }
+            }
+            if (states.any { it == targetState }) return
+
+            if (targetState == BluetoothProfile.STATE_CONNECTED) {
+                if (states.any { it == BluetoothProfile.STATE_CONNECTING }) sawConnecting = true
+                if (sawConnecting && states.all { it == BluetoothProfile.STATE_DISCONNECTED }) {
+                    throw IllegalStateException(
+                        "$deviceAddress accepted the $method request and then refused it - " +
+                            "every driven profile returned to DISCONNECTED",
+                    )
+                }
+            }
+            delay(PROFILE_STATE_POLL_MS)
+        }
+    }
+
+    /**
+     * Invokes [method] on every available audio profile proxy, and
+     * returns the ones that accepted the request.
      *
      * Throws only if *no* profile could be driven at all - a device that
      * genuinely has no A2DP (a headset that is call-only, say) shouldn't
      * fail the whole operation when HFP worked. `BluetoothConnectionManager`
      * treats a throw as "the claim failed", so the distinction matters.
+     *
+     * The return value is what [awaitProfileState] waits on (#257):
+     * waiting on a profile that refused the request would hang until the
+     * outer bound fired, reporting `timed_out` for what was really an
+     * immediate refusal on that profile.
      */
     @SuppressLint("MissingPermission")
-    private suspend fun applyToProfiles(deviceAddress: String, method: String) {
+    private suspend fun applyToProfiles(
+        deviceAddress: String,
+        method: String,
+    ): List<Pair<String, BluetoothProfile>> {
         val device = adapter.getRemoteDevice(deviceAddress)
         val proxies = audioProfileProxies()
         if (proxies.isEmpty()) {
@@ -104,19 +205,20 @@ class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway
         }
 
         val failures = mutableListOf<String>()
-        var succeeded = false
+        val driven = mutableListOf<Pair<String, BluetoothProfile>>()
         for ((label, proxy) in proxies) {
             try {
                 invokeProfileMethod(proxy, method, device)
-                succeeded = true
+                driven += label to proxy
             } catch (e: Exception) {
                 failures += "$label: ${e.message}"
                 Log.w(TAG, "$method via $label failed for $deviceAddress", e)
             }
         }
-        if (!succeeded) {
+        if (driven.isEmpty()) {
             throw IllegalStateException("$method failed on every audio profile - ${failures.joinToString("; ")}")
         }
+        return driven
     }
 
     /**
@@ -231,5 +333,16 @@ class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway
 
     private companion object {
         private const val TAG = "BluetoothGateway"
+
+        /**
+         * How often [awaitProfileState] re-reads the profile state (#257).
+         *
+         * 100ms against a connection that takes seconds: fine-grained
+         * enough that the reported `durationMs` is not dominated by poll
+         * granularity, cheap enough to be irrelevant next to the
+         * Bluetooth work itself. There is no upper bound here on purpose
+         * - `BluetoothConnectionManager`'s `withTimeout` owns that.
+         */
+        private const val PROFILE_STATE_POLL_MS = 100L
     }
 }
