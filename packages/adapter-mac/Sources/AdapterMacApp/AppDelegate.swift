@@ -298,7 +298,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             refreshClaimItem()
             refreshStatusItem()
 
-            let voipMonitor = VoipTriggerMonitor(source: NSWorkspaceRunningApplicationSource(), node: node)
+            // #247: the microphone is the second signal. A known VoIP app
+            // merely being *open* is not a call, and because `voip`
+            // outranks `media`, leaving Slack or WhatsApp running used to
+            // pin the headset to this Mac indefinitely - no amount of
+            // deliberate playback elsewhere could win it back.
+            let voipMonitor = VoipTriggerMonitor(
+                source: NSWorkspaceRunningApplicationSource(),
+                node: node,
+                microphone: CoreAudioMicrophoneActivitySource()
+            )
             // #166: media (rule 4), via public CoreAudio.
             let mediaMonitor = MediaTriggerMonitor(source: CoreAudioPlaybackSource(), node: node)
             runtimeHandle = NodeRuntime(node: node, voipTriggerMonitor: voipMonitor, mediaTriggerMonitor: mediaMonitor)
