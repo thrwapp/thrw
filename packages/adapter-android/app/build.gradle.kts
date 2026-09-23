@@ -122,7 +122,7 @@ android {
         // NodeManifest.adapterVersion was not the version on the release
         // page. adapter-mac's DeviceIdentity.adapterVersion is the same
         // literal on the other side of the same contract - change both.
-        versionName = "0.1.3"
+        versionName = "0.1.4"
     }
 
     compileOptions {

@@ -25,7 +25,7 @@ public enum DeviceIdentity {
     /// in `NodeManifest.adapterVersion` was not the version on the release
     /// page. `adapter-android`'s `versionName` is the same literal on the
     /// other side of the same contract - change both together.
-    static let adapterVersion = "0.1.3"
+    static let adapterVersion = "0.1.4"
 
     public static func nodeId(defaults: UserDefaults = .standard) -> String {
         if let existing = defaults.string(forKey: nodeIdKey) {
