@@ -221,7 +221,26 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
             // broker may redeliver - and does, on reconnect. Acting on
             // a redelivered claim that arrives after a newer release
             // would take the headset back from whoever now holds it.
-            guard sequenceGate.accepts(command) else { continue }
+            guard sequenceGate.accepts(command) else {
+                // ADR 0019 / #206. A command the gate discards is
+                // reported, not dropped silently - that is exactly what
+                // `superseded_by_newer_command` exists for, and ADR 0019
+                // tracks it separately from real failures because a
+                // superseded command is idempotency working correctly,
+                // not a switch that went wrong.
+                await reportOutcome(
+                    command: command,
+                    outcome: .failed,
+                    reason: .supersededByNewerCommand,
+                    durationMs: 0
+                )
+                continue
+            }
+            // ADR 0019's durationMs. A monotonic clock, not wall time:
+            // this number feeds a latency SLO (ADR 0007), and an NTP step
+            // mid-claim would otherwise produce a negative or wildly
+            // inflated reading that silently skews it.
+            let startedAt = ContinuousClock.now
             do {
                 switch command.type {
                 case .claim: try await onClaim()
@@ -238,12 +257,29 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
                     category: "MacNode",
                     "command \(command.type) failed - staying subscribed: \(String(describing: error))"
                 )
+                // A timeout is its own outcome rather than a failure with
+                // a reason: ADR 0019 separates "the headset said no" from
+                // "nothing answered at all", and #244's bound is what
+                // produces the second.
+                let timedOut = error is BluetoothOperationTimedOut
+                await reportOutcome(
+                    command: command,
+                    outcome: timedOut ? .timedOut : .failed,
+                    reason: timedOut ? nil : .targetDeviceUnreachable,
+                    durationMs: Self.elapsedMs(since: startedAt)
+                )
                 continue
             }
             // Only after the command actually succeeded - the `continue`
             // above skips this, so the mark stays where it is and the
             // broker's redelivery gets to retry.
             sequenceGate.record(command)
+            await reportOutcome(
+                command: command,
+                outcome: .succeeded,
+                reason: nil,
+                durationMs: Self.elapsedMs(since: startedAt)
+            )
         }
     }
 
@@ -278,5 +314,54 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
             qos: TopicQos.eventsQos,
             retained: false
         )
+    }
+
+    /// ADR 0019 / #206 stage 2 - tells the relay how a command ended.
+    ///
+    /// **Never throws, and never aborts the command loop.** A failure to
+    /// report an outcome is a lost measurement; a failure to keep
+    /// listening is a node that goes deaf, which is #223 all over again.
+    /// Those are not remotely the same severity, so this swallows its
+    /// own publish errors after logging them.
+    ///
+    /// Cancellation is the one exception: it is re-thrown implicitly by
+    /// not being caught here, because `publishToEvents` propagates it
+    /// and the caller's `catch is CancellationError` needs to see it.
+    private func reportOutcome(
+        command: CommandPayload,
+        outcome: CommandOutcome,
+        reason: CommandFailureReason?,
+        durationMs: Int
+    ) async {
+        do {
+            try await publishToEvents(
+                CommandOutcomePayload(
+                    epoch: command.epoch,
+                    seq: command.seq,
+                    resourceType: Self.resource.rawValue,
+                    outcome: outcome,
+                    reason: reason,
+                    durationMs: durationMs
+                )
+            )
+        } catch {
+            logAdapterError(
+                category: "MacNode",
+                "could not report \(outcome.rawValue) outcome for \(command.type): \(String(describing: error))"
+            )
+        }
+    }
+
+    /// Whole milliseconds since `start`, floored at zero.
+    ///
+    /// `ContinuousClock` keeps counting across system sleep, which is
+    /// what we want: a claim issued before the lid closed and completing
+    /// after it opened really did take that long from the user's point
+    /// of view, and hiding that would flatter the latency data.
+    private static func elapsedMs(since start: ContinuousClock.Instant) -> Int {
+        let elapsed = ContinuousClock.now - start
+        let ms = elapsed.components.seconds * 1_000
+            + Int64(elapsed.components.attoseconds / 1_000_000_000_000_000)
+        return Int(max(0, ms))
     }
 }

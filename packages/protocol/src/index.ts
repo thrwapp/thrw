@@ -150,15 +150,25 @@ export const COMMAND_OUTCOME_TIMEOUT_MS = 8_000;
  */
 export interface CommandOutcomePayload {
   kind: "command_outcome";
-  /** The relay epoch the answered command carried. */
-  epoch: string;
-  /** The sequence number the answered command carried. */
-  seq: number;
+  /**
+   * The relay epoch the answered command carried.
+   *
+   * **Optional, matching `CommandPayload`'s own.** A command arriving
+   * with neither `epoch` nor `seq` is still acted on by both adapters -
+   * the relay half of ADR 0018 point 1 shipped before the adapter half,
+   * so builds exist that ran against a relay stamping nothing. An
+   * outcome for such a command has to stay reportable, or acting on it
+   * becomes an unmeasurable switch, which is the exact gap this
+   * mechanism exists to close.
+   */
+  epoch?: string;
+  /** The sequence number the answered command carried. Optional, as `epoch`. */
+  seq?: number;
   resourceType: ResourceType;
   outcome: CommandOutcome;
   /** Present when and only when `outcome` is `failed`. */
   reason?: CommandFailureReason;
-  /** Wall time from receiving the command to resolving it. */
+  /** Monotonic elapsed time from receiving the command to resolving it. */
   durationMs: number;
 }
 

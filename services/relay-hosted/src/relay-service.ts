@@ -175,9 +175,15 @@ export interface CommandOutcomeReported {
   readonly account: string;
   readonly node: string;
   readonly resource: ResourceType;
-  /** Identifies which command this answers - see `CommandOutcomePayload`. */
-  readonly epoch: string;
-  readonly seq: number;
+  /**
+   * Identifies which command this answers - see `CommandOutcomePayload`.
+   *
+   * Optional for the same reason the payload's are: a command carrying
+   * neither is still acted on by both adapters, and its outcome has to
+   * stay reportable rather than being dropped as malformed.
+   */
+  readonly epoch?: string;
+  readonly seq?: number;
   readonly outcome: CommandOutcome;
   readonly reason?: CommandFailureReason;
   readonly durationMs: number;
@@ -233,7 +239,15 @@ function isCommandOutcomePayload(payload: unknown): payload is CommandOutcomePay
   if (typeof payload !== "object" || payload === null) return false;
   const p = payload as Record<string, unknown>;
   if (p.kind !== COMMAND_OUTCOME_KIND) return false;
-  if (typeof p.epoch !== "string" || typeof p.seq !== "number") return false;
+  // `epoch`/`seq` are optional, matching `CommandPayload`'s own and what
+  // both adapters actually send. Requiring them - as this originally did
+  // - would have silently rejected the outcome for any *unsequenced*
+  // command, and the adapters deliberately still act on those (ADR 0018
+  // point 1 shipped relay-first, so builds exist that ran against a
+  // relay stamping nothing). A wrong type is still malformed; an absent
+  // one is not.
+  if (p.epoch !== undefined && typeof p.epoch !== "string") return false;
+  if (p.seq !== undefined && typeof p.seq !== "number") return false;
   if (typeof p.durationMs !== "number") return false;
   if (p.outcome !== "succeeded" && p.outcome !== "failed" && p.outcome !== "timed_out") return false;
   // A reason is meaningful only on a failure, and a failure without one

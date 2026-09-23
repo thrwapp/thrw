@@ -4,6 +4,8 @@ import com.thrw.adapter.android.bluetooth.BluetoothClassicGateway
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionState
 import com.thrw.adapter.android.mqtt.MqttTransport
+import com.thrw.adapter.android.protocol.COMMAND_OUTCOME_KIND
+import com.thrw.adapter.android.protocol.CommandOutcomePayload
 import com.thrw.adapter.android.protocol.EventKind
 import com.thrw.adapter.android.protocol.ResourceType
 import com.thrw.adapter.android.protocol.NodeManifest
@@ -55,7 +57,14 @@ private class FakeMqttTransport : MqttTransport {
     val subscriptions = mutableListOf<Pair<String, Int>>()
     var closed = false
 
+    /**
+     * #206. Makes every publish throw, so a test can prove a lost
+     * outcome report does not take the command loop down with it.
+     */
+    var failPublishes = false
+
     override suspend fun publish(topic: String, payload: String, qos: Int, retained: Boolean) {
+        if (failPublishes) throw IllegalStateException("simulated publish failure")
         published += Published(topic, payload, qos, retained)
     }
 
@@ -107,9 +116,9 @@ private val MANIFEST = NodeManifest(
     supportedResourceTypes = listOf(ResourceType.AUDIO),
 )
 
-private class Fixture {
+private class Fixture(failConnectTimes: Int = 0) {
     val transport = FakeMqttTransport()
-    val gateway = RecordingGateway()
+    val gateway = RecordingGateway(failConnectTimes)
     val bluetooth = BluetoothConnectionManager(gateway)
     val node = AndroidNode(ACCOUNT, NODE, HEADSET, transport, bluetooth)
 }
@@ -475,6 +484,105 @@ class AndroidNodeTest {
         f.node.onRelease()
 
         assertTrue(f.transport.published.isEmpty())
+    }
+
+    // ADR 0019 / #206 stage 2 - command outcomes.
+
+    /**
+     * Reported for **every** command, not only failures. A success rate
+     * needs its denominator, or "reliability" stays inferred from the
+     * absence of complaints.
+     */
+    @Test
+    fun `a successful command reports its outcome with a duration`() = runTest {
+        val f = Fixture()
+        f.transport.commands.send("""{"type":"claim","seq":4,"epoch":"e1"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        val decoded = ProtocolJson.decodeFromString(
+            CommandOutcomePayload.serializer(),
+            f.transport.published.last().payload,
+        )
+        assertEquals(COMMAND_OUTCOME_KIND, decoded.kind)
+        assertEquals("succeeded", decoded.outcome)
+        assertEquals(null, decoded.reason)
+        assertEquals(4L, decoded.seq)
+        assertEquals("e1", decoded.epoch)
+        assertEquals("audio", decoded.resourceType)
+        assertTrue(decoded.durationMs >= 0)
+    }
+
+    /**
+     * The failure path still reports, and still leaves the sequence mark
+     * alone so the broker's QoS 1 redelivery can retry (#210/#161).
+     */
+    @Test
+    fun `a failed command reports failed with a reason code`() = runTest {
+        val f = Fixture(failConnectTimes = 1)
+        f.transport.commands.send("""{"type":"claim","seq":1,"epoch":"e1"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        val decoded = ProtocolJson.decodeFromString(
+            CommandOutcomePayload.serializer(),
+            f.transport.published.last().payload,
+        )
+        assertEquals("failed", decoded.outcome)
+        assertEquals("target_device_unreachable", decoded.reason)
+    }
+
+    /**
+     * A command the gate discards is reported rather than dropped
+     * silently. ADR 0019 tracks `superseded_by_newer_command` separately
+     * from real failures - a superseded command is idempotency working
+     * correctly, not a switch that went wrong - so it has to be
+     * distinguishable in the data rather than invisible.
+     */
+    @Test
+    fun `a superseded command is reported rather than silently discarded`() = runTest {
+        val f = Fixture()
+        f.transport.commands.send("""{"type":"claim","seq":2,"epoch":"e1"}""")
+        f.transport.commands.send("""{"type":"release","seq":1,"epoch":"e1"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(emptyList(), f.gateway.disconnectCalls, "the stale release must not have run")
+        val decoded = ProtocolJson.decodeFromString(
+            CommandOutcomePayload.serializer(),
+            f.transport.published.last().payload,
+        )
+        assertEquals("failed", decoded.outcome)
+        assertEquals("superseded_by_newer_command", decoded.reason)
+        assertEquals(1L, decoded.seq)
+    }
+
+    /**
+     * A lost measurement must never become a deaf node. #161/#223's
+     * lesson was that an exception escaping this loop leaves the adapter
+     * silently unable to act on any later command - and on Android it
+     * took the whole process down, with the OS restarting it in a loop.
+     * An outcome publish is far less important than staying subscribed.
+     */
+    @Test
+    fun `a failure to report an outcome does not end the command loop`() = runTest {
+        val f = Fixture()
+        f.transport.failPublishes = true
+        f.transport.commands.send("""{"type":"claim"}""")
+        f.transport.commands.send("""{"type":"release"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(listOf(HEADSET), f.gateway.connectCalls)
+        assertEquals(
+            listOf(HEADSET),
+            f.gateway.disconnectCalls,
+            "the second command must still run after the first outcome failed to publish",
+        )
     }
 
     @Test

@@ -132,6 +132,67 @@ data class EventEndPayload(
 
 const val EVENT_END_KIND: String = "event_end"
 
+const val COMMAND_OUTCOME_KIND: String = "command_outcome"
+
+/**
+ * ADR 0019 / #206 stage 2. How a claim or release actually ended.
+ *
+ * Same `kind`-discriminator trick as [RegistrationPayload] and
+ * [EventEndPayload], for the same reason: the topic set is frozen, so
+ * this rides the events topic rather than getting one of its own.
+ * Mirrors `packages/protocol`'s `CommandOutcomePayload` and
+ * `adapter-mac`'s own copy - three hand-written implementations of one
+ * wire format, and nothing else catches them drifting.
+ *
+ * `epoch` and `seq` identify *which* command this answers, reusing the
+ * pair ADR 0018 point 1 added for idempotency (#210/#224). Nullable for
+ * the same reason [CommandPayload]'s are: a command carrying neither is
+ * still acted on, so an outcome for it must still be reportable.
+ */
+@Serializable
+data class CommandOutcomePayload(
+    val kind: String = COMMAND_OUTCOME_KIND,
+    val epoch: String? = null,
+    /** `Long` to match [CommandPayload.seq], which is what it echoes. */
+    val seq: Long? = null,
+    val resourceType: String,
+    val outcome: String,
+    val reason: String? = null,
+    val durationMs: Long,
+)
+
+/** Mirror of `packages/protocol`'s `CommandOutcome`. */
+enum class CommandOutcome(val wire: String) {
+    SUCCEEDED("succeeded"),
+    FAILED("failed"),
+    TIMED_OUT("timed_out"),
+}
+
+/**
+ * Mirror of `packages/protocol`'s `CommandFailureReason`.
+ *
+ * **Only two of the three are emitted today, deliberately.**
+ * Distinguishing `bluetooth_unavailable` from
+ * `target_device_unreachable` needs the gateways to surface typed,
+ * *comparable* errors, and they do not: Android throws
+ * `IllegalStateException` with prose in the message, macOS throws
+ * `BluetoothGatewayError` cases about pairing. Classifying each platform
+ * by whatever it happens to throw would make one reason code mean
+ * different things on each side - and ADR 0019's premise is that an
+ * outcome means the same thing in every row, or the aggregate is
+ * meaningless.
+ *
+ * So both platforms report `target_device_unreachable` for any
+ * non-timeout failure until the gateways can tell these apart. Coarse
+ * and comparable beats precise and incomparable; typed gateway errors
+ * are the follow-up that unlocks the finer split.
+ */
+enum class CommandFailureReason(val wire: String) {
+    BLUETOOTH_UNAVAILABLE("bluetooth_unavailable"),
+    TARGET_DEVICE_UNREACHABLE("target_device_unreachable"),
+    SUPERSEDED_BY_NEWER_COMMAND("superseded_by_newer_command"),
+}
+
 /**
  * Lenient on decode so a relay that grows extra command fields later
  * doesn't break older adapters mid-rollout; strict-ish on encode (no

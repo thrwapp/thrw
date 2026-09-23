@@ -353,6 +353,88 @@ final class MacNodeTests: XCTestCase {
         XCTAssertEqual(f.gateway.disconnectCalls, [headsetIdentifier])
     }
 
+    // MARK: - command outcomes (ADR 0019, #206 stage 2)
+
+    /// Reported for **every** command, not only failures. A success rate
+    /// needs its denominator, or "reliability" stays inferred from the
+    /// absence of complaints.
+    func testASuccessfulCommandReportsItsOutcomeWithADuration() async throws {
+        let f = Fixture()
+        f.transport.sendCommand(#"{"type":"claim","seq":4,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        let sent = try XCTUnwrap(f.transport.published.last)
+        let decoded = try JSONDecoder().decode(CommandOutcomePayload.self, from: Data(sent.payload.utf8))
+        XCTAssertEqual(decoded.kind, commandOutcomeKind)
+        XCTAssertEqual(decoded.outcome, "succeeded")
+        XCTAssertNil(decoded.reason)
+        XCTAssertEqual(decoded.seq, 4)
+        XCTAssertEqual(decoded.epoch, "e1")
+        XCTAssertEqual(decoded.resourceType, "audio")
+        XCTAssertGreaterThanOrEqual(decoded.durationMs, 0)
+    }
+
+    /// The failure path still reports, and still leaves the sequence mark
+    /// alone so the broker's QoS 1 redelivery can retry (#210/#223).
+    func testAFailedCommandReportsFailedWithAReasonCode() async throws {
+        let f = Fixture()
+        f.gateway.failNextConnect = true
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        let sent = try XCTUnwrap(f.transport.published.last)
+        let decoded = try JSONDecoder().decode(CommandOutcomePayload.self, from: Data(sent.payload.utf8))
+        XCTAssertEqual(decoded.outcome, "failed")
+        XCTAssertEqual(decoded.reason, "target_device_unreachable")
+    }
+
+    /// A command the gate discards is reported rather than dropped
+    /// silently. ADR 0019 tracks `superseded_by_newer_command` separately
+    /// from real failures - a superseded command is idempotency working
+    /// correctly, not a switch that went wrong - so it has to be
+    /// distinguishable in the data rather than invisible.
+    func testASupersededCommandIsReportedRatherThanSilentlyDiscarded() async throws {
+        let f = Fixture()
+        // seq 2 is acted on; the stale seq 1 that follows is discarded.
+        f.transport.sendCommand(#"{"type":"claim","seq":2,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"release","seq":1,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(f.gateway.disconnectCalls, [], "the stale release must not have been executed")
+        let sent = try XCTUnwrap(f.transport.published.last)
+        let decoded = try JSONDecoder().decode(CommandOutcomePayload.self, from: Data(sent.payload.utf8))
+        XCTAssertEqual(decoded.outcome, "failed")
+        XCTAssertEqual(decoded.reason, "superseded_by_newer_command")
+        XCTAssertEqual(decoded.seq, 1)
+    }
+
+    /// A lost measurement must never become a deaf node. #223's whole
+    /// lesson was that an error escaping this loop leaves the adapter
+    /// silently unable to act on any later command, and an outcome
+    /// publish is far less important than staying subscribed.
+    func testAFailureToReportAnOutcomeDoesNotEndTheCommandLoop() async throws {
+        let f = Fixture()
+        f.transport.failPublishes = true
+        f.transport.sendCommand(#"{"type":"claim"}"#)
+        f.transport.sendCommand(#"{"type":"release"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(f.gateway.connectCalls, [headsetIdentifier])
+        XCTAssertEqual(
+            f.gateway.disconnectCalls,
+            [headsetIdentifier],
+            "the second command must still be acted on after the first outcome failed to publish"
+        )
+    }
+
     func testPublishHeartbeatPublishesAnEmptyPayloadOnTheHeartbeatTopicAtQoS0() async throws {
         let f = Fixture()
 

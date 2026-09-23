@@ -4,6 +4,9 @@ import android.util.Log
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.heartbeat.HeartbeatSink
 import com.thrw.adapter.android.mqtt.MqttTransport
+import com.thrw.adapter.android.protocol.CommandFailureReason
+import com.thrw.adapter.android.protocol.CommandOutcome
+import com.thrw.adapter.android.protocol.CommandOutcomePayload
 import com.thrw.adapter.android.protocol.CommandPayload
 import com.thrw.adapter.android.protocol.CommandSequenceGate
 import com.thrw.adapter.android.protocol.CommandType
@@ -26,6 +29,7 @@ import com.thrw.adapter.android.triggers.RouteTransition
 import com.thrw.adapter.android.triggers.bypassesSelfCooldown
 import com.thrw.adapter.android.triggers.SelfCooldown
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.serialization.json.Json
 
 /**
@@ -263,8 +267,25 @@ class AndroidNode(
                 // bury the failures that matter.
                 if (command != null && !sequenceGate.accepts(command)) {
                     Log.i(TAG, "Discarding stale ${command.type} (seq=${command.seq}, epoch=${command.epoch})")
+                    // ADR 0019 / #206. Reported, not dropped silently -
+                    // that is what `superseded_by_newer_command` is for,
+                    // and ADR 0019 tracks it separately from real
+                    // failures because a superseded command is
+                    // idempotency working correctly, not a switch that
+                    // went wrong.
+                    reportOutcome(
+                        command,
+                        CommandOutcome.FAILED,
+                        CommandFailureReason.SUPERSEDED_BY_NEWER_COMMAND,
+                        durationMs = 0,
+                    )
                     return@collect
                 }
+                // ADR 0019's durationMs. Monotonic, not wall clock: this
+                // feeds a latency SLO (ADR 0007), and a clock adjustment
+                // mid-claim would otherwise produce a negative or wildly
+                // inflated reading that silently skews it.
+                val startedAt = System.nanoTime()
                 try {
                     when (command?.type) {
                         CommandType.CLAIM -> onClaim()
@@ -275,10 +296,25 @@ class AndroidNode(
                     // that threw has not happened, and leaving the mark
                     // where it is lets a redelivery retry it.
                     if (command != null) sequenceGate.record(command)
+                    reportOutcome(command, CommandOutcome.SUCCEEDED, null, elapsedMs(startedAt))
+                } catch (e: TimeoutCancellationException) {
+                    // Caught ahead of CancellationException below: #244's
+                    // bound throws this, and ADR 0019 separates "the
+                    // headset said no" from "nothing answered at all".
+                    // Falling through to the cancellation branch would
+                    // lose the measurement *and* kill the loop.
+                    Log.e(TAG, "Command ${command?.type} timed out - staying subscribed", e)
+                    reportOutcome(command, CommandOutcome.TIMED_OUT, null, elapsedMs(startedAt))
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "Command ${command?.type} failed - staying subscribed", e)
+                    reportOutcome(
+                        command,
+                        CommandOutcome.FAILED,
+                        CommandFailureReason.TARGET_DEVICE_UNREACHABLE,
+                        elapsedMs(startedAt),
+                    )
                 }
             }
     }
@@ -331,6 +367,50 @@ class AndroidNode(
             retained = false,
         )
     }
+
+    /**
+     * ADR 0019 / #206 stage 2 - tells the relay how a command ended.
+     *
+     * **Never throws, and never ends the command loop.** A failure to
+     * report an outcome is a lost measurement; a failure to keep
+     * listening is a node that goes deaf, which is #161/#223 all over
+     * again. Those are not remotely the same severity, so this swallows
+     * its own publish errors after logging them.
+     *
+     * [CancellationException] is re-thrown: that is structured
+     * concurrency stopping us, not a publish failure, and swallowing it
+     * would break cancellation.
+     */
+    private suspend fun reportOutcome(
+        command: CommandPayload?,
+        outcome: CommandOutcome,
+        reason: CommandFailureReason?,
+        durationMs: Long,
+    ) {
+        try {
+            publishToEvents(
+                ProtocolJson.encodeToString(
+                    CommandOutcomePayload.serializer(),
+                    CommandOutcomePayload(
+                        epoch = command?.epoch,
+                        seq = command?.seq,
+                        resourceType = RESOURCE.wire,
+                        outcome = outcome.wire,
+                        reason = reason?.wire,
+                        durationMs = durationMs,
+                    ),
+                ),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not report ${outcome.wire} outcome for ${command?.type}", e)
+        }
+    }
+
+    /** Whole milliseconds since a [System.nanoTime] reading, floored at zero. */
+    private fun elapsedMs(startedAtNanos: Long): Long =
+        ((System.nanoTime() - startedAtNanos) / 1_000_000).coerceAtLeast(0)
 }
 
 /** This adapter manages the headset audio connection (ADR 0015). */
