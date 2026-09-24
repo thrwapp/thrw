@@ -1,7 +1,10 @@
 # ADR 0022: Pause playback across the handover window, rather than letting it leak to the speakers
 
 ## Status
-Accepted
+Accepted — amended 2026-09-23 (macOS mutes for now), and amended again
+2026-09-24 (**that divergence is closed: macOS pauses**). The second
+amendment supersedes the first; read them in order, because the first
+records reasoning that turned out to rest on a mismeasurement.
 
 ## Context
 A handover takes roughly five seconds on the reference hardware, and for
@@ -186,3 +189,80 @@ content on that device rather than pausing over it, and the two platforms
 behave differently in a way a user could notice. Both are accepted
 deliberately, in exchange for shipping the fix now and asking for no new
 permissions, and both end when #132 does.
+
+## Amendment (2026-09-24): macOS pauses; the divergence is closed
+
+The amendment above lasted one day. v0.2.0 reached the reference
+hardware, and muting failed on two of its three paths — not on
+aesthetics, on measurement.
+
+**1. The reference headset has no volume to set.** Probing CoreAudio
+directly (#282):
+
+```
+Tom's AirPods Pro #2: volume=UNREADABLE(main element) settable=false  <-- DEFAULT
+MacBook Air Speakers: volume=0.250 settable=true
+```
+
+On the **release** path the headset is still the default output, so
+there was never anything for the muting gate to write to. That path has
+not worked since it shipped.
+
+This also corrects the record: the spike's `0.25 / settable: true`
+reading, offered in the amendment above as evidence the mechanism
+worked, was **the built-in speakers**, measured while the headset was
+connected elsewhere, and attributed to the headset. The prior amendment's
+"macOS: set the default output device's volume to zero" rests on that
+mistake.
+
+**2. The claim path leaks before it can start.** Audio begins when the
+user presses play; the claim command arrives roughly a second later, and
+suppression only begins then. Reported from real use: *"when I play
+YouTube it still plays out loud temporarily."*
+
+**3. Muting one device and restoring another.** Resolving "the default
+output device" separately at mute and restore time meant a claim muted
+the speakers and then restored the *headset*, leaving the speakers at
+zero with the record consumed — the exact failure the prior amendment
+made a requirement to prevent. Fixed in #283 by keying the record on a
+stable device UID, but it is evidence about the mechanism: muting has a
+device-identity problem that pausing does not have at all.
+
+### Revised decision
+
+**Both platforms pause.** The original decision stands as written, with
+no per-platform mechanism split:
+
+- **Android**: `MediaController.transportControls.pause()` / `.play()`.
+- **macOS**: `NX_KEYTYPE_PLAY` via `CGEvent`, gated on a separate read of
+  `kAudioDevicePropertyDeviceIsRunningSomewhere` — finding 2 of the
+  previous amendment, honoured. The key is never fired blind: it is
+  pressed only when audio is actually flowing, and only un-pressed by
+  the gate that pressed it.
+
+**The Accessibility cost is accepted rather than avoided.** Finding 3 of
+the previous amendment is still true — the app is ad-hoc signed, so the
+grant dies on every build and must be re-given after each update until
+#132 lands. That was judged worse than the problem; it is not, now that
+the alternative is known to fail on two paths. A Mac without the grant
+falls back to muting, so it is never worse than v0.2.0.
+
+**The mitigation the previous amendment demanded is no longer needed.**
+Persisting the pre-mute volume, restoring in a `defer`, and restoring
+again at startup existed because a mute that is never undone is
+invisible and unrecoverable. A pause is self-evident: the user sees a
+paused player and presses play. That the entire recovery apparatus
+becomes unnecessary is the clearest evidence pausing was the right
+mechanism throughout. It is retained only for the muting fallback, and
+for healing records left behind by v0.2.0.
+
+### What this costs, stated plainly
+
+An Accessibility grant that must be re-given after every update until
+#132. In exchange the two platforms behave identically, no content is
+lost on either, and a suppression that fails leaves something the user
+can see and fix rather than silence with no cause.
+
+Implemented in #267/#285. The original Rationale's argument against
+muting is no longer merely "still standing" — it has been confirmed by
+the failure modes above.
