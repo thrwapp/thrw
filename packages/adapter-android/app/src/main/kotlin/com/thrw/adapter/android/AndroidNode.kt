@@ -2,6 +2,7 @@ package com.thrw.adapter.android
 
 import android.util.Log
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
+import com.thrw.adapter.android.bluetooth.BluetoothGatewayException
 import com.thrw.adapter.android.heartbeat.HeartbeatSink
 import com.thrw.adapter.android.mqtt.MqttTransport
 import com.thrw.adapter.android.audio.HandoverAudioGate
@@ -345,6 +346,30 @@ class AndroidNode(
     }
 
     /**
+     * Which of ADR 0019's reason codes a failed command earned (#264).
+     *
+     * Everything used to flatten to `target_device_unreachable`, which
+     * is the most common case but not the only one. The distinction that
+     * matters is **which end of the link failed**: a missing profile
+     * proxy or a hidden API this Android version has blocked (#162) says
+     * nothing about where the headset is, and recording it as "the
+     * headset did not answer" sends anyone reading the telemetry to look
+     * in the wrong place.
+     *
+     * The default stays `target_device_unreachable` rather than becoming
+     * "unknown": an unrecognised exception from a Bluetooth call is far
+     * more likely to be the headset than the stack, and ADR 0019 offers
+     * no code for "we are not sure".
+     *
+     * Mirrors `MacNode.failureReason(for:)`.
+     */
+    private fun failureReasonFor(error: Throwable): CommandFailureReason =
+        when (error) {
+            is BluetoothGatewayException.BluetoothUnavailable -> CommandFailureReason.BLUETOOTH_UNAVAILABLE
+            else -> CommandFailureReason.TARGET_DEVICE_UNREACHABLE
+        }
+
+    /**
      * Subscribes to the retained state topic and keeps [holdsClaim] and
      * [holderChanges] current (#234). Suspends until the calling
      * coroutine is cancelled, like [listenForCommands].
@@ -489,7 +514,7 @@ class AndroidNode(
                     reportOutcome(
                         command,
                         CommandOutcome.FAILED,
-                        CommandFailureReason.TARGET_DEVICE_UNREACHABLE,
+                        failureReasonFor(e),
                         elapsedMs(startedAt),
                     )
                 }

@@ -6,6 +6,7 @@ import com.thrw.adapter.android.audio.NoOpHandoverAudioGate
 import com.thrw.adapter.android.bluetooth.BluetoothClassicGateway
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionState
+import com.thrw.adapter.android.bluetooth.BluetoothGatewayException
 import com.thrw.adapter.android.mqtt.MqttTransport
 import com.thrw.adapter.android.protocol.COMMAND_OUTCOME_KIND
 import com.thrw.adapter.android.protocol.CommandOutcomePayload
@@ -111,11 +112,23 @@ private class RecordingGateway(private var failConnectTimes: Int = 0) : Bluetoot
     /** #254 - drives the `timed_out` path, so restore-on-timeout is reachable. */
     var hangNextConnect = false
 
+    /**
+     * #264 - fails the way a *local* Bluetooth problem does (no usable
+     * profile proxy, a blocked hidden API) rather than the way an absent
+     * headset does, so the two reason codes are distinguishable here.
+     */
+    var failNextConnectAsUnavailable = false
+
     override suspend fun connect(deviceAddress: String) {
         if (hangNextConnect) {
             hangNextConnect = false
             connectCalls += deviceAddress
             awaitCancellation()
+        }
+        if (failNextConnectAsUnavailable) {
+            failNextConnectAsUnavailable = false
+            connectCalls += deviceAddress
+            throw BluetoothGatewayException.BluetoothUnavailable("no profile proxy available")
         }
         connectCalls += deviceAddress
         // #210: a headset that is off, out of range or busy makes the
@@ -680,6 +693,28 @@ class AndroidNodeTest {
         )
         assertEquals("failed", decoded.outcome)
         assertEquals("target_device_unreachable", decoded.reason)
+    }
+
+    /**
+     * #264 criterion 4. A local Bluetooth problem is not the headset's
+     * fault, and recording it as `target_device_unreachable` sends
+     * whoever reads the telemetry to the wrong end of the link.
+     */
+    @Test
+    fun `a local bluetooth failure reports bluetooth_unavailable, not the headset`() = runTest {
+        val f = Fixture()
+        f.gateway.failNextConnectAsUnavailable = true
+        f.transport.commands.send("""{"type":"claim","seq":1,"epoch":"e1"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        val decoded = ProtocolJson.decodeFromString(
+            CommandOutcomePayload.serializer(),
+            f.transport.published.last().payload,
+        )
+        assertEquals("failed", decoded.outcome)
+        assertEquals("bluetooth_unavailable", decoded.reason)
     }
 
     /**

@@ -98,6 +98,30 @@ private struct CancellingGateway: BluetoothPeripheralGateway {
     func disconnect(deviceIdentifier: UUID) async throws { throw CancellationError() }
 }
 
+/// #264. A provisioning fault — the device is not in macOS's paired
+/// list, so nothing was ever asked of the headset.
+private struct UnpairedGateway: BluetoothPeripheralGateway {
+    func connect(deviceIdentifier: UUID) async throws {
+        throw BluetoothGatewayError.deviceNotPaired(deviceIdentifier)
+    }
+
+    func disconnect(deviceIdentifier: UUID) async throws {
+        throw BluetoothGatewayError.deviceNotPaired(deviceIdentifier)
+    }
+}
+
+/// #264. The headset itself did not answer — IOBluetooth's own verdict,
+/// carrying the `IOReturn` it reported.
+private struct ConnectFailedGateway: BluetoothPeripheralGateway {
+    func connect(deviceIdentifier: UUID) async throws {
+        throw BluetoothGatewayError.connectFailed(deviceIdentifier, status: -536870212)
+    }
+
+    func disconnect(deviceIdentifier: UUID) async throws {
+        throw BluetoothGatewayError.disconnectFailed(deviceIdentifier, status: -536870212)
+    }
+}
+
 final class MacNodeTests: XCTestCase {
     /// #183, reproduced. A trigger that ends *inside* the self-cooldown
     /// window used to strand the relay with a signal that never ends.
@@ -425,6 +449,41 @@ final class MacNodeTests: XCTestCase {
     func testAFailedCommandReportsFailedWithAReasonCode() async throws {
         let f = Fixture()
         f.gateway.failNextConnect = true
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        let sent = try XCTUnwrap(f.transport.published.last)
+        let decoded = try JSONDecoder().decode(CommandOutcomePayload.self, from: Data(sent.payload.utf8))
+        XCTAssertEqual(decoded.outcome, "failed")
+        XCTAssertEqual(decoded.reason, "target_device_unreachable")
+    }
+
+    /// #264 criterion 4. A device macOS has never paired is a
+    /// provisioning fault, not a headset that failed to answer - and
+    /// unlike an unreachable headset it will never fix itself. Recording
+    /// it as `target_device_unreachable` sends whoever reads the
+    /// telemetry to the wrong end of the link.
+    func testAnUnpairedDeviceReportsBluetoothUnavailableNotUnreachable() async throws {
+        let f = Fixture(gateway: UnpairedGateway())
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        let sent = try XCTUnwrap(f.transport.published.last)
+        let decoded = try JSONDecoder().decode(CommandOutcomePayload.self, from: Data(sent.payload.utf8))
+        XCTAssertEqual(decoded.outcome, "failed")
+        XCTAssertEqual(decoded.reason, "bluetooth_unavailable")
+    }
+
+    /// The other side of that split, unchanged: IOBluetooth reporting
+    /// that the baseband connect failed *is* the headset not answering,
+    /// and on macOS that arrives via the stack's own page timeout rather
+    /// than having to be inferred the way Android infers it (#264).
+    func testAFailedBasebandConnectStillReportsTargetDeviceUnreachable() async throws {
+        let f = Fixture(gateway: ConnectFailedGateway())
         f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
         f.transport.finishCommands()
 

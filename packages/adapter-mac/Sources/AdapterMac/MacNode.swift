@@ -319,7 +319,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
                 await reportOutcome(
                     command: command,
                     outcome: timedOut ? .timedOut : .failed,
-                    reason: timedOut ? nil : .targetDeviceUnreachable,
+                    reason: timedOut ? nil : Self.failureReason(for: error),
                     durationMs: Self.elapsedMs(since: startedAt)
                 )
                 continue
@@ -334,6 +334,43 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
                 reason: nil,
                 durationMs: Self.elapsedMs(since: startedAt)
             )
+        }
+    }
+
+    /// Which of ADR 0019's reason codes a failed command earned (#264).
+    ///
+    /// Everything used to flatten to `targetDeviceUnreachable`, which is
+    /// the most common case but not the only one. The distinction that
+    /// matters is **which end of the link failed**: a device that macOS
+    /// has never paired, or an identifier carrying no Bluetooth address,
+    /// says nothing about where the headset is. Recording those as "the
+    /// headset did not answer" sends anyone reading the telemetry to look
+    /// in the wrong place — and these are provisioning faults, which are
+    /// permanent until someone fixes them, not the transient outage
+    /// `targetDeviceUnreachable` implies.
+    ///
+    /// The default stays `targetDeviceUnreachable` rather than becoming
+    /// "unknown": an unrecognised error out of a Bluetooth call is far
+    /// more likely to be the headset than the stack, and ADR 0019 offers
+    /// no code for "we are not sure". Adding one would need an ADR — the
+    /// confirmed-outcome pattern is a frozen contract (AGENTS.md).
+    ///
+    /// Mirrors `AndroidNode.failureReasonFor`.
+    private static func failureReason(for error: Error) -> CommandFailureReason {
+        guard let gatewayError = error as? BluetoothGatewayError else { return .targetDeviceUnreachable }
+        switch gatewayError {
+        case .unrecognizedDeviceIdentifier, .deviceNotPaired:
+            return .bluetoothUnavailable
+        case .connectFailed, .disconnectFailed:
+            // IOBluetooth's own answer that the baseband connect failed,
+            // which for a headset that is off or in its case arrives via
+            // its page timeout — comfortably inside #244's 8s bound, so
+            // the Mac reaches this case rather than timing out. That is
+            // why macOS needs no equivalent of Android's
+            // `UNREACHABLE_AFTER_MS`: it is *told* the device did not
+            // answer, where Android has to infer it from a profile that
+            // never left DISCONNECTED.
+            return .targetDeviceUnreachable
         }
     }
 
