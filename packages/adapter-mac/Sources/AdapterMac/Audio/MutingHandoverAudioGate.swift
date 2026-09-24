@@ -14,36 +14,55 @@ import Foundation
 /// ``SequenceStore`` uses, so the gate's logic is testable without
 /// touching the user's real defaults.
 public protocol MutedVolumeStore: Sendable {
-    /// The pre-mute volume, or `nil` if this node is not currently
-    /// holding one - meaning it did not mute, or it already restored.
-    func load() -> Float?
-    func save(_ volume: Float)
+    /// The device that was muted and the volume it was muted from, or
+    /// `nil` if this node is not currently holding a record - meaning it
+    /// did not mute, or it already restored.
+    ///
+    /// The **device** half is what #282 added, and it is not optional
+    /// detail: without it a restore writes to whatever happens to be the
+    /// default output at that moment, which after a successful claim is
+    /// the headset rather than the speakers that were muted.
+    func load() -> MutedOutput?
+    func save(_ muted: MutedOutput)
     func clear()
+}
+
+/// One device, and the volume it was muted from (#282).
+public struct MutedOutput: Sendable, Equatable {
+    /// `kAudioDevicePropertyDeviceUID` - stable across reboots, unlike
+    /// `AudioDeviceID`. See ``SystemOutputVolume``.
+    public let uid: String
+    public let volume: Float
+
+    public init(uid: String, volume: Float) {
+        self.uid = uid
+        self.volume = volume
+    }
 }
 
 /// For tests, and for a gate built without persistence.
 public final class InMemoryMutedVolumeStore: MutedVolumeStore, @unchecked Sendable {
     private let lock = NSLock()
-    private var volume: Float?
+    private var muted: MutedOutput?
 
     public init() {}
 
-    public func load() -> Float? {
+    public func load() -> MutedOutput? {
         lock.lock()
         defer { lock.unlock() }
-        return volume
+        return muted
     }
 
-    public func save(_ volume: Float) {
+    public func save(_ muted: MutedOutput) {
         lock.lock()
         defer { lock.unlock() }
-        self.volume = volume
+        self.muted = muted
     }
 
     public func clear() {
         lock.lock()
         defer { lock.unlock() }
-        volume = nil
+        muted = nil
     }
 }
 
@@ -100,12 +119,28 @@ public actor MutingHandoverAudioGate: HandoverAudioGate {
         // record we hold is the one worth keeping.
         guard store.load() == nil else { return }
 
-        // Unreadable volume - a device exposing volume per-channel
-        // rather than on the main element - means we cannot promise to
-        // put it back. Leaking audio for 2.7s is the better failure
-        // than muting a device we do not know how to un-mute.
-        guard let current = volume.current() else {
-            logAdapterError(category: "HandoverAudioGate", "output volume unreadable; not muting for handover")
+        // Which device is being suppressed is captured **once**, here,
+        // and every later write names it (#282). Resolving "the default
+        // output" again at restore time was the bug: by then a
+        // successful claim has made the headset the default, so the
+        // restore wrote there and left the speakers at zero.
+        guard let uid = volume.defaultOutputUID() else {
+            logAdapterError(category: "HandoverAudioGate", "no default output device; not muting for handover")
+            return
+        }
+
+        // Unreadable volume means we cannot promise to put it back.
+        // This is the *ordinary* case for the headset itself, which
+        // reports no main-element volume at all (#282) - so on the
+        // release path, where the headset is still the default output,
+        // this is the branch that runs and nothing is suppressed.
+        // Leaking that audio is the better failure than muting a device
+        // we have no way to un-mute.
+        guard let current = volume.volume(forUID: uid) else {
+            logAdapterError(
+                category: "HandoverAudioGate",
+                "volume of \(uid) is unreadable; not muting for handover"
+            )
             return
         }
 
@@ -114,13 +149,13 @@ public actor MutingHandoverAudioGate: HandoverAudioGate {
         guard current > 0 else { return }
 
         // Rule 1: the record first, the mute second.
-        store.save(current)
-        volume.set(0)
+        store.save(MutedOutput(uid: uid, volume: current))
+        volume.setVolume(0, forUID: uid)
     }
 
     public func restore() async {
         guard let muted = store.load() else { return }
-        volume.set(muted)
+        volume.setVolume(muted.volume, forUID: muted.uid)
         store.clear()
     }
 
@@ -154,13 +189,19 @@ public actor MutingHandoverAudioGate: HandoverAudioGate {
     /// Logged either way: this line is the only trace that the user's
     /// volume was ever touched, and without it a bug report reads "my
     /// volume changed by itself".
+    /// The stored UID is resolved against the devices present *now*
+    /// (#282). A device that has since been unpaired or unplugged simply
+    /// cannot be written to, and the record is cleared rather than
+    /// carried forever — which is why the identifier has to be a stable
+    /// UID and not an `AudioDeviceID` that might by then name something
+    /// else entirely.
     public func restoreAfterPreviousRun() async {
         guard let muted = store.load() else { return }
         logAdapterInfo(
             category: "HandoverAudioGate",
-            "restoring output volume to \(muted) - previous run left it muted for a handover"
+            "restoring \(muted.uid) to volume \(muted.volume) - previous run left it muted for a handover"
         )
-        volume.set(muted)
+        volume.setVolume(muted.volume, forUID: muted.uid)
         store.clear()
     }
 }
