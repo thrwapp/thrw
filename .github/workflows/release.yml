@@ -79,8 +79,14 @@ on:
     tags:
       - "v*"
 
+# Read, not write (#203). This workflow created the Release and uploaded
+# into it when it attached the .rlib; it now compiles and stops, so write
+# access is privilege it no longer uses. The two workflows that do attach
+# assets - release-mac.yml and release-android.yml - carry their own
+# `contents: write` and each create the draft if it is absent, so nothing
+# here is load-bearing for the Release existing.
 permissions:
-  contents: write # create the Release and upload assets
+  contents: read
 
 # Which workflow builds what, so one tag produces one coherent Release
 # (#190):
@@ -101,69 +107,58 @@ permissions:
 #   depended on it - down with it. Removing it is what makes a tag
 #   complete at all.
 #
-# - **Linux** is built here, and is real work.
+# - **Linux** is compiled here and ships **nothing**, deliberately (#203).
+#   There is no Linux artifact a user could install, because there is no
+#   Linux adapter yet: `packages/adapter-linux` is 500 lines, all of it a
+#   BlueZ connection seam, and `src/lib.rs` is `pub mod bluetooth` plus a
+#   name constant. The crate says so itself
+#   (`src/bluetooth/connection_manager.rs:14-16`): "local device control
+#   only. It does not talk to a relay, does not implement the node
+#   interface, and does not do any trigger detection".
+#
+#   This job used to attach `libadapter_linux.rlib`. An `.rlib` is a Rust
+#   compiler intermediate, readable only by the same toolchain version -
+#   not a binary, not a shared library, nothing anyone can install or run.
+#   The job was green, the file attached, and the outcome was meaningless:
+#   the same shape as #187, where a release artifact installed fine and
+#   could not authenticate. Attaching it was worse than attaching nothing,
+#   because a Release asset is a promise that something is there.
+#
+#   The build stays as a release-profile compile check. It is not the only
+#   thing keeping the crate compiling - ci.yml's lint job runs
+#   `turbo lint typecheck test` across every package except the three with
+#   their own runners, and `@thrw/adapter-linux` is in that scope (its
+#   package.json maps build/test to cargo) - but that is a debug build, and
+#   this catches release-profile breakage before a tag goes out.
+#
+#   What would have to be true to ship a Linux asset: #271, the node
+#   interface + MQTT wiring, mirroring #112's shape for macOS. Until an
+#   entry point exists there is nothing to package, and the choice between
+#   a `[[bin]]` daemon and a `cdylib` is not a packaging decision that can
+#   be made here - it follows from what that adapter turns out to be.
 #
 # The Fastlane TODOs that used to be here have gone with the jobs: there
 # is no Gemfile or Fastfile anywhere in the repository, so they described
 # a plan nobody took up, and a comment pointing at a project that does
 # not exist is worse than no comment.
 #
-# Known race, stated rather than papered over: `announce` can only depend
-# on jobs in *this* workflow, so it may run before `release-android.yml`
-# has finished attaching the bundle. GitHub Actions has no cross-workflow
-# dependency, and the alternatives (polling the Release, merging the two
-# workflows) cost more than the problem is worth while releases are
-# hand-cut.
+# That race is gone, and this paragraph used to say otherwise (corrected
+# in #203). It described `announce` as a job in this workflow that might
+# run before `release-android.yml` had attached its bundle. `announce`
+# moved out to `announce.yml` and now triggers on `release: published` -
+# which happens only after a human looks at the draft - so it can no
+# longer announce a release whose assets are still uploading. The comment
+# outlived the fix.
 jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      # Compile check only - nothing is attached to the Release. See this
+      # file's header for why, and #271 for what would change it. If you
+      # are here to add an upload step back, read that first: the question
+      # is not how to package the artifact, it is whether one exists.
       - name: cargo build --release
         working-directory: packages/adapter-linux
         run: cargo build --release
-
-      # The shared-Release contract from this file's header. `gh` is
-      # preinstalled on the runner, so this needs no third-party action -
-      # the same reasoning release-android.yml's own attach step gives.
-      - name: Attach to GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF#refs/tags/}"
-          shopt -s nullglob
-          # Glob everything cargo produced, then drop the dep-file.
-          # `libadapter_linux.*` on its own also matched
-          # `libadapter_linux.d` - cargo's build metadata - which the
-          # previous version of this step attached to the Release as
-          # though it were an artifact. Filtering rather than listing
-          # extensions explicitly keeps nullglob doing its job (a word
-          # with no wildcard is not a pattern, so an explicit list would
-          # hand `gh` paths that do not exist) and still picks up a
-          # future crate-type change to .so or .a.
-          out=packages/adapter-linux/target/release
-          assets=()
-          for f in "$out"/libadapter_linux.*; do
-            case "$f" in
-              *.d) continue ;;
-            esac
-            assets+=("$f")
-          done
-          if [ ${#assets[@]} -eq 0 ]; then
-            echo "::error::cargo build produced no libadapter_linux artifact to attach."
-            exit 1
-          fi
-          # Ensure exactly one draft exists for this tag, then upload into
-          # it - see this file's header for why `create || upload` was
-          # wrong. Drafts are not unique by tag, so the old form made a
-          # second draft instead of failing.
-          sleep $((RANDOM % 7))
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" \
-              --title "$tag" \
-              --notes "Adapter artifacts for $tag. Draft until a human publishes it." \
-              --draft || true
-          fi
-          gh release upload "$tag" "${assets[@]}" --clobber
