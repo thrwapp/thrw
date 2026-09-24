@@ -11,7 +11,9 @@ import android.os.IBinder
 import android.util.Log
 import com.thrw.adapter.android.audio.MediaSessionHandoverAudioGate
 import com.thrw.adapter.android.claim.ManualClaim
+import com.thrw.adapter.android.status.ClaimAction
 import com.thrw.adapter.android.status.NodeStatus
+import com.thrw.adapter.android.status.claimAction
 import com.thrw.adapter.android.status.textRes
 import com.thrw.adapter.android.bluetooth.AndroidBluetoothClassicGateway
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
@@ -237,6 +239,10 @@ class AdapterForegroundService : Service() {
             this@AdapterForegroundService.node = node
             manualClaim = ManualClaim(node)
             NodeRuntime(node, callMonitor, voipMonitor, mediaMonitor).start(thisRuntimeScope, manifest)
+            // #234 criterion 4. After `start`, so the state subscription
+            // exists; the flow replays its current value to a late
+            // collector, so nothing is missed by not racing it.
+            observeHolderChanges(node)
             refreshNotification()
         }
 
@@ -263,19 +269,59 @@ class AdapterForegroundService : Service() {
      * Re-posts the notification with current status and action label
      * (#212/#213).
      *
-     * Called after a claim toggle and when the runtime starts - not on a
-     * timer. A periodic refresh would wake the process to keep a string
-     * current that is only read when the shade is pulled down, and this
-     * is a battery-sensitive foreground service.
+     * Called after a claim toggle, when the runtime starts, and - since
+     * #234 - whenever the relay's holder changes. Still **not on a
+     * timer**: a periodic refresh would wake the process to keep a
+     * string current that is only read when the shade is pulled down,
+     * and this is a battery-sensitive foreground service.
+     *
+     * The holder subscription does not reopen that objection. It is
+     * event-driven off a topic this node already subscribes to, so it
+     * costs nothing while nothing is happening and fires exactly when
+     * the displayed text has stopped being true - the property a timer
+     * cannot offer at any interval. Before #234 the status line and the
+     * action label simply did not update on a handover the user did not
+     * initiate from this device.
      */
     private fun refreshNotification() {
         scope.launch {
             val status = runCatching { node?.status() }.getOrNull()
-            startForegroundWithNotification(status)
+            val action = runCatching { currentClaimAction() }.getOrNull()
+            startForegroundWithNotification(status, action)
         }
     }
 
-    private fun startForegroundWithNotification(status: NodeStatus? = null) {
+    /**
+     * #234. Derived from the relay's holder and this node's own
+     * triggers, not from `ManualClaim.isHeld()` alone - see
+     * [com.thrw.adapter.android.status.claimAction] for the rule and for
+     * the bug it replaces.
+     */
+    private fun currentClaimAction(): ClaimAction? {
+        val claim = manualClaim ?: return null
+        return claimAction(
+            holdsClaim = node?.holdsClaim(),
+            manualClaimHeld = claim.isHeld(),
+            because = node?.mostRecentTrigger(),
+        )
+    }
+
+    /**
+     * #234 criterion 4. Re-posts the notification whenever the relay's
+     * holder changes, so the status text and the action stop being stale
+     * the moment a handover happens anywhere - not only when this device
+     * is the one that caused it.
+     */
+    private fun observeHolderChanges(node: AndroidNode) {
+        scope.launch {
+            node.holderChanges().collect { refreshNotification() }
+        }
+    }
+
+    private fun startForegroundWithNotification(
+        status: NodeStatus? = null,
+        claimAction: ClaimAction? = null,
+    ) {
         val builder = Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle(getString(R.string.adapter_notification_title))
             // #213: the status replaces the old static blurb. That text
@@ -288,8 +334,18 @@ class AdapterForegroundService : Service() {
 
         // #212. Only once a node exists - an action that silently does
         // nothing is worse than one that is not there.
-        manualClaim?.let { claim ->
-            val label = getString(if (claim.isHeld()) R.string.release_headset else R.string.claim_headset)
+        //
+        // #234 extends that same principle rather than replacing it. A
+        // node holding the headset because of `media`, `voip` or `call`
+        // gets a **readout, not an action**: it can only end its own
+        // triggers, so there is genuinely nothing for a tap to do, and
+        // the old label ("Claim Headset", on a device that was already
+        // holding it) was the reported bug.
+        claimAction?.let { action ->
+            if (!action.isEnabled) {
+                builder.setSubText(action.title)
+                return@let
+            }
             val intent = Intent(this, AdapterForegroundService::class.java).setAction(ACTION_TOGGLE_CLAIM)
             val pending = PendingIntent.getService(
                 this,
@@ -297,7 +353,7 @@ class AdapterForegroundService : Service() {
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-            builder.addAction(Notification.Action.Builder(null, label, pending).build())
+            builder.addAction(Notification.Action.Builder(null, action.title, pending).build())
         }
 
         val notification = builder.build()

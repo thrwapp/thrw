@@ -21,6 +21,8 @@ import com.thrw.adapter.android.protocol.Priority
 import com.thrw.adapter.android.protocol.ProtocolJson
 import com.thrw.adapter.android.protocol.RESOURCE_AUDIO
 import com.thrw.adapter.android.protocol.ResourceType
+import com.thrw.adapter.android.protocol.StatePayload
+import com.thrw.adapter.android.status.HolderState
 import com.thrw.adapter.android.status.NodeStatus
 import com.thrw.adapter.android.status.nodeStatus
 import com.thrw.adapter.android.protocol.RegistrationPayload
@@ -32,6 +34,7 @@ import com.thrw.adapter.android.triggers.bypassesSelfCooldown
 import com.thrw.adapter.android.triggers.SelfCooldown
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.Json
 
 /**
@@ -138,6 +141,37 @@ class AndroidNode(
         nodeStatus(transport.isConnected(), bluetooth.isAudioRouteActive(headsetAddress))
 
     /**
+     * #234 - the relay's holder, from the retained state topic. Fed by
+     * [listenForState], read by [holdsClaim].
+     */
+    private val holderState = HolderState()
+
+    /**
+     * Emits whenever the relay's holder changes (#234 criterion 4).
+     *
+     * This is what lets the notification be re-posted on a holder change
+     * rather than only on a claim toggle or runtime start - event-driven,
+     * so it costs nothing while nothing is happening.
+     */
+    fun holderChanges(): StateFlow<HolderState.Holder> = holderState.holder
+
+    /**
+     * Whether the **relay** currently has this node as holder, or null if
+     * it has not said (#234).
+     *
+     * This is what the notification's action is derived from, because it
+     * is the only thing that answers "would tapping this claim or
+     * release?" without guessing. [status] is the physical counterpart -
+     * the observed audio route - and the two are not interchangeable: the
+     * whole value of the status line is that it *can* disagree with the
+     * relay and so reveal a stuck handover.
+     */
+    fun holdsClaim(): Boolean? {
+        if (!transport.isConnected()) return null
+        return holderState.holds(nodeId)
+    }
+
+    /**
      * Runs [handler] whenever the transport re-establishes a dropped
      * connection (#182) - see [MqttTransport.onReconnected].
      */
@@ -164,6 +198,34 @@ class AndroidNode(
 
     private fun activeEventsSnapshot(): List<EventKind> =
         synchronized(activeEventsLock) { activeEvents.toList() }
+
+    /**
+     * [EventLifecycle] conformance (#234): whether [type] is a trigger
+     * this node has reported and not yet ended.
+     *
+     * Added so [com.thrw.adapter.android.claim.ManualClaim] can stop
+     * keeping its own boolean. Two records of one fact is what #234's
+     * second symptom actually was - a relay-issued release cleared the
+     * node's view and left the UI's view untouched, so the notification
+     * offered "Release Headset" for a claim that no longer existed
+     * anywhere else.
+     */
+    override fun isEventActive(type: EventKind): Boolean =
+        synchronized(activeEventsLock) { activeEvents.contains(type) }
+
+    /**
+     * The trigger this node started most recently and has not ended, or
+     * null if none is active (#234).
+     *
+     * Feeds the notification's "Holding - playing media" readout.
+     * Recency, **not** rank: adapters do not rank triggers
+     * (architecture.md puts priority rules server-side, "never
+     * duplicated in adapters"), so this reads the insertion order
+     * `activeEvents` already preserves - a `LinkedHashSet` - and
+     * consults nothing resembling `PRIORITY_ORDER`.
+     */
+    fun mostRecentTrigger(): EventKind? =
+        synchronized(activeEventsLock) { activeEvents.lastOrNull() }
 
     /** Publishes a trigger to the events topic at QoS 1 per `TopicQos`. */
     override suspend fun emitEvent(type: EventKind, priority: Priority) {
@@ -229,6 +291,7 @@ class AndroidNode(
      * spurious self-triggered event is most likely.
      */
     override suspend fun onRelease() {
+        endManualClaimIfHeld()
         routeTransition.begin()
         try {
             bluetooth.disconnect(headsetAddress)
@@ -236,6 +299,84 @@ class AndroidNode(
             routeTransition.end()
             selfCooldown.arm()
         }
+    }
+
+    /**
+     * Ends this node's `manual_claim`, if it had one, when the relay
+     * takes the headset away (#234 criterion 5).
+     *
+     * A relay-issued release means something outranked the user's claim
+     * - a call, or another node's manual claim - and the product
+     * decision is that the interruption **ends** the claim rather than
+     * suspending it. When the call finishes the headset does not come
+     * back here; it follows the remaining triggers.
+     *
+     * ## Forgetting it locally is not enough
+     *
+     * The obvious implementation - drop `manual_claim` from
+     * [activeEvents] and move on - silently implements the *opposite*
+     * decision. The relay keeps its own record of which triggers are
+     * active per node; if it is never told the claim ended, it still has
+     * `manual_claim` active here, and the moment the call that outranked
+     * it finishes, `computeActiveHolder` hands the headset straight
+     * back. The claim would be suspended, not ended, and nothing in this
+     * file would look wrong.
+     *
+     * So the end is published. [endEvent] does that, and `manual_claim`
+     * bypasses the self-cooldown, so the publish is not swallowed by the
+     * window [onRelease] is about to arm.
+     *
+     * ## Why a publish failure is not fatal
+     *
+     * [endEvent] removes the local entry **before** it publishes (#183),
+     * so a failed publish still leaves this node's own record correct,
+     * and the next periodic registration carries the corrected
+     * `activeEvents` to the relay - within one interval rather than
+     * never. Letting the error propagate instead would fail the release
+     * itself, which is far worse: the headset would stay connected here
+     * while the relay believed it had moved.
+     */
+    private suspend fun endManualClaimIfHeld() {
+        if (!isEventActive(EventKind.MANUAL_CLAIM)) return
+        runCatching { endEvent(EventKind.MANUAL_CLAIM) }
+            .onFailure {
+                Log.w(TAG, "could not publish the end of a revoked manual claim - registration will reconcile", it)
+            }
+    }
+
+    /**
+     * Subscribes to the retained state topic and keeps [holdsClaim] and
+     * [holderChanges] current (#234). Suspends until the calling
+     * coroutine is cancelled, like [listenForCommands].
+     *
+     * **This is a read of an already-frozen topic, not a protocol
+     * change.** The topic, its shape and its retained flag all predate
+     * this (ADR 0015, #229); nothing here publishes to it, and the relay
+     * is unchanged.
+     *
+     * Retained is what makes it useful to a service that can be
+     * restarted by the OS at any time: the broker replays the current
+     * holder the moment we subscribe, so the notification is correct on
+     * the first post after a restart rather than only after the next
+     * handover.
+     *
+     * Unparseable payloads are skipped rather than thrown, for the same
+     * reason [listenForCommands] skips them: a malformed message from a
+     * newer relay must not tear down the subscription and leave this
+     * node's notification frozen at a stale holder forever.
+     */
+    suspend fun listenForState() {
+        transport.subscribe(Topics.state(accountId, RESOURCE), TopicQos.STATE_SUBSCRIBE_QOS)
+            .collect { payload ->
+                val state = runCatching {
+                    json.decodeFromString(StatePayload.serializer(), payload)
+                }.getOrNull()
+                if (state == null) {
+                    Log.w(TAG, "undecodable state payload - staying subscribed")
+                    return@collect
+                }
+                holderState.update(state.holder)
+            }
     }
 
     /**

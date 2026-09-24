@@ -15,6 +15,16 @@ public protocol EventLifecycle: Sendable {
 
     /// The `type` trigger that was active on this node just stopped.
     func endEvent(type: EventKind) async throws
+
+    /// Whether `type` is currently one of this node's active triggers
+    /// (#234).
+    ///
+    /// Synchronous and non-throwing: it reads state the node already
+    /// keeps for `RegistrationPayload.activeEvents`, so there is nothing
+    /// to await and nothing to fail. ``ManualClaim`` reads this instead
+    /// of tracking its own copy - see that type for what the second copy
+    /// cost.
+    func isEventActive(_ type: EventKind) -> Bool
 }
 
 /// The priority every trigger detector in this package reports.

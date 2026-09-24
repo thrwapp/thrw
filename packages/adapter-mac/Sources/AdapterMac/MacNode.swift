@@ -41,8 +41,27 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// Asks the transport and the route observer directly rather than
     /// caching: a cached status is exactly what goes stale during the
     /// silent failures this is meant to expose.
+    ///
+    /// Deliberately still the **observed audio route**, not the relay's
+    /// holder, and #234 did not change that. The two answer different
+    /// questions - "is the headset physically here" versus "does the
+    /// relay believe it should be" - and the whole value of the status
+    /// line is that it can disagree with the relay and so reveal a
+    /// stuck handover. See ``holdsClaim()`` for the other one.
     public func status() -> NodeStatus {
         nodeStatus(isConnected: transport.isConnected(), holdsRoute: routeObserver?.holdsAudioRoute())
+    }
+
+    /// Whether the **relay** currently has this node as holder, or `nil`
+    /// if it has not said (#234).
+    ///
+    /// This is what the menu's action label is derived from, because it
+    /// is the only thing that answers "would tapping this claim or
+    /// release?" without guessing. ``status()`` above is the physical
+    /// counterpart and is not interchangeable with it.
+    public func holdsClaim() -> Bool? {
+        guard transport.isConnected() else { return nil }
+        return holderState.holds(nodeId: nodeId)
     }
 
     /// Runs `handler` whenever the transport re-establishes a dropped
@@ -83,6 +102,10 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// leaking that audio, as it always has, rather than refusing to
     /// hand over.
     private let audioGate: HandoverAudioGate
+
+    /// #234 - the relay's holder, from the retained state topic. Fed by
+    /// ``listenForState()``, read by ``holdsClaim()``.
+    private let holderState = HolderState()
 
     public init(
         accountId: String,
@@ -181,7 +204,26 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     }
 
     /// Claim lost (or released): disconnect the headset from this device.
+    ///
+    /// Also **ends any manual claim this node was holding** (#234
+    /// criterion 5). A relay-issued release means something outranked
+    /// the user's claim - a call, or another node's manual claim - and
+    /// the product decision is that the interruption *ends* the claim
+    /// rather than suspending it. When the call finishes, the headset
+    /// does not come back here; it follows the remaining triggers.
+    ///
+    /// ADR 0010's note that a manual claim persists "until a call
+    /// outranks it" permits either reading. This is the one chosen, and
+    /// it is chosen because the alternative is unpredictable in a way
+    /// users do not forgive: a headset that silently reappears on a
+    /// device minutes after an unrelated call ended, with no action from
+    /// anyone, is indistinguishable from the oscillation bugs (#236,
+    /// #251) this project has spent weeks removing.
+    ///
+    /// See ``endManualClaimIfHeld()`` for why this must be published and
+    /// not merely forgotten locally.
     public func onRelease() async throws {
+        await endManualClaimIfHeld()
         routeTransition.begin()
         defer {
             routeTransition.end()
@@ -293,6 +335,101 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
                 durationMs: Self.elapsedMs(since: startedAt)
             )
         }
+    }
+
+    /// Ends this node's `manual_claim`, if it had one, when the relay
+    /// takes the headset away (#234 criterion 5).
+    ///
+    /// ## Forgetting it locally is not enough
+    ///
+    /// The obvious implementation - drop `manual_claim` from
+    /// ``activeEvents`` and move on - silently implements the *opposite*
+    /// decision. The relay keeps its own record of which triggers are
+    /// active per node; if it is never told the claim ended, it still
+    /// has `manual_claim` active here, and the moment the call that
+    /// outranked it finishes, `computeActiveHolder` hands the headset
+    /// straight back. The claim would be suspended, not ended, and
+    /// nothing in this file would look wrong.
+    ///
+    /// So the end is published. ``endEvent(type:)`` does that, and is
+    /// exempt from the self-cooldown (`manual_claim` bypasses it), so
+    /// the publish is not swallowed by the window ``onRelease()`` is
+    /// about to arm.
+    ///
+    /// ## Why a publish failure is not fatal
+    ///
+    /// ``endEvent(type:)`` removes the local entry **before** it
+    /// publishes (#183), so a failed publish still leaves this node's
+    /// own record correct, and the next periodic registration carries
+    /// the corrected `activeEvents` to the relay - within one interval
+    /// rather than never. Letting the error propagate instead would fail
+    /// the release itself, which is far worse: the headset would stay
+    /// connected here while the relay believed it had moved.
+    private func endManualClaimIfHeld() async {
+        guard activeEvents.contains(.manualClaim) else { return }
+        do {
+            try await endEvent(type: .manualClaim)
+        } catch {
+            logAdapterError(
+                category: "MacNode",
+                "could not publish the end of a revoked manual claim - registration will reconcile: "
+                    + String(describing: error)
+            )
+        }
+    }
+
+    /// Subscribes to the retained state topic and keeps ``holdsClaim()``
+    /// current (#234). Suspends until the stream ends, like
+    /// ``listenForCommands()``.
+    ///
+    /// **This is a read of an already-frozen topic, not a protocol
+    /// change.** The topic, its shape and its retained flag all predate
+    /// this (ADR 0015, #229); nothing here publishes to it, and the
+    /// relay is unchanged.
+    ///
+    /// Retained is what makes it useful to a menu-bar app: the broker
+    /// replays the current holder the moment we subscribe, so the menu
+    /// is correct on the first open after launch rather than only after
+    /// the next handover. The Mac relaunches at every login (#144), so
+    /// "only after the next handover" would be the common case.
+    ///
+    /// Unparseable payloads are skipped rather than thrown, for the same
+    /// reason ``listenForCommands()`` skips them: a malformed message
+    /// from a newer relay must not tear down the subscription and leave
+    /// this node's menu frozen at a stale holder forever.
+    public func listenForState() async throws {
+        let states = transport.subscribe(
+            topic: Topics.state(account: accountId, resource: Self.resource),
+            qos: TopicQos.stateSubscribeQos
+        )
+        for await payload in states {
+            guard let state = try? JSONDecoder().decode(StatePayload.self, from: Data(payload.utf8)) else {
+                logAdapterError(category: "MacNode", "undecodable state payload - staying subscribed")
+                continue
+            }
+            holderState.update(holder: state.holder)
+        }
+    }
+
+    /// ``EventLifecycle`` conformance (#234): whether `type` is a trigger
+    /// this node has reported and not yet ended.
+    ///
+    /// Added so ``ManualClaim`` can stop keeping its own boolean. Two
+    /// records of one fact is what #234's second symptom actually was -
+    /// a relay-issued release cleared the node's view and left the
+    /// menu's view untouched, so the menu offered "Release Headset" for
+    /// a claim that no longer existed anywhere else.
+    public func isEventActive(_ type: EventKind) -> Bool {
+        activeEvents.contains(type)
+    }
+
+    /// The trigger this node started most recently and has not ended, or
+    /// `nil` if none is active (#234).
+    ///
+    /// Feeds the menu's "Holding - playing media" readout. Recency, not
+    /// rank: see ``ActiveEventSet/mostRecent()``.
+    public func mostRecentTrigger() -> EventKind? {
+        activeEvents.mostRecent()
     }
 
     /// Runs the mechanical claim/release with this device's audio

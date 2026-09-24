@@ -101,12 +101,41 @@ final class NodeRuntimeTests: XCTestCase {
         let handle = runtime.start(manifest: runtimeManifest)
         defer { handle.cancel() }
 
-        await waitUntil("the commands subscription") { !transport.subscriptions.isEmpty }
+        await waitUntil("the commands subscription") {
+            transport.subscriptions.contains(Subscription(topic: runtimeCommandsTopic, qos: TopicQos.commandsQos))
+        }
 
-        XCTAssertEqual(
-            transport.subscriptions,
-            [Subscription(topic: runtimeCommandsTopic, qos: TopicQos.commandsQos)]
+        // `contains` rather than an exact list: #234 added a second
+        // subscription (the retained state topic) on its own task, so the
+        // two race and their order is not a property worth asserting.
+        XCTAssertTrue(
+            transport.subscriptions.contains(Subscription(topic: runtimeCommandsTopic, qos: TopicQos.commandsQos))
         )
+    }
+
+    /// #234. The runtime has to actually drain the state topic, or
+    /// `holdsClaim()` stays `nil` forever and the menu falls back to the
+    /// pre-#234 behaviour without anything looking broken.
+    func testStartAlsoSubscribesToTheRetainedStateTopic() async {
+        let transport = FakeMqttTransport()
+        let node = makeNode(transport: transport, gateway: FakeBluetoothPeripheralGateway())
+        let source = FakeRunningApplicationSource()
+        let runtime = NodeRuntime(
+            node: node,
+            voipTriggerMonitor: VoipTriggerMonitor(source: source, node: node),
+            mediaTriggerMonitor: MediaTriggerMonitor(source: SilentAudioSource(), node: node)
+        )
+
+        let handle = runtime.start(manifest: runtimeManifest)
+        defer { handle.cancel() }
+
+        let expected = Subscription(
+            topic: Topics.state(account: runtimeAccountId, resource: .audio),
+            qos: TopicQos.stateSubscribeQos
+        )
+        await waitUntil("the state subscription") { transport.subscriptions.contains(expected) }
+
+        XCTAssertTrue(transport.subscriptions.contains(expected))
     }
 
     func testStartWiresTheVoipTriggerMonitorThroughToTheRelay() async throws {

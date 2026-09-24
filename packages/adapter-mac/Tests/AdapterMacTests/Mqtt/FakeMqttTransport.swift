@@ -38,6 +38,13 @@ final class FakeMqttTransport: MqttTransport, @unchecked Sendable {
     /// Set by the node under test; fired by ``simulateReconnect()``.
     private var reconnectedHandler: (@Sendable () -> Void)?
 
+    /// #234. Defaults to `true`, matching ``MqttTransport``'s own default
+    /// so every existing test is unaffected; set `false` to check that a
+    /// node stops presenting relay state it can no longer verify.
+    var connected = true
+
+    func isConnected() -> Bool { connected }
+
     func onReconnected(_ handler: @escaping @Sendable () -> Void) {
         reconnectedHandler = handler
     }
@@ -47,11 +54,16 @@ final class FakeMqttTransport: MqttTransport, @unchecked Sendable {
 
     private let commandsStream: AsyncStream<String>
     private let commandsContinuation: AsyncStream<String>.Continuation
+    private let stateStream: AsyncStream<String>
+    private let stateContinuation: AsyncStream<String>.Continuation
 
     init() {
         var continuation: AsyncStream<String>.Continuation!
         commandsStream = AsyncStream { continuation = $0 }
         commandsContinuation = continuation
+        var stateCont: AsyncStream<String>.Continuation!
+        stateStream = AsyncStream { stateCont = $0 }
+        stateContinuation = stateCont
     }
 
     /// #206. Makes every publish throw, so a test can prove that a lost
@@ -65,9 +77,23 @@ final class FakeMqttTransport: MqttTransport, @unchecked Sendable {
         published.append(PublishedMessage(topic: topic, payload: payload, qos: qos, retained: retained))
     }
 
+    /// One stream per *kind* of subscription, routed by topic shape.
+    ///
+    /// This used to return a single shared stream for every topic, which
+    /// worked only while the node subscribed to exactly one. It stops
+    /// working the moment there are two: several consumers of one
+    /// `AsyncStream` **split** its elements between them rather than each
+    /// receiving all of them, so when #234 added the state subscription
+    /// the state listener silently ate commands and
+    /// `listenForCommands`'s tests timed out waiting for a release that
+    /// had been delivered to the wrong reader.
+    ///
+    /// Routed by shape rather than by exact string because this fixture
+    /// is shared by tests that build their topics from different
+    /// account/node constants.
     func subscribe(topic: String, qos: Int) -> AsyncStream<String> {
         subscriptions.append(Subscription(topic: topic, qos: qos))
-        return commandsStream
+        return topic.contains("/state/") ? stateStream : commandsStream
     }
 
     func close() async throws {}
@@ -83,5 +109,18 @@ final class FakeMqttTransport: MqttTransport, @unchecked Sendable {
     /// direct equivalent of Android's `commands.close()`.
     func finishCommands() {
         commandsContinuation.finish()
+    }
+
+    /// Test control: delivers `payload` on the retained state topic, as
+    /// if the broker had replayed or published it (#234).
+    func sendState(_ payload: String) {
+        stateContinuation.yield(payload)
+    }
+
+    /// The state-topic partner of ``finishCommands()``, so
+    /// `MacNode.listenForState`'s loop can return in a test that awaits
+    /// it directly.
+    func finishState() {
+        stateContinuation.finish()
     }
 }

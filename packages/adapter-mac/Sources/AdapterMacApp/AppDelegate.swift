@@ -51,8 +51,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// is disabled otherwise, because there is nothing to claim through.
     private var manualClaim: ManualClaim?
 
-    /// Held so its title can be flipped between claim and release.
+    /// Held so its title can be flipped between claim, release and - as
+    /// of #234 - a disabled readout when the hold is not the user's
+    /// doing.
     private var claimItem: NSMenuItem?
+
+    /// #265. Hidden unless this Mac is currently muted for a handover.
+    private var unmuteItem: NSMenuItem?
+
+    /// #234. The last derived claim action, kept because
+    /// `validateMenuItem` is asked about enablement separately from
+    /// `refreshClaimItem` setting the title, and the two must agree.
+    private var currentClaimAction = ClaimAction(title: claimTitle, isEnabled: true)
+
+    /// #265. Held so the menu can ask whether it is suppressing, and
+    /// un-mute on request. Nil until a node runtime starts.
+    private var audioGate: MutingHandoverAudioGate?
 
     /// #213. Disabled - it is a readout, not a control.
     private var statusMenuItem: NSMenuItem?
@@ -100,8 +114,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let claim = NSMenuItem(title: Self.claimTitle, action: #selector(toggleManualClaim), keyEquivalent: "k")
         claim.target = self
         menu.addItem(claim)
-        menu.addItem(.separator())
         claimItem = claim
+
+        // #265. Hidden unless this Mac is actually muted for a handover.
+        //
+        // macOS suppresses handover audio by muting rather than pausing
+        // (ADR 0022's amendment; #267 switches it once #132 lands), and
+        // a mute is invisible: after a release this Mac stays silenced
+        // until it is claimed again, with nothing on screen connecting
+        // the silence to a headset switcher. This item is that
+        // connection, and the way out of it.
+        let unmute = NSMenuItem(title: Self.unmuteTitle, action: #selector(unmuteAfterHandover), keyEquivalent: "")
+        unmute.target = self
+        unmute.isHidden = true
+        menu.addItem(unmute)
+        menu.addItem(.separator())
+        unmuteItem = unmute
 
         let setUpItem = NSMenuItem(title: "Set Up\u{2026}", action: #selector(openProvisioning), keyEquivalent: ",")
         setUpItem.target = self
@@ -119,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// so this has to activate explicitly or the window opens behind
     /// whatever the user was doing.
     private static let claimTitle = "Claim Headset"
-    private static let releaseTitle = "Release Headset"
+    private static let unmuteTitle = "Muted for Handover \u{2014} Unmute"
 
     /// #212. The publish is awaited before the title changes, so the menu
     /// never claims a state the relay was not actually told about - a
@@ -145,15 +173,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenuItem?.title = (node?.status() ?? .disconnected).displayText
     }
 
+    /// #234. Derived from the relay's holder and this node's own
+    /// triggers, not from ``ManualClaim/isHeld()`` alone - see
+    /// ``claimAction(holdsClaim:manualClaimHeld:because:)`` for the rule
+    /// and for the bug it replaces.
     private func refreshClaimItem() {
-        claimItem?.title = (manualClaim?.isHeld() ?? false) ? Self.releaseTitle : Self.claimTitle
+        currentClaimAction = claimAction(
+            holdsClaim: node?.holdsClaim(),
+            manualClaimHeld: manualClaim?.isHeld() ?? false,
+            because: node?.mostRecentTrigger()
+        )
+        claimItem?.title = currentClaimAction.title
+    }
+
+    /// #265. Asynchronous because ``HandoverAudioGate/isSuppressing()``
+    /// is - the gate is an actor. That is one actor hop, not I/O, so the
+    /// item settles faster than the menu draws; and an `NSMenuItem`
+    /// updated while its menu is open takes effect immediately, so there
+    /// is no need to block the open on it.
+    private func refreshUnmuteItem() {
+        guard let unmuteItem else { return }
+        guard let audioGate else {
+            unmuteItem.isHidden = true
+            return
+        }
+        Task { @MainActor in
+            unmuteItem.isHidden = await !audioGate.isSuppressing()
+        }
+    }
+
+    /// #265 acceptance criterion 2: restores the volume **and** clears
+    /// the stored record.
+    ///
+    /// Both halves matter. ``MutingHandoverAudioGate/restore()`` does
+    /// exactly that, which is why this calls it rather than setting a
+    /// volume directly: leaving the record behind would let the next
+    /// claim's restore overwrite whatever the user chose afterwards.
+    @objc private func unmuteAfterHandover() {
+        guard let audioGate else { return }
+        Task { @MainActor in
+            await audioGate.restore()
+            self.refreshUnmuteItem()
+        }
     }
 
     /// Disabled until a node is running: without one there is nothing to
     /// claim through, and an item that silently does nothing is worse
     /// than one that is visibly unavailable.
+    ///
+    /// #234 adds the second condition. A node holding the headset
+    /// because of `media`, `voip` or `call` shows a greyed-out readout
+    /// naming the reason: a node can only end its *own* triggers, so
+    /// there is genuinely no action to offer, and the same argument
+    /// against a control that silently does nothing applies.
+    ///
+    /// Enablement lives here rather than on `isEnabled` because the menu
+    /// auto-enables its items, which overrides anything set directly.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem === claimItem { return manualClaim != nil }
+        if menuItem === claimItem { return manualClaim != nil && currentClaimAction.isEnabled }
         return true
     }
 
@@ -293,6 +370,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 volume: CoreAudioSystemOutputVolume(),
                 store: UserDefaultsMutedVolumeStore()
             )
+            // #265: the menu asks this one whether it is suppressing, and
+            // offers the way out.
+            self.audioGate = audioGate
             // The other half of that requirement: a crash inside a
             // handover window self-heals on this launch rather than
             // persisting.
@@ -357,5 +437,6 @@ extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         refreshStatusItem()
         refreshClaimItem()
+        refreshUnmuteItem()
     }
 }

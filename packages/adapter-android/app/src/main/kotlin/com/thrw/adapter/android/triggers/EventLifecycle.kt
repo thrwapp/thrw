@@ -30,6 +30,18 @@ interface EventLifecycle {
 
     /** The [type] trigger that was active on this node just stopped. */
     suspend fun endEvent(type: EventKind)
+
+    /**
+     * Whether [type] is currently one of this node's active triggers
+     * (#234).
+     *
+     * Not `suspend`: it reads state the node already keeps for
+     * `RegistrationPayload.activeEvents`, so there is nothing to await.
+     * [com.thrw.adapter.android.claim.ManualClaim] reads this instead of
+     * tracking its own copy - see that class for what the second copy
+     * cost.
+     */
+    fun isEventActive(type: EventKind): Boolean
 }
 
 /**

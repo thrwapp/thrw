@@ -73,6 +73,15 @@ public final class NodeRuntime {
         let commandsTask = Task {
             await Self.logErrors(from: "listenForCommands") { try await self.node.listenForCommands() }
         }
+        // #234: the relay's holder, read from the retained state topic.
+        // Its own task rather than folded into `commandsTask` for the
+        // reason every task here is separate - one subscription ending
+        // must not take the other down, and a menu that has stopped
+        // updating is a far smaller failure than a node that has stopped
+        // hearing commands.
+        let stateTask = Task {
+            await Self.logErrors(from: "listenForState") { try await self.node.listenForState() }
+        }
         let voipTask = Task {
             await Self.logErrors(from: "voipTriggerMonitor") { try await self.voipTriggerMonitor.run() }
         }
@@ -127,7 +136,7 @@ public final class NodeRuntime {
             }
         }
         return NodeRuntimeHandle(
-            tasks: [registerTask, commandsTask, voipTask, mediaTask, heartbeatTask, reregisterTask]
+            tasks: [registerTask, commandsTask, stateTask, voipTask, mediaTask, heartbeatTask, reregisterTask]
         )
     }
 

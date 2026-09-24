@@ -157,6 +157,59 @@ final class MutingHandoverAudioGateTests: XCTestCase {
         XCTAssertNil(store.load(), "the record must be consumed, or the next restore would fight the user")
     }
 
+    // MARK: - reporting the mute so it is not invisible (#265)
+
+    func testAGateThatHasNotMutedReportsNoSuppression() async {
+        let gate = MutingHandoverAudioGate(
+            volume: FakeSystemOutputVolume(0.5),
+            store: InMemoryMutedVolumeStore()
+        )
+
+        let suppressing = await gate.isSuppressing()
+
+        XCTAssertFalse(suppressing)
+    }
+
+    func testAMutedGateReportsSuppressionUntilItIsRestored() async {
+        let gate = MutingHandoverAudioGate(
+            volume: FakeSystemOutputVolume(0.5),
+            store: InMemoryMutedVolumeStore()
+        )
+
+        await gate.silence()
+        var suppressing = await gate.isSuppressing()
+        XCTAssertTrue(suppressing)
+
+        await gate.restore()
+        suppressing = await gate.isSuppressing()
+        XCTAssertFalse(suppressing, "#265 criterion 3 - the indicator clears when the mute is undone")
+    }
+
+    /// A device whose volume could not be read is never muted, so it must
+    /// not claim to be suppressing either - otherwise the menu offers an
+    /// un-mute for something that was never muted.
+    func testAGateThatDeclinedToMuteReportsNoSuppression() async {
+        let volume = FakeSystemOutputVolume(0.5)
+        volume.readable = false
+        let gate = MutingHandoverAudioGate(volume: volume, store: InMemoryMutedVolumeStore())
+
+        await gate.silence()
+
+        let suppressing = await gate.isSuppressing()
+        XCTAssertFalse(suppressing)
+    }
+
+    /// #265 criterion 4. A node built without a real gate shows no
+    /// indicator and behaves exactly as it did before.
+    func testTheNoOpGateNeverReportsSuppression() async {
+        let gate = NoOpHandoverAudioGate()
+
+        await gate.silence()
+
+        let suppressing = await gate.isSuppressing()
+        XCTAssertFalse(suppressing)
+    }
+
     /// The ordinary launch, which is almost every launch.
     func testStartupRecoveryDoesNothingWhenNoRecordWasLeft() async {
         let volume = FakeSystemOutputVolume(0.8)

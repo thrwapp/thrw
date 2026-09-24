@@ -62,4 +62,23 @@ object TopicQos {
     const val COMMANDS_QOS: Int = 1
     const val STATE_RETAINED: Boolean = true
     const val HEARTBEAT_QOS: Int = 0
+
+    /**
+     * The QoS this adapter *subscribes* to the state topic at (#234).
+     *
+     * Not a mirror of anything, because there is nothing to mirror:
+     * `packages/protocol`'s `TopicQos.state` specifies only
+     * `{ retained: true }`, and `relay-core`'s `publishState` passes no
+     * QoS, so the relay publishes at 0. A subscription is delivered at
+     * the lower of the two levels, so asking for 1 here would buy
+     * nothing while implying a guarantee the publisher does not make.
+     *
+     * Losing an update is tolerable on this topic in a way it would not
+     * be on commands: the value is retained, so a reconnecting
+     * subscriber is re-sent the current holder immediately.
+     *
+     * If `packages/protocol` ever pins a QoS for state, this becomes a
+     * mirror of it and stops being a local decision.
+     */
+    const val STATE_SUBSCRIBE_QOS: Int = 0
 }

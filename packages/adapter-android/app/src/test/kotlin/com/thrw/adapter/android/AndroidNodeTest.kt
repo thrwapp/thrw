@@ -39,6 +39,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private data class Published(
@@ -57,8 +58,23 @@ private data class Published(
 private class FakeMqttTransport : MqttTransport {
     val published = mutableListOf<Published>()
     val commands = Channel<String>(Channel.UNLIMITED)
+
+    /**
+     * #234. A second channel, because a `Channel.consumeAsFlow()` can be
+     * consumed exactly once - handing the same one to both the commands
+     * and state subscriptions makes whichever collects second fail, and
+     * splits elements between them until it does.
+     */
+    val state = Channel<String>(Channel.UNLIMITED)
     val subscriptions = mutableListOf<Pair<String, Int>>()
     var closed = false
+
+    /**
+     * #234. Defaults to true, matching [MqttTransport]'s own default so
+     * every existing test is unaffected; set false to check that a node
+     * stops presenting relay state it can no longer verify.
+     */
+    var connected = true
 
     /**
      * #206. Makes every publish throw, so a test can prove a lost
@@ -71,10 +87,17 @@ private class FakeMqttTransport : MqttTransport {
         published += Published(topic, payload, qos, retained)
     }
 
+    /**
+     * Routed by topic shape rather than exact string, so the fixture
+     * does not need to know which account/node a given test built its
+     * topics from.
+     */
     override fun subscribe(topic: String, qos: Int): Flow<String> {
         subscriptions += topic to qos
-        return commands.consumeAsFlow()
+        return if ("/state/" in topic) state.consumeAsFlow() else commands.consumeAsFlow()
     }
+
+    override fun isConnected(): Boolean = connected
 
     override suspend fun close() {
         closed = true
@@ -117,6 +140,7 @@ private const val HEADSET = "AA:BB:CC:DD:EE:FF"
 private const val EVENTS_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/audio/events"
 private const val COMMANDS_TOPIC = "thrw/$ACCOUNT/commands/$NODE/audio"
 private const val HEARTBEAT_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/heartbeat"
+private const val STATE_TOPIC = "thrw/$ACCOUNT/state/audio"
 
 private val MANIFEST = NodeManifest(
     nodeId = NODE,
@@ -904,5 +928,195 @@ class AndroidNodeTest {
         f.node.listenForCommands()
 
         assertEquals(listOf(HEADSET), f.gateway.connectCalls)
+    }
+
+    // ---- holder state from the retained topic (#234) ----
+
+    @Test
+    fun `the retained state topic is subscribed to at its own QoS`() = runTest {
+        val f = Fixture()
+        f.transport.state.close()
+
+        f.node.listenForState()
+
+        assertEquals(listOf(STATE_TOPIC to 0), f.transport.subscriptions)
+    }
+
+    @Test
+    fun `this node being holder is reported as holding the claim`() = runTest {
+        val f = Fixture()
+        f.transport.state.send("""{"holder":"$NODE"}""")
+        f.transport.state.close()
+
+        f.node.listenForState()
+
+        assertEquals(true, f.node.holdsClaim())
+    }
+
+    @Test
+    fun `another node being holder is reported as not holding`() = runTest {
+        val f = Fixture()
+        f.transport.state.send("""{"holder":"some-mac"}""")
+        f.transport.state.close()
+
+        f.node.listenForState()
+
+        assertEquals(false, f.node.holdsClaim())
+    }
+
+    /**
+     * `{"holder":null}` is a real answer - the relay saying nobody holds
+     * it - and must not read the same as never having heard.
+     */
+    @Test
+    fun `nobody holding is an answer not an absence`() = runTest {
+        val f = Fixture()
+        f.transport.state.send("""{"holder":null}""")
+        f.transport.state.close()
+
+        f.node.listenForState()
+
+        assertEquals(false, f.node.holdsClaim())
+    }
+
+    /**
+     * The third state. Before any retained message arrives there is no
+     * honest answer, and the UI falls back rather than render a guess.
+     */
+    @Test
+    fun `before any state arrives the holder is unknown`() = runTest {
+        val f = Fixture()
+
+        assertNull(f.node.holdsClaim())
+    }
+
+    /**
+     * Same rule that makes `NodeStatus.Disconnected` outrank route
+     * state: what we last heard says what was true then, not now.
+     */
+    @Test
+    fun `a disconnected transport reports an unknown holder`() = runTest {
+        val f = Fixture()
+        f.transport.state.send("""{"holder":"$NODE"}""")
+        f.transport.state.close()
+        f.node.listenForState()
+        assertEquals(true, f.node.holdsClaim())
+
+        f.transport.connected = false
+
+        assertNull(f.node.holdsClaim(), "a stale holder must not be presented as current")
+    }
+
+    /**
+     * Same rule as `listenForCommands`: a malformed message from a newer
+     * relay must not leave the notification frozen at a stale holder.
+     */
+    @Test
+    fun `an undecodable state payload does not end the subscription`() = runTest {
+        val f = Fixture()
+        f.transport.state.send("not json")
+        f.transport.state.send("""{"holder":"$NODE"}""")
+        f.transport.state.close()
+
+        f.node.listenForState()
+
+        assertEquals(true, f.node.holdsClaim(), "the valid message after the bad one must still be read")
+    }
+
+    // ---- a revoked manual claim is ended, not suspended (#234 criterion 5) ----
+
+    /**
+     * The decision: a call that outranks a manual claim **ends** it. The
+     * headset does not come back when the call finishes.
+     */
+    @Test
+    fun `a relay release ends a manual claim this node was holding`() = runTest {
+        val f = Fixture()
+        f.node.emitEvent(EventKind.MANUAL_CLAIM, 0)
+        assertTrue(f.node.isEventActive(EventKind.MANUAL_CLAIM))
+
+        f.transport.commands.send("""{"type":"release"}""")
+        f.transport.commands.close()
+        f.node.listenForCommands()
+
+        assertFalse(f.node.isEventActive(EventKind.MANUAL_CLAIM), "the claim must be over, not merely unheld")
+    }
+
+    /**
+     * Forgetting it locally is not enough, and this is the test that says
+     * so. The relay keeps its own record per node; if it is never told,
+     * `computeActiveHolder` hands the headset back the moment the call
+     * ends - the *opposite* decision, implemented by accident.
+     */
+    @Test
+    fun `the end of a revoked manual claim is published to the relay`() = runTest {
+        val f = Fixture()
+        f.node.emitEvent(EventKind.MANUAL_CLAIM, 0)
+
+        f.transport.commands.send("""{"type":"release"}""")
+        f.transport.commands.close()
+        f.node.listenForCommands()
+
+        val ends = f.transport.published
+            .filter { it.topic == EVENTS_TOPIC }
+            .map { ProtocolJson.parseToJsonElement(it.payload) as JsonObject }
+            .filter { it["kind"]?.jsonPrimitive?.content == "event_end" }
+        assertEquals(1, ends.size)
+        assertEquals("manual_claim", ends.single().getValue("type").jsonPrimitive.content)
+    }
+
+    /**
+     * The consequence that makes the choice stick: #178's periodic
+     * registration must not re-assert a claim the relay already revoked.
+     */
+    @Test
+    fun `after a revoked claim registration no longer reports it`() = runTest {
+        val f = Fixture()
+        f.node.emitEvent(EventKind.MANUAL_CLAIM, 0)
+
+        f.transport.commands.send("""{"type":"release"}""")
+        f.transport.commands.close()
+        f.node.listenForCommands()
+        f.node.register(MANIFEST)
+
+        val registration = f.transport.published.last { it.topic == EVENTS_TOPIC }
+        val body = ProtocolJson.parseToJsonElement(registration.payload) as JsonObject
+        val active = (body.getValue("activeEvents") as JsonArray).map { it.jsonPrimitive.content }
+        assertFalse(active.contains("manual_claim"))
+    }
+
+    /**
+     * A release with no manual claim to revoke must not publish a
+     * spurious end for a trigger that was never active.
+     */
+    @Test
+    fun `a release without a manual claim publishes no end`() = runTest {
+        val f = Fixture()
+        f.transport.commands.send("""{"type":"release"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        val ends = f.transport.published
+            .map { ProtocolJson.parseToJsonElement(it.payload) }
+            .filterIsInstance<JsonObject>()
+            .filter { it["kind"]?.jsonPrimitive?.content == "event_end" }
+        assertTrue(ends.isEmpty())
+    }
+
+    /**
+     * Other triggers are untouched: they end when the underlying
+     * activity ends, and a relay release is not that.
+     */
+    @Test
+    fun `a relay release does not end a media trigger`() = runTest {
+        val f = Fixture()
+        f.node.emitEvent(EventKind.MEDIA, 0)
+
+        f.transport.commands.send("""{"type":"release"}""")
+        f.transport.commands.close()
+        f.node.listenForCommands()
+
+        assertTrue(f.node.isEventActive(EventKind.MEDIA))
     }
 }

@@ -61,6 +61,24 @@ data class CommandPayload(
 )
 
 /**
+ * Mirror of relay-core's `StatePayload` (#229), carried retained on
+ * [Topics.state] - the relay's authoritative answer to "which node holds
+ * this resource".
+ *
+ * [holder] is nullable because the relay genuinely publishes
+ * `{"holder": null}` when nobody holds it. That is a real answer, and
+ * [com.thrw.adapter.android.status.HolderState] keeps it distinct from
+ * "we have not heard from the relay at all": the two are identical if
+ * you store both as a null String, and conflating them makes the
+ * notification state confidently that nobody holds the headset when the
+ * truth is that it has no idea.
+ */
+@Serializable
+data class StatePayload(
+    val holder: String? = null,
+)
+
+/**
  * Registration envelope published on the node's own events topic. The
  * `kind` discriminator is what distinguishes it from an [EventPayload] on
  * that same topic: a registration has `kind`, an event does not (and an

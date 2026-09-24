@@ -12,6 +12,7 @@ private let nodeId = "mac-node-1"
 private let headsetIdentifier = BluetoothDeviceIdentifier.identifier(forAddressString: "AA:BB:CC:DD:EE:FF")!
 private let eventsTopicString = Topics.events(account: accountId, node: nodeId, resource: .audio)
 private let commandsTopicString = Topics.commands(account: accountId, node: nodeId, resource: .audio)
+private let stateTopicString = Topics.state(account: accountId, resource: .audio)
 
 private let manifest = NodeManifest(
     nodeId: nodeId,
@@ -476,6 +477,165 @@ final class MacNodeTests: XCTestCase {
             [headsetIdentifier],
             "the second command must still be acted on after the first outcome failed to publish"
         )
+    }
+
+    // MARK: - holder state from the retained topic (#234)
+
+    func testTheRetainedStateTopicIsSubscribedToAtItsOwnQoS() async throws {
+        let f = Fixture()
+        f.transport.finishState()
+
+        try await f.node.listenForState()
+
+        XCTAssertEqual(
+            f.transport.subscriptions,
+            [Subscription(topic: stateTopicString, qos: TopicQos.stateSubscribeQos)]
+        )
+    }
+
+    func testThisNodeBeingHolderIsReportedAsHoldingTheClaim() async throws {
+        let f = Fixture()
+        f.transport.sendState(#"{"holder":"mac-node-1"}"#)
+        f.transport.finishState()
+
+        try await f.node.listenForState()
+
+        XCTAssertEqual(f.node.holdsClaim(), true)
+    }
+
+    func testAnotherNodeBeingHolderIsReportedAsNotHolding() async throws {
+        let f = Fixture()
+        f.transport.sendState(#"{"holder":"pixel-node-2"}"#)
+        f.transport.finishState()
+
+        try await f.node.listenForState()
+
+        XCTAssertEqual(f.node.holdsClaim(), false)
+    }
+
+    /// `{"holder":null}` is a real answer - the relay saying nobody holds
+    /// it - and must not read the same as never having heard.
+    func testNobodyHoldingIsAnAnswerNotAnAbsence() async throws {
+        let f = Fixture()
+        f.transport.sendState(#"{"holder":null}"#)
+        f.transport.finishState()
+
+        try await f.node.listenForState()
+
+        XCTAssertEqual(f.node.holdsClaim(), false)
+    }
+
+    /// The third state. Before any retained message arrives there is no
+    /// honest answer, and the menu falls back rather than render a guess.
+    func testBeforeAnyStateArrivesTheHolderIsUnknown() {
+        let f = Fixture()
+
+        XCTAssertNil(f.node.holdsClaim())
+    }
+
+    /// Same rule that makes ``NodeStatus/disconnected`` outrank route
+    /// state: what we last heard says what was true then, not now.
+    func testADisconnectedTransportReportsAnUnknownHolder() async throws {
+        let f = Fixture()
+        f.transport.sendState(#"{"holder":"mac-node-1"}"#)
+        f.transport.finishState()
+        try await f.node.listenForState()
+        XCTAssertEqual(f.node.holdsClaim(), true)
+
+        f.transport.connected = false
+
+        XCTAssertNil(f.node.holdsClaim(), "a stale holder must not be presented as current")
+    }
+
+    /// Same rule as `listenForCommands`: a malformed message from a newer
+    /// relay must not leave this node's menu frozen at a stale holder.
+    func testAnUndecodableStatePayloadDoesNotEndTheSubscription() async throws {
+        let f = Fixture()
+        f.transport.sendState("not json")
+        f.transport.sendState(#"{"holder":"mac-node-1"}"#)
+        f.transport.finishState()
+
+        try await f.node.listenForState()
+
+        XCTAssertEqual(f.node.holdsClaim(), true, "the valid message after the bad one must still be read")
+    }
+
+    // MARK: - a revoked manual claim is ended, not suspended (#234 criterion 5)
+
+    /// The decision: a call that outranks a manual claim **ends** it. The
+    /// headset does not come back when the call finishes.
+    func testARelayReleaseEndsAManualClaimThisNodeWasHolding() async throws {
+        let f = Fixture()
+        try await f.node.emitEvent(type: .manualClaim, priority: unrankedPriority)
+        XCTAssertTrue(f.node.isEventActive(.manualClaim))
+
+        f.transport.sendCommand(#"{"type":"release"}"#)
+        f.transport.finishCommands()
+        try await f.node.listenForCommands()
+
+        XCTAssertFalse(f.node.isEventActive(.manualClaim), "the claim must be over, not merely unheld")
+    }
+
+    /// Forgetting it locally is not enough, and this is the test that says
+    /// so. The relay keeps its own record per node; if it is never told,
+    /// `computeActiveHolder` hands the headset back the moment the call
+    /// ends - the *opposite* decision, implemented by accident.
+    func testTheEndOfARevokedManualClaimIsPublishedToTheRelay() async throws {
+        let f = Fixture()
+        try await f.node.emitEvent(type: .manualClaim, priority: unrankedPriority)
+
+        f.transport.sendCommand(#"{"type":"release"}"#)
+        f.transport.finishCommands()
+        try await f.node.listenForCommands()
+
+        let ends = f.transport.published.filter { $0.topic == eventsTopicString }.compactMap {
+            try? JSONDecoder().decode(EventEndPayload.self, from: Data($0.payload.utf8))
+        }
+        XCTAssertEqual(ends.map(\.type), [.manualClaim])
+    }
+
+    /// The consequence that makes the choice stick: #178's periodic
+    /// registration must not re-assert a claim the relay already revoked.
+    func testAfterARevokedClaimRegistrationNoLongerReportsIt() async throws {
+        let f = Fixture()
+        try await f.node.emitEvent(type: .manualClaim, priority: unrankedPriority)
+
+        f.transport.sendCommand(#"{"type":"release"}"#)
+        f.transport.finishCommands()
+        try await f.node.listenForCommands()
+        try await f.node.register(manifest: manifest)
+
+        let sent = try XCTUnwrap(f.transport.published.last)
+        let decoded = try JSONDecoder().decode(RegistrationPayload.self, from: Data(sent.payload.utf8))
+        XCTAssertFalse(decoded.activeEvents.contains(.manualClaim))
+    }
+
+    /// A release with no manual claim to revoke must not publish a
+    /// spurious end for a trigger that was never active.
+    func testAReleaseWithoutAManualClaimPublishesNoEnd() async throws {
+        let f = Fixture()
+        f.transport.sendCommand(#"{"type":"release"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        let ends = f.transport.published.compactMap {
+            try? JSONDecoder().decode(EventEndPayload.self, from: Data($0.payload.utf8))
+        }
+        XCTAssertTrue(ends.isEmpty)
+    }
+
+    /// Other triggers are untouched: they end when the underlying activity
+    /// ends, and a relay release is not that.
+    func testARelayReleaseDoesNotEndAMediaTrigger() async throws {
+        let f = Fixture()
+        try await f.node.emitEvent(type: .media, priority: unrankedPriority)
+
+        f.transport.sendCommand(#"{"type":"release"}"#)
+        f.transport.finishCommands()
+        try await f.node.listenForCommands()
+
+        XCTAssertTrue(f.node.isEventActive(.media))
     }
 
     // MARK: - handover audio suppression (ADR 0022, #254)

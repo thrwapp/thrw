@@ -124,6 +124,18 @@ public actor MutingHandoverAudioGate: HandoverAudioGate {
         store.clear()
     }
 
+    /// #265. Holding a record *is* being muted — the two are written and
+    /// cleared together, so this cannot drift from the real state the
+    /// way a separate flag would.
+    ///
+    /// Read live rather than cached, so the menu's indicator clears by
+    /// itself when the mute is undone by any route: a claim's
+    /// ``restore()``, ``restoreAfterPreviousRun()``, or the menu's own
+    /// un-mute (#265 acceptance criterion 3).
+    public func isSuppressing() async -> Bool {
+        store.load() != nil
+    }
+
     /// Rule 3. Call once at adapter startup, before any command is
     /// handled.
     ///
