@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 // Imported rather than restated: these assertions are only worth anything if
 // they compare the built output against the one list the site generates from
 // (#273). A copy here would pass while the page claimed something else.
-import { AI_CRAWLERS, PLATFORMS } from "../src/lib/site";
+import { AI_CRAWLERS, PLANNED_PLATFORMS, PLATFORMS } from "../src/lib/site";
 
 // The metadata asserted here is the difference between a shared thrw link
 // rendering as a title card with an image and rendering as a bare URL, which
@@ -150,6 +150,45 @@ describe("built site metadata", () => {
       expect(index, `FAQ prose is missing ${label}`).toContain(label);
       expect(description, `meta description is missing ${label}`).toContain(label);
     }
+  });
+
+  it("never claims a planned platform as one it runs on", () => {
+    const block = index.match(
+      /<script type="application\/ld\+json">(.*?)<\/script>/s,
+    );
+    const graph = JSON.parse(block![1])["@graph"] as Record<string, any>[];
+    const software = graph.find((node) => node["@type"] === "SoftwareApplication")!;
+
+    // The regression this exists to prevent. iPad and Linux were listed as
+    // supported platforms while `adapter-ipad` was a one-line file and
+    // `adapter-linux` had no MQTT wiring at all - so the claim was already
+    // untrue in prose, and structured data made it untrue in a form built to
+    // be repeated by machines. Prose may name them as planned; this field may
+    // not name them at all.
+    for (const label of PLANNED_PLATFORMS) {
+      expect(
+        software.operatingSystem,
+        `operatingSystem claims ${label}, which has no working adapter`,
+      ).not.toContain(label);
+    }
+
+    const description = metaContent(index, "name", "description") ?? "";
+    for (const label of PLANNED_PLATFORMS) {
+      expect(
+        description,
+        `meta description claims ${label} without saying it is planned`,
+      ).not.toContain(label);
+    }
+  });
+
+  it("still names the planned platforms somewhere, as planned", () => {
+    // The other half of the rule above: omitting them entirely would hide a
+    // roadmap people reasonably want. The page must say both things - these
+    // are coming, and they do not work yet.
+    for (const label of PLANNED_PLATFORMS) {
+      expect(index, `page no longer mentions ${label} at all`).toContain(label);
+    }
+    expect(index).toContain("planned and not working yet");
   });
 
   it("makes no price claim while thrw is pre-launch", () => {

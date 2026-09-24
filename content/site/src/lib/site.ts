@@ -17,23 +17,54 @@ export const REPO_URL = "https://github.com/thrwapp/thrw";
 export const LICENSE_URL = `${REPO_URL}/blob/main/LICENSE`;
 
 /**
- * The platforms the site claims adapters for.
+ * The platforms thrw has a **working** adapter for.
  *
  * One list, two consumers: `label` builds the FAQ answer's prose and `os`
  * builds `SoftwareApplication.operatingSystem`. They were separate before, so
  * structured data could have claimed a platform the page did not mention, or
  * missed one it did.
  *
- * `label` is the marketing name the copy uses ("Mac", "iPad"); `os` is the
- * operating system name a crawler expects ("macOS", "iPadOS"). Keeping both
- * avoids either consumer having to translate the other's vocabulary.
+ * `label` is the marketing name the copy uses ("Mac"); `os` is the operating
+ * system name a crawler expects ("macOS"). Keeping both avoids either consumer
+ * having to translate the other's vocabulary.
+ *
+ * ## Why iPad and Linux are not in this list
+ *
+ * They were, and it was not true. Checked against the repo rather than
+ * assumed:
+ *
+ *  - `packages/adapter-ipad` is a **single-line source file**. There is no
+ *    adapter.
+ *  - `packages/adapter-linux` has ~500 lines of BlueZ gateway and connection
+ *    management, but **no MQTT and no node wiring at all** - that is what
+ *    issue #271 is for. It cannot talk to the relay, so it cannot participate
+ *    in a handoff.
+ *
+ * Two of four claimed platforms could not do the thing the site said they
+ * did. In prose that was already wrong; once it fed
+ * `SoftwareApplication.operatingSystem` and llms.txt it became wrong in a
+ * machine-readable form aimed squarely at systems that repeat claims
+ * verbatim. This file is where that gets fixed, because it is the one place
+ * both consumers read.
+ *
+ * Move a platform back here when its adapter can actually hold the headset -
+ * not when its directory exists.
  */
 export const PLATFORMS = [
   { label: "Android", os: "Android" },
   { label: "Mac", os: "macOS" },
-  { label: "iPad", os: "iPadOS" },
-  { label: "Linux", os: "Linux" },
 ] as const;
+
+/**
+ * Platforms thrw intends to support and does not yet.
+ *
+ * Deliberately **prose only**. These never reach
+ * `SoftwareApplication.operatingSystem`, because structured data is a claim
+ * about what the software runs on today, and a crawler has nowhere to put
+ * "planned". Keeping them visible in the copy preserves the roadmap without
+ * asserting something false in a field machines read.
+ */
+export const PLANNED_PLATFORMS = ["iPad", "Linux"] as const;
 
 /**
  * "a, b, and c" - an Oxford comma list, hand-rolled rather than

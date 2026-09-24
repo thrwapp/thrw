@@ -13,11 +13,18 @@
 // styles are here.
 import Base from "../layouts/Base.astro";
 import { buildHomepageGraph } from "../lib/schema";
-import { andList, PLATFORMS } from "../lib/site";
+import { andList, PLANNED_PLATFORMS, PLATFORMS } from "../lib/site";
 
 const title = "thrw — One headset. Every device you actually use.";
-const description =
-  "thrw switches your Bluetooth headset to whichever of your devices needs it — a call, a meeting, playback starting — across Android, Mac, iPad and Linux, not just within one vendor's ecosystem.";
+
+// Built from PLATFORMS rather than written out. This used to name four
+// platforms as a hardcoded string while the shared list named the same four,
+// which looked consistent right up until the list changed - and the list is
+// exactly what changes when a platform turns out not to work (see site.ts).
+const platformLabels = andList(PLATFORMS.map((platform) => platform.label));
+const plannedLabels = andList([...PLANNED_PLATFORMS]);
+
+const description = `thrw switches your Bluetooth headset to whichever of your devices needs it — a call, a meeting, playback starting — across ${platformLabels}, not just within one vendor's ecosystem.`;
 
 // The FAQ below is duplicated into FAQPage structured data so search results
 // and AI assistants can surface the answers directly. `faq` is the single
@@ -35,7 +42,12 @@ const faq = [
     // SoftwareApplication.operatingSystem cannot claim different platforms
     // (#273). `andList` reproduces the original wording exactly, Oxford comma
     // included - test/meta.test.ts asserts the rendered string.
-    answer: `Adapters for ${andList(PLATFORMS.map((platform) => platform.label))}, so your headset can follow you across ecosystems instead of staying locked to one vendor's devices.`,
+    //
+    // The planned platforms are named in the same breath and explicitly as
+    // *not working*. Listing them as though they shipped is what this answer
+    // used to do; omitting them entirely would hide a roadmap people
+    // reasonably want. Saying both is the only version that is true.
+    answer: `Adapters for ${platformLabels}, so your headset can follow you across ecosystems instead of staying locked to one vendor's devices. ${plannedLabels} adapters are planned and not working yet — thrw only lists platforms it can actually hold the headset on.`,
   },
   {
     question: "Do I need root or a jailbreak?",
@@ -129,7 +141,7 @@ const schemaGraph = buildHomepageGraph(Astro.site!, description, faq);
         </li>
         <li>
           <span class="step-index">4</span>
-          <p>It works across ecosystems — Android, Mac, iPad, and Linux — not locked to one vendor's devices.</p>
+          <p>It works across ecosystems — {platformLabels} — not locked to one vendor's devices.</p>
         </li>
       </ol>
     </section>
