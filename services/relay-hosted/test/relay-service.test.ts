@@ -8,6 +8,7 @@ import {
   type NodeManifest,
 } from "@thrw/protocol";
 import {
+  type CoalescedCommand,
   defaultMqttBrokerUrl,
   RelayMqttClient,
   type CommandPayload,
@@ -263,6 +264,7 @@ describe("RelayService (real broker)", () => {
       onNodeEvent?: (event: NodeEventObserved) => void;
       onNodeReaped?: (reaped: NodeReaped) => void;
       onCommandOutcome?: (outcome: CommandOutcomeReported) => void;
+      onCommandCoalesced?: (coalesced: CoalescedCommand) => void;
     } = {},
   ): Promise<RelayService> {
     const client = await RelayMqttClient.connect(BROKER_URL);
@@ -317,13 +319,20 @@ describe("RelayService (real broker)", () => {
     await expect.poll(() => commandsB, { timeout: 2000 }).toEqual([{ type: "claim" }]);
 
     // B's call ends, but A's call is *still* active underneath (never
-    // ended) - the holder reverts to A immediately, another real
-    // RELEASE(B)+CLAIM(A) pair.
+    // ended) - the holder reverts to A, another real RELEASE(B)+CLAIM(A) pair.
+    //
+    // A's re-claim is now *held* rather than immediate (#277, ADR 0020
+    // decision 1): A was released under a second ago, and a claim arriving
+    // inside the release window is the A -> B -> A bounce the coalescing window
+    // exists to damp. It still arrives, up to DEFAULT_RELEASE_WINDOW_MS (3s)
+    // later, so this poll needs longer than the 2s the rest of the test uses.
+    // B's RELEASE is not held - a release never is, or the handoff waiting
+    // behind it would stall.
     await publishEventEnd(rawClient, account, nodeB.nodeId, "call");
-    await expect
-      .poll(() => commandsA, { timeout: 2000 })
-      .toEqual([{ type: "claim" }, { type: "release" }, { type: "claim" }]);
     await expect.poll(() => commandsB, { timeout: 2000 }).toEqual([{ type: "claim" }, { type: "release" }]);
+    await expect
+      .poll(() => commandsA, { timeout: 6000 })
+      .toEqual([{ type: "claim" }, { type: "release" }, { type: "claim" }]);
 
     // A's call ends too - nothing else is active, and A was already the
     // holder (rule 5, last-claimed keeps it) - no new command.
@@ -704,6 +713,73 @@ describe("RelayService (real broker)", () => {
       expect(seen).toHaveLength(1);
       expect(seen[0]).toMatchObject({ account, node: nodeA.nodeId });
       expect(seen[0]?.silentForMs).toBeGreaterThanOrEqual(300_000);
+    });
+  });
+
+  // ADR 0020 decision 1 (#277). The unit-level behaviour lives in
+  // packages/relay-core's command-coalescer tests; this is the wiring - that
+  // RelayService actually routes its dispatch through the coalescer and reports
+  // what it dropped.
+  describe("command coalescing (#277)", () => {
+    it("reports a coalesced claim as superseded rather than as a failure", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const nodeB = manifest();
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      const coalesced: CoalescedCommand[] = [];
+      const outcomes: CommandOutcomeReported[] = [];
+      const service = await startService([account], scheduler, () => now, undefined, {
+        onCommandCoalesced: (c) => coalesced.push(c),
+        onCommandOutcome: (o) => outcomes.push(o),
+      });
+
+      // A takes it, then B, then A again - all inside A's release window, which
+      // is the bounce ADR 0020 damps.
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      await expect.poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 }).toBe(nodeA.nodeId);
+      await publishRegistration(rawClient, account, nodeB, ["media"]);
+      await expect.poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 }).toBe(nodeB.nodeId);
+      now += 200;
+      await publishEvent(rawClient, account, nodeA.nodeId, "media");
+      await expect.poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 }).toBe(nodeA.nodeId);
+      now += 200;
+      await publishEventEnd(rawClient, account, nodeA.nodeId, "media");
+      await settle();
+
+      // Something was withheld, and it is reported as superseded - never as a
+      // failure, which is what would skew ADR 0019's switch success rate.
+      expect(coalesced.length).toBeGreaterThan(0);
+      for (const entry of coalesced) {
+        expect(entry.account).toBe(account);
+        expect(["superseded_by_newer_command", "already_in_target_state"]).toContain(entry.reason);
+      }
+      // Coalescing is the relay declining to send. No node can report an
+      // outcome for a command it never received, so nothing lands in the
+      // ADR 0019 stream from this.
+      expect(outcomes).toEqual([]);
+    });
+
+    it("still re-asserts a claim to a node that restarts inside the window", async () => {
+      // The hazard that makes the re-assert bypass coalescing: a restarted node
+      // has lost its own state, so a claim it is re-sent must not be dropped as
+      // "already in target state".
+      const account = randomUUID();
+      const nodeA = manifest();
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      const service = await startService([account], scheduler, () => now);
+      const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+
+      // Re-registers 200ms later, still the holder: the relay re-asserts, and
+      // the window must not swallow it.
+      now += 200;
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }, { type: "claim" }]);
+      expect(service.engineFor(account)?.currentHolder()).toBe(nodeA.nodeId);
     });
   });
 

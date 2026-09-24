@@ -14,6 +14,14 @@ export const relayCorePackageName = "@thrw/relay-core";
 // allowance ("unless you find a real bug while wiring this up").
 export { DeviceRegistry } from "./device-registry.js";
 export {
+  CommandCoalescer,
+  DEFAULT_CLAIM_WINDOW_MS,
+  DEFAULT_RELEASE_WINDOW_MS,
+  type CoalescedCommand,
+  type CommandCoalescerOptions,
+  type CommandKind,
+} from "./command-coalescer.js";
+export {
   RelayMqttClient,
   defaultMqttBrokerUrl,
   type CommandPayload,

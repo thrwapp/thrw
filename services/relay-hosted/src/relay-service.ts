@@ -1,7 +1,10 @@
 import {
+  CommandCoalescer,
   DeviceRegistry,
   PriorityEngine,
   systemScheduler,
+  type CoalescedCommand,
+  type CommandKind,
   type EventPayload,
   type RelayMqttClient,
   type Scheduler,
@@ -373,8 +376,23 @@ export interface RelayServiceOptions {
    * for `PriorityEngine` alone.
    */
   scheduler?: Scheduler;
+  /**
+   * Called for every command coalescing stopped the relay publishing
+   * (ADR 0020 decision 1, #277). Defaults to logging.
+   *
+   * Deliberately **not** folded into `onCommandOutcome`. ADR 0019 defines
+   * exactly three terminal outcomes - succeeded, failed, timed_out - reported
+   * by the *node* about a command it received. A coalesced command was never
+   * sent, so no node can report on it, and adding a fourth outcome would both
+   * change an adapter-facing contract and double-count against the success
+   * rate that enum exists to measure.
+   */
+  onCommandCoalesced?: (coalesced: CoalescedCommand) => void;
   heartbeatTimeoutMs?: number;
   heartbeatSweepIntervalMs?: number;
+  /** ADR 0020 decision 1 windows; see `CommandCoalescer` for the measurements. */
+  claimWindowMs?: number;
+  releaseWindowMs?: number;
   /**
    * How long a node stays silent before its signals are dropped (#263).
    * Defaults to `DEFAULT_NODE_DEPARTURE_TIMEOUT_MS`. Must be >=
@@ -452,6 +470,7 @@ export class RelayService {
   private readonly onNodeReaped: (reaped: NodeReaped) => void;
   private readonly onCommandOutcome: (outcome: CommandOutcomeReported) => void;
   private readonly scheduler: Scheduler;
+  private readonly coalescer: CommandCoalescer;
   private readonly heartbeatTimeoutMs: number;
   private readonly heartbeatSweepIntervalMs: number;
   private readonly nodeDepartureTimeoutMs: number;
@@ -529,6 +548,29 @@ export class RelayService {
         });
       });
     this.scheduler = options.scheduler ?? systemScheduler;
+    const onCommandCoalesced =
+      options.onCommandCoalesced ??
+      ((coalesced) => {
+        logEvent("command_coalesced", {
+          account: coalesced.account,
+          node: coalesced.node,
+          resource: coalesced.resource,
+          dropped: coalesced.dropped,
+          reason: coalesced.reason,
+        });
+      });
+    // ADR 0020 decision 1. The publish itself stays exactly as it was -
+    // fire-and-forget with its own `.catch` - and this only decides whether it
+    // happens now, later, or not at all.
+    this.coalescer = new CommandCoalescer({
+      dispatch: (account, node, resource, kind) =>
+        this.publishCommandNow(account, node, resource as ResourceType, kind),
+      onCoalesced: onCommandCoalesced,
+      claimWindowMs: options.claimWindowMs,
+      releaseWindowMs: options.releaseWindowMs,
+      now: () => this.now(),
+      scheduler: this.scheduler,
+    });
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.heartbeatSweepIntervalMs = options.heartbeatSweepIntervalMs ?? DEFAULT_HEARTBEAT_SWEEP_INTERVAL_MS;
     // Clamped rather than validated: a departure threshold below the
@@ -551,6 +593,10 @@ export class RelayService {
     for (const state of this.states.values()) {
       this.scheduler.clearTimeout(state.sweepHandle);
     }
+    // Pending coalesced commands go with it: firing one after the caller has
+    // asked this service to stop would publish on a client it is about to
+    // close, which is the shape of an unhandled rejection at shutdown.
+    this.coalescer.stop();
   }
 
   /** The `DeviceRegistry` for `account`, mainly for tests/inspection - `undefined` if `account` wasn't configured. */
@@ -680,18 +726,13 @@ export class RelayService {
       }
 
       if (resourceState.lastHolder === node && holderBefore === node) {
-        this.client
-          .publishCommand(state.account, node, resourceState.resource, { type: "claim" })
-          .catch((error: unknown) => {
-            logEvent("publish_failed", {
-              account: state.account,
-              resource: resourceState.resource,
-              node,
-              command: "claim",
-              reason: "reassert",
-              error: String(error),
-            });
-          });
+        // Bypasses coalescing deliberately (#277). This is not a transition -
+        // it re-asserts a claim to a node that has just restarted and lost its
+        // own copy of the state. Routed through `submit` it could be dropped as
+        // "already in target state" (the relay did last send this node a
+        // claim), leaving the relay believing the node holds the route while
+        // the node believes it holds nothing. See CommandCoalescer's own kdoc.
+        this.coalescer.dispatchImmediately(state.account, node, resourceState.resource, "claim");
       }
 
       // #222. Registration is the only thing that runs after a relay
@@ -866,6 +907,31 @@ export class RelayService {
     );
   }
 
+  /**
+   * The actual publish, called by the coalescer once it has decided to send.
+   *
+   * Identical to what `syncHolder` used to do inline: fire-and-forget, because
+   * a publish is a real MQTT round-trip this path must not block on, with a
+   * `.catch` so a broker hiccup cannot crash the process out from under every
+   * other account this service manages.
+   */
+  private publishCommandNow(
+    account: string,
+    node: string,
+    resource: ResourceType,
+    kind: CommandKind,
+  ): void {
+    this.client.publishCommand(account, node, resource, { type: kind }).catch((error: unknown) => {
+      logEvent("publish_failed", {
+        account,
+        resource,
+        node,
+        command: kind,
+        error: String(error),
+      });
+    });
+  }
+
   private syncHolder(account: string, resource: ResourceType): void {
     const resourceState = this.states.get(account)?.resources.get(resource);
     if (!resourceState) return;
@@ -891,27 +957,16 @@ export class RelayService {
       to: nextHolder,
     });
 
+    //
+    // Both go through the coalescer (ADR 0020 decision 1, #277) rather than
+    // straight to the client. A first transition still dispatches immediately -
+    // the leading edge is the point - so an ordinary switch is unchanged; only a
+    // second transition arriving while the first is still settling waits.
     if (previousHolder !== null) {
-      this.client.publishCommand(account, previousHolder, resource, { type: "release" }).catch((error: unknown) => {
-        logEvent("publish_failed", {
-          account,
-          resource,
-          node: previousHolder,
-          command: "release",
-          error: String(error),
-        });
-      });
+      this.coalescer.submit(account, previousHolder, resource, "release");
     }
     if (nextHolder !== null) {
-      this.client.publishCommand(account, nextHolder, resource, { type: "claim" }).catch((error: unknown) => {
-        logEvent("publish_failed", {
-          account,
-          resource,
-          node: nextHolder,
-          command: "claim",
-          error: String(error),
-        });
-      });
+      this.coalescer.submit(account, nextHolder, resource, "claim");
     }
 
     this.publishHolder(resourceState);
