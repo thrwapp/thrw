@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
@@ -71,7 +72,18 @@ import kotlinx.coroutines.withContext
  * disconnected on release; a device that doesn't support one of them
  * simply reports no proxy for it and is skipped.
  */
-class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway {
+class AndroidBluetoothClassicGateway(
+    context: Context,
+    /**
+     * Monotonic milliseconds, for [UNREACHABLE_AFTER_MS] (#264).
+     *
+     * `elapsedRealtime` rather than `currentTimeMillis`: this measures a
+     * duration, and an NTP step mid-connect must not be able to declare
+     * a healthy headset unreachable. Same reasoning as the
+     * `ContinuousClock` the Swift side uses for ADR 0019's `durationMs`.
+     */
+    private val clock: () -> Long = { SystemClock.elapsedRealtime() },
+) : BluetoothClassicGateway {
     private val appContext = context.applicationContext
     private val adapter: BluetoothAdapter =
         (appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -125,12 +137,21 @@ class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway
      * more event-driven but adds registration lifecycle to a class that
      * has none, for a wait that is already bounded elsewhere.
      *
-     * **Deliberately no timeout of its own.**
+     * ## The outer bound is still the backstop, with one exception
+     *
      * `BluetoothConnectionManager` wraps every call in
-     * `withTimeout(COMMAND_OUTCOME_TIMEOUT_MS)` (#244), so a device that
-     * never reaches the target state surfaces as that bound firing -
-     * which is exactly the `timed_out` outcome ADR 0019 wants, rather
-     * than a second competing deadline with its own semantics.
+     * `withTimeout(COMMAND_OUTCOME_TIMEOUT_MS)` (#244), and that remains
+     * the deadline for anything genuinely stuck - a device that has
+     * started connecting and never finishes surfaces as `timed_out`,
+     * which is the outcome ADR 0019 wants for it.
+     *
+     * The exception, added in #264, is a connect where **no driven
+     * profile ever leaves `STATE_DISCONNECTED`**. That is not "stuck",
+     * it is "nothing there", and it is knowable long before 8s - see
+     * [UNREACHABLE_AFTER_MS] for the threshold and the reasoning behind
+     * it. This deliberately does *not* add a competing deadline for the
+     * general case; it only short-circuits the one case where waiting
+     * longer cannot change the answer.
      */
     @SuppressLint("MissingPermission")
     private suspend fun awaitProfileState(
@@ -151,6 +172,7 @@ class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway
         // the state is legitimately still DISCONNECTED for a moment
         // right after the request is accepted.
         var sawConnecting = false
+        val startedAt = clock()
         while (true) {
             val states = driven.map { (_, proxy) ->
                 try {
@@ -164,18 +186,25 @@ class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway
                     targetState
                 }
             }
-            if (states.any { it == targetState }) return
+            if (states.any { it == BluetoothProfile.STATE_CONNECTING }) sawConnecting = true
 
-            if (targetState == BluetoothProfile.STATE_CONNECTED) {
-                if (states.any { it == BluetoothProfile.STATE_CONNECTING }) sawConnecting = true
-                if (sawConnecting && states.all { it == BluetoothProfile.STATE_DISCONNECTED }) {
-                    throw IllegalStateException(
-                        "$deviceAddress accepted the $method request and then refused it - " +
-                            "every driven profile returned to DISCONNECTED",
-                    )
-                }
+            when (profileWaitDecision(states, targetState, sawConnecting, clock() - startedAt)) {
+                ProfileWaitDecision.REACHED -> return
+                ProfileWaitDecision.REFUSED -> throw BluetoothGatewayException.HeadsetUnreachable(
+                    "$deviceAddress accepted the $method request and then refused it - " +
+                        "every driven profile returned to DISCONNECTED",
+                )
+                // #264. Previously this case simply kept polling until
+                // the outer 8s bound fired and reported `timed_out` -
+                // honest, but the least useful of ADR 0019's three
+                // labels for a headset that was never going to answer.
+                ProfileWaitDecision.UNREACHABLE -> throw BluetoothGatewayException.HeadsetUnreachable(
+                    "$deviceAddress never started connecting - every driven profile was still " +
+                        "DISCONNECTED after ${UNREACHABLE_AFTER_MS}ms, so it is off, in its case, " +
+                        "or out of range",
+                )
+                ProfileWaitDecision.KEEP_WAITING -> delay(PROFILE_STATE_POLL_MS)
             }
-            delay(PROFILE_STATE_POLL_MS)
         }
     }
 
@@ -201,7 +230,13 @@ class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway
         val device = adapter.getRemoteDevice(deviceAddress)
         val proxies = audioProfileProxies()
         if (proxies.isEmpty()) {
-            throw IllegalStateException("No A2DP or HFP profile proxy available - cannot $method $deviceAddress")
+            // #264: a local problem, not the headset's. Nothing was ever
+            // asked of it, so reporting `target_device_unreachable`
+            // would send whoever reads the telemetry to the wrong end of
+            // the link.
+            throw BluetoothGatewayException.BluetoothUnavailable(
+                "No A2DP or HFP profile proxy available - cannot $method $deviceAddress",
+            )
         }
 
         val failures = mutableListOf<String>()
@@ -216,7 +251,12 @@ class AndroidBluetoothClassicGateway(context: Context) : BluetoothClassicGateway
             }
         }
         if (driven.isEmpty()) {
-            throw IllegalStateException("$method failed on every audio profile - ${failures.joinToString("; ")}")
+            // Every proxy rejected the request outright. The reflective
+            // call failing is a local/API problem (#162's blocklist
+            // risk), not evidence about where the headset is.
+            throw BluetoothGatewayException.BluetoothUnavailable(
+                "$method failed on every audio profile - ${failures.joinToString("; ")}",
+            )
         }
         return driven
     }
