@@ -12,14 +12,17 @@
 // lives in ../layouts/Base.astro. Only this page's own sections and their
 // styles are here.
 import Base from "../layouts/Base.astro";
+import { buildHomepageGraph } from "../lib/schema";
+import { andList, PLATFORMS } from "../lib/site";
 
 const title = "thrw — One headset. Every device you actually use.";
 const description =
   "thrw switches your Bluetooth headset to whichever of your devices needs it — a call, a meeting, playback starting — across Android, Mac, iPad and Linux, not just within one vendor's ecosystem.";
 
 // The FAQ below is duplicated into FAQPage structured data so search results
-// can surface the answers directly. `faq` is the single source: the markup
-// and the JSON-LD are both generated from it, so they cannot drift apart.
+// and AI assistants can surface the answers directly. `faq` is the single
+// source: the markup and the JSON-LD are both generated from it, so they cannot
+// drift apart.
 const faq = [
   {
     question: "Is switching instant?",
@@ -28,8 +31,11 @@ const faq = [
   },
   {
     question: "What devices does it support?",
-    answer:
-      "Adapters for Android, Mac, iPad, and Linux, so your headset can follow you across ecosystems instead of staying locked to one vendor's devices.",
+    // Built from PLATFORMS rather than written out, so this answer and
+    // SoftwareApplication.operatingSystem cannot claim different platforms
+    // (#273). `andList` reproduces the original wording exactly, Oxford comma
+    // included - test/meta.test.ts asserts the rendered string.
+    answer: `Adapters for ${andList(PLATFORMS.map((platform) => platform.label))}, so your headset can follow you across ecosystems instead of staying locked to one vendor's devices.`,
   },
   {
     question: "Do I need root or a jailbreak?",
@@ -48,15 +54,10 @@ const faq = [
   },
 ];
 
-const faqSchema = {
-  "@context": "https://schema.org",
-  "@type": "FAQPage",
-  mainEntity: faq.map((entry) => ({
-    "@type": "Question",
-    name: entry.question,
-    acceptedAnswer: { "@type": "Answer", text: entry.answer },
-  })),
-};
+// One @graph carrying WebSite, Organization, SoftwareApplication and the FAQ
+// (#273). `Astro.site` is the single origin; `description` is the same string
+// the <meta name="description"> gets, so the two cannot disagree.
+const schemaGraph = buildHomepageGraph(Astro.site!, description, faq);
 ---
 
 <Base title={title} description={description} path="/">
@@ -64,7 +65,7 @@ const faqSchema = {
     slot="head"
     is:inline
     type="application/ld+json"
-    set:html={JSON.stringify(faqSchema)}
+    set:html={JSON.stringify(schemaGraph)}
   />
 
   <main>

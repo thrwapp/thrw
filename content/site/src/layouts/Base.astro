@@ -37,7 +37,23 @@ const ogImage = new URL("/og.png", Astro.site).href;
     {/* A noindex page (the 404) is served at whatever path was mistyped, so
         it has no canonical URL of its own to claim — naming one would point
         at a URL that does not exist. */}
-    {noindex ? <meta name="robots" content="noindex" /> : <link rel="canonical" href={canonical} />}
+    {
+      noindex ? (
+        <meta name="robots" content="noindex" />
+      ) : (
+        <>
+          <link rel="canonical" href={canonical} />
+          {/* Without max-image-preview:large, Google may shrink or drop the
+              1200x630 card in results and Discover - the card exists to be
+              shown at full size. max-snippet:-1 lifts the snippet length cap,
+              which is what an assistant summarising the page has to work with. */}
+          <meta
+            name="robots"
+            content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1"
+          />
+        </>
+      )
+    }
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
