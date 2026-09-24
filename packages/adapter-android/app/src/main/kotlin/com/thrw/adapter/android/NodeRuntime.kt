@@ -42,6 +42,13 @@ class NodeRuntime(
     fun start(scope: CoroutineScope, manifest: NodeManifest) {
         val registration = scope.launch { node.register(manifest) }
         scope.launch { node.listenForCommands() }
+        // #234: the relay's holder, read from the retained state topic.
+        // Its own coroutine rather than folded into the commands one, for
+        // the reason every launch here is separate - one subscription
+        // ending must not take another down, and a notification that has
+        // stopped updating is a far smaller failure than a node that has
+        // stopped hearing commands.
+        scope.launch { node.listenForState() }
         scope.launch { callTriggerMonitor.run() }
         scope.launch { voipTriggerMonitor.run() }
         scope.launch { mediaTriggerMonitor.run() }

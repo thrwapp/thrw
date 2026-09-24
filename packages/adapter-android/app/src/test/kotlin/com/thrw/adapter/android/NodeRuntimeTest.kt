@@ -41,15 +41,44 @@ private data class RuntimePublished(val topic: String, val payload: String, val 
 private class RuntimeFakeMqttTransport : MqttTransport {
     val published = mutableListOf<RuntimePublished>()
     val commands = Channel<String>(Channel.UNLIMITED)
+
+    /**
+     * #234. A second channel, because a `Channel.consumeAsFlow()` can be
+     * consumed exactly once - handing the same one to both the commands
+     * and state subscriptions makes whichever collects second fail, and
+     * splits elements between them until it does.
+     */
+    val state = Channel<String>(Channel.UNLIMITED)
     val subscriptions = mutableListOf<Pair<String, Int>>()
 
     override suspend fun publish(topic: String, payload: String, qos: Int, retained: Boolean) {
         published += RuntimePublished(topic, payload, qos)
     }
 
+    /**
+     * Routed by topic shape rather than exact string, so the fixture
+     * does not need to know which account/node a given test built its
+     * topics from.
+     */
     override fun subscribe(topic: String, qos: Int): Flow<String> {
         subscriptions += topic to qos
-        return commands.consumeAsFlow()
+        return if ("/state/" in topic) state.consumeAsFlow() else commands.consumeAsFlow()
+    }
+
+    /**
+     * Ends every subscription this fake hands out, so `runTest`'s scope
+     * can finish (#234).
+     *
+     * Tests used to close [commands] alone, which was the same thing
+     * while it was the only subscription. Since #234 the runtime also
+     * collects [state], and a flow that never completes keeps a child
+     * coroutine of the test scope alive - so `advanceUntilIdle` never
+     * returns and the test hangs rather than failing with a useful
+     * message.
+     */
+    fun closeAllSubscriptions() {
+        commands.close()
+        state.close()
     }
 
     /** Set by the node under test; fired by [simulateReconnect]. */
@@ -77,6 +106,7 @@ private const val HEADSET = "AA:BB:CC:DD:EE:FF"
 private const val EVENTS_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/audio/events"
 private const val COMMANDS_TOPIC = "thrw/$ACCOUNT/commands/$NODE/audio"
 private const val HEARTBEAT_TOPIC = "thrw/$ACCOUNT/nodes/$NODE/heartbeat"
+private const val STATE_TOPIC = "thrw/$ACCOUNT/state/audio"
 
 private val MANIFEST = NodeManifest(
     nodeId = NODE,
@@ -109,7 +139,7 @@ class NodeRuntimeTest {
         )
 
         runtime.start(this, MANIFEST)
-        transport.commands.close()
+        transport.closeAllSubscriptions()
         advanceUntilIdle()
 
         val registration = transport.published.single { it.topic == EVENTS_TOPIC }
@@ -132,10 +162,39 @@ class NodeRuntimeTest {
         )
 
         runtime.start(this, MANIFEST)
-        transport.commands.close()
+        transport.closeAllSubscriptions()
         advanceUntilIdle()
 
-        assertEquals(listOf(COMMANDS_TOPIC to 1), transport.subscriptions)
+        // `contains` rather than an exact list: #234 added a second
+        // subscription (the retained state topic) on its own coroutine,
+        // so the two race and their order is not a property worth
+        // asserting.
+        assertTrue(transport.subscriptions.contains(COMMANDS_TOPIC to 1))
+    }
+
+    /**
+     * #234. The runtime has to actually drain the state topic, or
+     * `holdsClaim()` stays null forever and the notification falls back
+     * to the pre-#234 behaviour without anything looking broken.
+     */
+    @Test
+    fun `start also subscribes to the retained state topic`() = runTest {
+        val transport = RuntimeFakeMqttTransport()
+        val node = AndroidNode(ACCOUNT, NODE, HEADSET, transport, BluetoothConnectionManager(RuntimeRecordingGateway()))
+        val runtime = NodeRuntime(
+            node = node,
+            callTriggerMonitor = CallTriggerMonitor(emptyCallStateSource(), node),
+            voipTriggerMonitor = VoipTriggerMonitor(emptyNotificationSource(), node),
+            mediaTriggerMonitor = MediaTriggerMonitor(emptyMediaSessionSource(), node),
+            heartbeatRunner = noHeartbeat(),
+            registrationRunner = noReregistration(),
+        )
+
+        runtime.start(this, MANIFEST)
+        transport.closeAllSubscriptions()
+        advanceUntilIdle()
+
+        assertTrue(transport.subscriptions.contains(STATE_TOPIC to 0))
     }
 
     @Test
@@ -156,7 +215,7 @@ class NodeRuntimeTest {
         )
 
         runtime.start(this, MANIFEST)
-        transport.commands.close()
+        transport.closeAllSubscriptions()
         advanceUntilIdle()
 
         assertEquals(
@@ -189,7 +248,7 @@ class NodeRuntimeTest {
         )
 
         runtime.start(this, MANIFEST)
-        transport.commands.close()
+        transport.closeAllSubscriptions()
         advanceUntilIdle()
 
         assertEquals(
@@ -220,7 +279,7 @@ class NodeRuntimeTest {
         // than each in its own coroutine), this call would hang forever
         // and the test would time out.
         runtime.start(this, MANIFEST)
-        transport.commands.close()
+        transport.closeAllSubscriptions()
         advanceUntilIdle()
 
         assertTrue(transport.published.any { it.payload.contains("\"call\"") })
@@ -248,7 +307,7 @@ class NodeRuntimeTest {
         )
 
         runtime.start(this, MANIFEST)
-        transport.commands.close()
+        transport.closeAllSubscriptions()
         advanceUntilIdle()
 
         val topics = transport.published.map { it.topic }
@@ -284,7 +343,7 @@ class NodeRuntimeTest {
         val beforeReconnect = transport.published.count { it.topic == EVENTS_TOPIC }
 
         transport.simulateReconnect()
-        transport.commands.close()
+        transport.closeAllSubscriptions()
         advanceUntilIdle()
 
         assertEquals(
@@ -309,7 +368,7 @@ class NodeRuntimeTest {
         )
 
         runtime.start(this, MANIFEST)
-        transport.commands.close()
+        transport.closeAllSubscriptions()
         advanceUntilIdle()
 
         assertEquals(1, beats)

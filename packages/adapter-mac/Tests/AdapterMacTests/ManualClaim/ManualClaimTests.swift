@@ -8,6 +8,9 @@ private final class FailingEventLifecycle: EventLifecycle, @unchecked Sendable {
     struct Boom: Error {}
     func emitEvent(type: EventKind, priority: Priority) async throws { throw Boom() }
     func endEvent(type: EventKind) async throws { throw Boom() }
+    /// Nothing ever succeeded, so nothing is ever active - which is the
+    /// whole point of the test below.
+    func isEventActive(_ type: EventKind) -> Bool { false }
 }
 
 final class ManualClaimTests: XCTestCase {

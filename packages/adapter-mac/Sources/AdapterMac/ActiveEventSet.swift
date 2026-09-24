@@ -34,9 +34,32 @@ final class ActiveEventSet: @unchecked Sendable {
         ordered.removeAll { $0 == kind }
     }
 
+    func contains(_ kind: EventKind) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return ordered.contains(kind)
+    }
+
     func snapshot() -> [EventKind] {
         lock.lock()
         defer { lock.unlock() }
         return ordered
+    }
+
+    /// The trigger that started most recently, or `nil` if none is
+    /// active.
+    ///
+    /// Recency, **not** rank. Adapters do not rank triggers -
+    /// architecture.md puts priority rules server-side, "never
+    /// duplicated in adapters" - and this deliberately reads the
+    /// insertion order this type already preserves rather than
+    /// consulting anything resembling `PRIORITY_ORDER`. It exists so the
+    /// menu can say *why* this device is holding the headset (#234)
+    /// without the adapter forming an opinion about which trigger would
+    /// win.
+    func mostRecent() -> EventKind? {
+        lock.lock()
+        defer { lock.unlock() }
+        return ordered.last
     }
 }

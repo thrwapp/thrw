@@ -28,6 +28,24 @@ public enum CommandType: String, Codable, Sendable {
     case release
 }
 
+/// Mirror of relay-core's `StatePayload` (#229), carried retained on
+/// ``Topics/state(account:resource:)`` - the relay's authoritative
+/// answer to "which node holds this resource".
+///
+/// `holder` is optional because the relay genuinely publishes
+/// `{"holder": null}` when nobody holds it. That is a real answer, and
+/// ``HolderState`` keeps it distinct from "we have not heard from the
+/// relay at all": the two are identical if you store both as a `nil`
+/// String, and conflating them makes the menu state confidently that
+/// nobody holds the headset when the truth is that it has no idea.
+public struct StatePayload: Codable, Sendable, Equatable {
+    public let holder: String?
+
+    public init(holder: String?) {
+        self.holder = holder
+    }
+}
+
 /// Mirror of relay-core's `SequencedCommandPayload`.
 ///
 /// `seq` and `epoch` are optional so a command carrying neither still

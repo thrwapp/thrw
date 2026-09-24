@@ -49,6 +49,24 @@ public protocol HandoverAudioGate: Sendable {
     /// Undoes ``silence()``. Safe to call without a preceding
     /// ``silence()``, and must not start audio that was not playing.
     func restore() async
+
+    /// Whether this gate is currently suppressing audio (#265).
+    ///
+    /// Exists because on macOS the suppression is a **mute**, and a mute
+    /// is invisible: a released Mac stays silenced until it is claimed
+    /// again, and nothing on screen connects that silence to a headset
+    /// switcher. A paused Android session needs no such indicator, which
+    /// is exactly the asymmetry #267 removes.
+    ///
+    /// Defaulted to `false` below, so a gate with nothing to report -
+    /// ``NoOpHandoverAudioGate`` included - needs no code at all, and a
+    /// node that never suppresses anything shows no indicator (#265
+    /// acceptance criterion 4).
+    func isSuppressing() async -> Bool
+}
+
+extension HandoverAudioGate {
+    public func isSuppressing() async -> Bool { false }
 }
 
 /// The gate used when none is supplied - does nothing.

@@ -12,14 +12,30 @@ import kotlin.test.assertTrue
 private class Recording : EventLifecycle {
     val emitted = mutableListOf<EventKind>()
     val ended = mutableListOf<EventKind>()
-    override suspend fun emitEvent(type: EventKind, priority: Int) { emitted += type }
-    override suspend fun endEvent(type: EventKind) { ended += type }
+
+    /** #234 - see `RecordingEventLifecycle` for why this models the set. */
+    private val active = linkedSetOf<EventKind>()
+
+    override suspend fun emitEvent(type: EventKind, priority: Int) {
+        emitted += type
+        active += type
+    }
+
+    override suspend fun endEvent(type: EventKind) {
+        ended += type
+        active -= type
+    }
+
+    override fun isEventActive(type: EventKind): Boolean = active.contains(type)
 }
 
 /** Fails every publish, to check local state does not drift from what the relay was told. */
 private class Failing : EventLifecycle {
     override suspend fun emitEvent(type: EventKind, priority: Int) = throw IllegalStateException("boom")
     override suspend fun endEvent(type: EventKind) = throw IllegalStateException("boom")
+
+    /** Nothing ever succeeded, so nothing is ever active. */
+    override fun isEventActive(type: EventKind): Boolean = false
 }
 
 class ManualClaimTest {
