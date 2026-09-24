@@ -440,7 +440,22 @@ describe("RelayService (real broker)", () => {
     await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }]);
     expect(service.engineFor(account)?.currentHolder()).toBe(nodeA.nodeId);
 
+    // #263: three missed beats used to be enough to do all of that. It
+    // is now only the "stale" mark, and deliberately changes nothing a
+    // node can feel - a device mid-call that has missed three beats is
+    // far more likely to be a dozing phone than a departed one, and in
+    // 9h49m of production log every single one of 164 reaps turned out to
+    // be a live node that came back.
     now += 90_001;
+    scheduler.fire(5_000);
+    expect(service.engineFor(account)?.currentHolder()).toBe(nodeA.nodeId);
+    await settle();
+    expect(commandsA).toEqual([{ type: "claim" }]);
+
+    // #130's guarantee itself is unchanged - a silently-departed node
+    // does not keep its claim forever - it just takes the departure
+    // threshold to get there instead of the stale one.
+    now += 210_001;
     scheduler.fire(5_000);
 
     // forgetNode's own "no auto-return grace period for a silently-gone
@@ -448,6 +463,41 @@ describe("RelayService (real broker)", () => {
     // timer fire needed.
     expect(service.engineFor(account)?.currentHolder()).toBeNull();
     await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }, { type: "release" }]);
+  });
+
+  // #263 criterion 3, and the reason the two thresholds exist: the node
+  // this describes is the one the old single rule handled worst.
+  it("keeps a quiet node's signals and its route until it is really gone (#263)", async () => {
+    const account = randomUUID();
+    const nodeA = manifest({ supportedEventKinds: ["call"] });
+    const scheduler = new FakeScheduler();
+    let now = 0;
+    const reaped: NodeReaped[] = [];
+    const service = await startService([account], scheduler, () => now, undefined, {
+      onNodeReaped: (r) => reaped.push(r),
+    });
+
+    const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+    await publishRegistration(rawClient, account, nodeA);
+    await publishEvent(rawClient, account, nodeA.nodeId, "call");
+    await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+
+    // Silent for well over three missed beats, and repeatedly swept -
+    // a dozing phone's whole day. The holder must not move, and nothing
+    // may be published at it: this is the "asleep while holding the route"
+    // case that would take the headset off a device still using it.
+    for (let elapsed = 0; elapsed < 3; elapsed++) {
+      now += 60_000;
+      scheduler.fire(5_000);
+    }
+    expect(now).toBeGreaterThan(90_000);
+    expect(now).toBeLessThan(300_000);
+
+    expect(service.engineFor(account)?.currentHolder()).toBe(nodeA.nodeId);
+    await settle();
+    expect(commandsA).toEqual([{ type: "claim" }]);
+    expect(reaped).toEqual([]);
   });
 
   // #236. The production relay logged the headset alternating Mac <->
@@ -482,10 +532,14 @@ describe("RelayService (real broker)", () => {
     await publishRegistration(rawClient, account, nodeB, ["media"]);
     await expect.poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 }).toBe(nodeB.nodeId);
 
-    // Registration cycles, offset the way two independent 120s timers
-    // would be, with the 90s reap falling between them.
+    // Registration cycles, offset so the reap falls between them. Driven
+    // past the *departure* threshold rather than the stale one (#263):
+    // this mechanism is unchanged, it just takes 300s to come round
+    // instead of 90s. Deliberately still asserted - #263 slowed this down
+    // and did not fix it, and a future reader should not mistake the
+    // slower cadence for the relay-side half of #236 being closed.
     for (const node of [nodeA, nodeB, nodeA, nodeB, nodeA, nodeB]) {
-      now += 90_001;
+      now += 300_001;
       scheduler.fire(5_000); // the sweep reaps whoever last registered
       record();
 
@@ -637,12 +691,19 @@ describe("RelayService (real broker)", () => {
         .poll(() => service.engineFor(account)?.currentHolder(), { timeout: 2000 })
         .toBe(nodeA.nodeId);
 
+      // Nothing at the stale mark - the line means "a node lost its
+      // signals", and at 90s it has not (#263 criterion 4: 164 of these
+      // in ten hours was burying the signal the event was added to find).
       now += 90_001;
+      scheduler.fire(5_000);
+      expect(seen).toEqual([]);
+
+      now += 210_001;
       scheduler.fire(5_000);
 
       expect(seen).toHaveLength(1);
       expect(seen[0]).toMatchObject({ account, node: nodeA.nodeId });
-      expect(seen[0]?.silentForMs).toBeGreaterThanOrEqual(90_001);
+      expect(seen[0]?.silentForMs).toBeGreaterThanOrEqual(300_000);
     });
   });
 
@@ -1072,8 +1133,9 @@ describe("RelayService (real broker)", () => {
         holder: nodeA.nodeId,
       });
 
-      // Past the 90s liveness timeout with no beats at all.
-      now += 120_000;
+      // Past the departure threshold with no beats at all (#263 - 120s
+      // is now merely stale, and stale deliberately publishes nothing).
+      now += 300_001;
       scheduler.fire(5_000);
 
       await expect.poll(() => readRetainedState(account), { timeout: 2000 }).toEqual({ holder: null });

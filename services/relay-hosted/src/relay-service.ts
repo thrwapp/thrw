@@ -267,16 +267,61 @@ function isEventPayload(payload: unknown): payload is EventPayload {
 }
 
 // 3x architecture.md's "~30s" heartbeat interval - a couple of missed
-// beats is normal jitter, three in a row is "gone". A judgment call
+// beats is normal jitter, three in a row is "stale". A judgment call
 // (#118 acceptance criterion 2 explicitly asks for one, since the wire
 // protocol has no explicit "goodbye" message) - not derived from any
 // measurement, just a round multiple of the documented interval.
+//
+// This used to mean "gone", and no longer does (#263). Crossing it stops
+// a node counting as live; what happens to the signals it holds is
+// decided by DEFAULT_NODE_DEPARTURE_TIMEOUT_MS below. The 3:1 ratio both
+// adapters' heartbeat publishers document as a contract is unchanged -
+// this is still that number, still 3x 30s.
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 90_000;
 
 // How often each account's registry is swept for timed-out nodes. Well
 // under the timeout itself so a departed node isn't left registered much
 // longer than DEFAULT_HEARTBEAT_TIMEOUT_MS actually implies.
 const DEFAULT_HEARTBEAT_SWEEP_INTERVAL_MS = 15_000;
+
+// How long a node must stay silent before the relay treats it as *gone*
+// rather than merely quiet, and drops the signals it had (#263).
+//
+// The 90s above was chosen against "an assumption of always-awake nodes
+// that the reference hardware does not meet". Neither reference device
+// meets it: a sleeping Mac cannot send anything at all, and a dozing
+// Pixel has its timers deferred by the OS. Measured over 9h49m of
+// production relay log (2026-09-23 10:22Z-20:11Z, archive
+// relay-service-20260923T203636Z.log):
+//
+//   164 node_reaped, 223 registration, 14 holder_change
+//   registration gaps: Pixel p50 160s / max 2263s against a 120s timer,
+//                      Mac   p50 438s / max 1126s
+//   silence episodes:  p50 128s, p90 940s
+//
+// So the old rule fired 164 times in ten hours, and a p50 of 128s means
+// it fired hardest on the *shortest* silences - the ones least likely to
+// mean anything. Not one of those 164 reaps dropped a signal: all 164 hit
+// a node with nothing active, where `PriorityEngine.forgetNode` ->
+// `dropSignals` returns early and the reap is a no-op. The destructive
+// case - a node reaped while it still has an active trigger - did not
+// occur once.
+//
+// 300s is taken from the same measurement rather than picked as a round
+// number: replaying those silence episodes, a 300s threshold would have
+// reaped 34 times instead of 164, and it is the knee of the curve (180s ->
+// 61, 300s -> 34, 420s -> 26, 600s -> 23). Long enough that ordinary doze
+// and Mac sleep pass under it, short enough that a node which is genuinely
+// gone does not hold a signal for long.
+//
+// Deliberately NOT a change to the 30s/90s pair. Both adapters'
+// heartbeat publishers document that pair as a contract that must stay
+// 3:1 ("changing one without the other silently changes how long a dead
+// node keeps its claim - or starts reaping live ones"), and #236 and #251
+// are both recent, expensive lessons in touching this machinery. 90s still
+// means "stale" exactly as before; this is a second, later threshold for
+// the one action that cannot be undone.
+const DEFAULT_NODE_DEPARTURE_TIMEOUT_MS = 300_000;
 
 export interface RelayServiceOptions {
   /** An already-connected client - this class never calls `RelayMqttClient.connect` itself. */
@@ -330,6 +375,13 @@ export interface RelayServiceOptions {
   scheduler?: Scheduler;
   heartbeatTimeoutMs?: number;
   heartbeatSweepIntervalMs?: number;
+  /**
+   * How long a node stays silent before its signals are dropped (#263).
+   * Defaults to `DEFAULT_NODE_DEPARTURE_TIMEOUT_MS`. Must be >=
+   * `heartbeatTimeoutMs`; a smaller value is clamped up to it, since
+   * "gone" cannot precede "stale".
+   */
+  nodeDepartureTimeoutMs?: number;
 }
 
 /**
@@ -402,6 +454,7 @@ export class RelayService {
   private readonly scheduler: Scheduler;
   private readonly heartbeatTimeoutMs: number;
   private readonly heartbeatSweepIntervalMs: number;
+  private readonly nodeDepartureTimeoutMs: number;
   private readonly states = new Map<string, AccountState>();
 
   constructor(options: RelayServiceOptions) {
@@ -478,6 +531,14 @@ export class RelayService {
     this.scheduler = options.scheduler ?? systemScheduler;
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.heartbeatSweepIntervalMs = options.heartbeatSweepIntervalMs ?? DEFAULT_HEARTBEAT_SWEEP_INTERVAL_MS;
+    // Clamped rather than validated: a departure threshold below the
+    // stale one would mean a node is declared gone before it is declared
+    // quiet, which no caller can sensibly want, and throwing here would
+    // take down a relay over a config typo.
+    this.nodeDepartureTimeoutMs = Math.max(
+      options.nodeDepartureTimeoutMs ?? DEFAULT_NODE_DEPARTURE_TIMEOUT_MS,
+      this.heartbeatTimeoutMs,
+    );
   }
 
   /** Subscribes every configured account's events topic and starts its heartbeat sweep. */
@@ -732,38 +793,62 @@ export class RelayService {
   }
 
   private sweepHeartbeats(state: AccountState): void {
-    const cutoff = this.now() - this.heartbeatTimeoutMs;
+    const now = this.now();
     let forgotAny = false;
     for (const [node, lastSeenAt] of state.lastHeartbeatAt) {
-      if (lastSeenAt < cutoff) {
-        // Acceptance criterion 2's "gone" definition: three missed
-        // heartbeat intervals. Previously only DeviceRegistry.unregister
-        // ran here - PriorityEngine had no equivalent, so a node that
-        // went silent mid-call could keep currentHolder() reporting it
-        // as the winner forever (docs/handoffs/118.md's "Known gaps").
-        // PriorityEngine.forgetNode (#130) is that equivalent.
-        state.registry.unregister(node);
-        // Every resource, not just one (#171). A heartbeat is evidence
-        // about the *node* - whether its process is alive - not about
-        // any resource it manages. A phone that has gone silent has gone
-        // silent for audio and HID alike, so leaving it as the holder of
-        // one while forgetting it from another would strand exactly the
-        // stale-winner bug #130 closed.
-        for (const resourceState of state.resources.values()) {
-          resourceState.engine.forgetNode(node);
-        }
-        state.lastHeartbeatAt.delete(node);
-        state.heartbeatSubscribed.delete(node);
-        // #245. Emitted before the syncHolder below, so a reader sees the
-        // cause immediately ahead of the holder_change it produces -
-        // which is exactly the pairing #236 spent a day reconstructing.
-        this.onNodeReaped({
-          account: state.account,
-          node,
-          silentForMs: this.now() - lastSeenAt,
-        });
-        forgotAny = true;
+      const silentForMs = now - lastSeenAt;
+      if (silentForMs < this.heartbeatTimeoutMs) continue;
+
+      // Stale: three missed beats, so this node no longer counts as
+      // live. Nothing here is destructive, and deliberately so (#263) -
+      // being quiet is what a sleeping Mac and a dozing phone do all day.
+      // Repeated on every sweep while the node stays quiet; `unregister`
+      // is an idempotent Map delete, and nothing in production reads the
+      // registry (it is inspection/test surface), so re-running it costs
+      // nothing and needs no extra state to suppress.
+      state.registry.unregister(node);
+
+      // Not yet gone. The node keeps its signals, keeps the route if it
+      // holds it, and keeps accumulating silence - `lastHeartbeatAt` is
+      // deliberately not deleted here, because the next sweep needs to
+      // know how long this has been going on.
+      if (silentForMs < this.nodeDepartureTimeoutMs) continue;
+
+      // Gone. Everything below this line is the destructive half, and is
+      // the reason the two thresholds exist at all: `forgetNode` drops
+      // the node's signals, which can move the route and publish a
+      // RELEASE to a device that may still be using the headset.
+      //
+      // Previously only DeviceRegistry.unregister ran here -
+      // PriorityEngine had no equivalent, so a node that went silent
+      // mid-call could keep currentHolder() reporting it as the winner
+      // forever (docs/handoffs/118.md's "Known gaps"). forgetNode (#130)
+      // is that equivalent, and this is still bounded: "forever" became
+      // 90s then, and 300s now.
+      //
+      // Every resource, not just one (#171). A heartbeat is evidence
+      // about the *node* - whether its process is alive - not about
+      // any resource it manages. A phone that has gone silent has gone
+      // silent for audio and HID alike, so leaving it as the holder of
+      // one while forgetting it from another would strand exactly the
+      // stale-winner bug #130 closed.
+      for (const resourceState of state.resources.values()) {
+        resourceState.engine.forgetNode(node);
       }
+      state.lastHeartbeatAt.delete(node);
+      state.heartbeatSubscribed.delete(node);
+      // #245. Emitted before the syncHolder below, so a reader sees the
+      // cause immediately ahead of the holder_change it produces -
+      // which is exactly the pairing #236 spent a day reconstructing.
+      // Now emitted only for a departure, never for ordinary quiet, so
+      // the line keeps meaning "a node lost its signals" rather than
+      // "a phone's screen is off" (#263 criterion 4).
+      this.onNodeReaped({
+        account: state.account,
+        node,
+        silentForMs,
+      });
+      forgotAny = true;
     }
     // forgetNode can change currentHolder() synchronously (no auto-return
     // timer involved - see its own kdoc), unlike a normal recordEvent/
