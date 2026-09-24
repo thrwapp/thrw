@@ -7,23 +7,18 @@
 // site — see the "no new dependency without justification" rule in
 // AGENTS.md.
 import type { APIRoute } from "astro";
+import { routes } from "../lib/routes";
 
-// 404.astro is a real page file but not a URL anyone should be pointed at.
-const pageFiles = Object.keys(import.meta.glob("./**/*.astro")).filter(
-  (file) => !file.endsWith("/404.astro"),
-);
-
-// Trailing slash on sub-pages: Cloudflare Pages 308-redirects /privacy to
-// /privacy/, and a sitemap listing the redirecting form wastes a crawl hop.
-function routeFor(file: string): string {
-  const route = file.replace(/^\.\//, "").replace(/\.astro$/, "");
-  return route === "index" ? "/" : `/${route}/`;
-}
-
+// The route list moved to ../lib/routes (#273) so llms.txt enumerates exactly
+// the same pages. It is still derived from the page files, so adding a page puts
+// it in both without anyone remembering to.
+//
+// No <lastmod>, deliberately: neither available source is honest. A build
+// timestamp would claim every page changed on every deploy, and a git-derived
+// date depends on the clone depth the CI checkout happens to use. Search engines
+// discount a sitemap whose lastmod they learn not to trust, so none beats wrong.
 export const GET: APIRoute = ({ site }) => {
-  const urls = pageFiles
-    .map(routeFor)
-    .sort()
+  const urls = routes
     .map((route) => `  <url><loc>${new URL(route, site).href}</loc></url>`)
     .join("\n");
 
