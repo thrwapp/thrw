@@ -15,7 +15,7 @@
 // being hardcoded here.
 import type { APIRoute } from "astro";
 import { routes } from "../lib/routes";
-import { andList, PLATFORMS, REPO_URL, SITE_NAME } from "../lib/site";
+import { andList, PLANNED_PLATFORMS, PLATFORMS, REPO_URL, SITE_NAME } from "../lib/site";
 
 // Curated one-liners per route. A route with no entry still gets listed - the
 // list comes from the page files (../lib/routes), so a new page cannot go
@@ -27,6 +27,7 @@ const ROUTE_NOTES: Record<string, string> = {
 
 export const GET: APIRoute = ({ site }) => {
   const platforms = andList(PLATFORMS.map((platform) => platform.label));
+  const planned = andList([...PLANNED_PLATFORMS]);
   const pages = routes
     .map((route) => {
       const url = new URL(route, site).href;
@@ -49,6 +50,7 @@ export const GET: APIRoute = ({ site }) => {
 - The handoff is a real disconnect-and-reconnect, not an instant swap, so it takes a few seconds. ${SITE_NAME} does not claim a latency number, because none has been published against real hardware.
 - Priority order: an incoming or outgoing call wins, then a manual claim, then a VoIP session, then media playback, then whichever device claimed it last.
 - No root and no jailbreak on any device.
+- Working adapters: ${platforms}. ${planned} adapters are planned and do not work yet.
 - Status: pre-launch. The site collects waitlist signups; there is no release to download yet.
 
 ## Open source
