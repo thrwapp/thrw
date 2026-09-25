@@ -822,6 +822,7 @@ export class RelayService {
       const holderBefore = resourceState.lastHolder;
       resourceState.engine.recordEvent(node, payload.type);
       this.syncHolder(state.account, resourceState.resource);
+      this.breakWedgeForUrgentTrigger(state.account, resourceState, node, payload.type, holderBefore);
       this.onNodeEvent({
         account: state.account,
         node,
@@ -1032,6 +1033,82 @@ export class RelayService {
     // "already in target state" (the relay did last send this node a
     // claim), leaving the relay believing the node holds the route while
     // the node believes it holds nothing. See CommandCoalescer's own kdoc.
+    this.coalescer.dispatchImmediately(account, node, resourceState.resource, "claim");
+  }
+
+  /**
+   * Dispatches a claim when an urgent trigger starts on a node that is
+   * *already* the holder (#301).
+   *
+   * ## The wedge this exists to break
+   *
+   * Arbitration only acts on holder **changes**. That is right almost
+   * always, and catastrophic in one state: the relay believes a node
+   * holds the resource, the node does not actually have it, and #289's
+   * bounded re-assertion has given up trying to repair that. Nothing can
+   * then move the headset, because every recomputation finds the holder
+   * unchanged and issues no command.
+   *
+   * Observed on the reference pair, 2026-09-25:
+   *
+   * ```
+   * 20:27:03  reassert_exhausted  node=PIXEL  attempts=2
+   * ```
+   *
+   * The relay had the Pixel as holder, the Pixel reported no route, and
+   * the Mac physically had the headset. **A WhatsApp call and a mobile
+   * call both failed to move it** — the Pixel emitted `call`, the relay
+   * recomputed, found the Pixel already holding, and sent nothing.
+   *
+   * #289 was mine, and this failure is the half of its own analysis I
+   * did not implement: *"either the relay should stop believing that
+   * node holds it, or it should stop trying — but it should not loop
+   * indefinitely."* Stopping trying, without stopping believing, wedges
+   * the system.
+   *
+   * ## Why only `call` and `manual_claim`
+   *
+   * They are the triggers this system already refuses to suppress
+   * anywhere else — exempt from ADR 0010's self-cooldown and from
+   * #295's window — because they mean *the user is doing something
+   * right now*. A call that cannot reach the headset is the worst
+   * failure this product has.
+   *
+   * `media` and `voip` deliberately do **not** break the wedge. They are
+   * ambient, they fire constantly, and letting them dispatch on every
+   * event is how #287's fighting started.
+   *
+   * ## Why this is safe to send unconditionally
+   *
+   * A claim to a node that really does hold the resource is a no-op it
+   * resolves in milliseconds (#284's measurement), and #289's rule 1
+   * already stops the *periodic* path re-sending those. This is not that
+   * path: it fires only on a genuine urgent trigger, which is rare, and
+   * the alternative is a call with nowhere to go.
+   *
+   * The re-assert budget is also reset, so the ordinary registration
+   * path can help again rather than staying exhausted forever.
+   */
+  private breakWedgeForUrgentTrigger(
+    account: string,
+    resourceState: ResourceState,
+    node: string,
+    type: EventKind,
+    holderBefore: string | null,
+  ): void {
+    if (type !== "call" && type !== "manual_claim") return;
+    // A real holder change already dispatched the claim through the
+    // normal path; sending a second would be the duplicate #284 is about.
+    if (resourceState.lastHolder !== holderBefore) return;
+    if (resourceState.lastHolder !== node) return;
+
+    resourceState.reassertsThisTenure = 0;
+    logEvent("urgent_reassert", {
+      account,
+      node,
+      resource: resourceState.resource,
+      type,
+    });
     this.coalescer.dispatchImmediately(account, node, resourceState.resource, "claim");
   }
 
