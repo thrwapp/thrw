@@ -59,9 +59,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// #265. Hidden unless this Mac is currently muted for a handover.
     private var unmuteItem: NSMenuItem?
 
-    /// #267. Hidden once Accessibility is granted.
-    private var accessibilityItem: NSMenuItem?
-
     /// #290. Flips between pausing and resuming arbitration here.
     private var pauseItem: NSMenuItem?
 
@@ -76,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// #265. Held so the menu can ask whether it is suppressing, and
     /// un-mute on request. Nil until a node runtime starts.
-    private var audioGate: PausingHandoverAudioGate?
+    private var audioGate: MutingHandoverAudioGate?
 
     /// #213. Disabled - it is a readout, not a control.
     private var statusMenuItem: NSMenuItem?
@@ -140,28 +137,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(unmute)
         unmuteItem = unmute
 
-        // #267. Hidden once Accessibility is granted.
-        //
-        // The grant is read with the **non-prompting** `AXIsProcessTrusted`,
-        // so nothing puts a permissions dialog on screen during a
-        // handover — a moment the user did not initiate and is not
-        // looking at. The consequence is that this app never appears in
-        // System Settings' Accessibility list on its own, so without a
-        // deliberate way to ask, pausing would silently never activate
-        // and the Mac would sit on the muting fallback forever.
-        //
-        // This is that deliberate moment: the user opens the menu, sees
-        // why the Mac is behaving worse than the phone, and chooses.
-        let accessibility = NSMenuItem(
-            title: Self.accessibilityTitle,
-            action: #selector(requestAccessibility),
-            keyEquivalent: ""
-        )
-        accessibility.target = self
-        accessibility.isHidden = true
-        menu.addItem(accessibility)
+        // #298. "Enable Pause During Handover" is gone along with the
+        // pausing gate it existed to enable. A control that asks for a
+        // system-wide permission nothing then uses is worse than no
+        // control at all.
         menu.addItem(.separator())
-        accessibilityItem = accessibility
 
         // #290. "Leave my headset alone on this Mac."
         //
@@ -195,7 +175,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// whatever the user was doing.
     private static let claimTitle = "Claim Headset"
     private static let unmuteTitle = "Muted for Handover \u{2014} Unmute"
-    private static let accessibilityTitle = "Enable Pause During Handover\u{2026}"
     private static let pauseTitle = "Pause Switching on This Mac"
     private static let resumeTitle = "Resume Switching on This Mac"
 
@@ -259,37 +238,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// exactly that, which is why this calls it rather than setting a
     /// volume directly: leaving the record behind would let the next
     /// claim's restore overwrite whatever the user chose afterwards.
-    /// #267. The one place that may raise the Accessibility prompt.
-    ///
-    /// `AXIsProcessTrustedWithOptions` with the prompt option both asks
-    /// and registers this app in System Settings' list, which the
-    /// read-only check used everywhere else deliberately does not do.
-    /// Opening the pane afterwards is belt and braces: if the grant was
-    /// given to a previous build the prompt does not reappear, and the
-    /// user is otherwise left with a menu item that seems to do nothing.
-    ///
-    /// Worth stating why re-granting will happen: the app is ad-hoc
-    /// signed, so macOS keys the grant to a cdhash that changes on every
-    /// build. Until #132 (Developer ID), each update needs this again.
-    @objc private func requestAccessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        if AXIsProcessTrustedWithOptions(options) {
-            refreshAccessibilityItem()
-            return
-        }
-        if let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        ) {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
-    /// Shown only while the grant is missing, so a Mac that already has
-    /// it carries no clutter.
-    private func refreshAccessibilityItem() {
-        accessibilityItem?.isHidden = AXIsProcessTrusted()
-    }
-
     /// #290. Pauses if running, resumes if paused.
     ///
     /// The title is refreshed from the resulting state rather than
@@ -474,32 +422,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // nothing on screen explaining why, which is why ADR 0022's
             // amendment makes durability a requirement of choosing to
             // mute at all.
-            // #267: pausing is the mechanism now. The muting gate stays
-            // only as the fallback for a machine that has not granted
-            // Accessibility — partial suppression beats none, and it is
-            // exactly what this Mac did before.
+            // #298. macOS mutes. Pausing was tried and backed out.
             //
-            // Both are constructed unconditionally because the grant is
-            // re-read on every call: it can be given or revoked in
-            // System Settings while this runs, and deciding once at
-            // launch would leave a user who has just granted it
-            // wondering why nothing changed until they relaunched.
+            // ``PausingHandoverAudioGate`` and its seams are kept, tested
+            // and unwired, because the *argument* for pausing still holds
+            // — a pause is restorative where a mute is lossy — and #267
+            // remains open for when #132's Developer ID signing makes it
+            // viable. What failed was the only mechanism available today.
+            //
+            // `NX_KEYTYPE_PLAY` is a toggle aimed at whatever holds
+            // media-key focus, which ADR 0022's amendment named as
+            // finding 2 and which I judged manageable. On the reference
+            // hardware it is not: the gate's pause genuinely stopped
+            // YouTube and the matching press did not reliably resume it,
+            // so playback stopped, the media trigger went false, the
+            // holder moved, and the whole thing looped every ten
+            // seconds. Measured 2026-09-25 on v0.2.3:
+            //
+            //     17:04:48  MAC  event      media  -> Mac holder
+            //     17:05:02  MAC  event_end  media  -> Pixel  (13.7s)
+            //     17:05:12  MAC  event      media  -> Mac holder
+            //     17:05:21  MAC  event_end  media  -> Pixel  (9.1s)
+            //
+            // Breaking the user's playback to cover a 2.7s handover is a
+            // worse failure than the leak it was preventing. Muting has
+            // its own faults — it is lossy, and invisible without #265's
+            // indicator — but it never stops playback and never loops.
+            //
             // #290. Constructed before the node, which reads it on every
             // emitEvent, and shared with the menu's ArbitrationPause.
             let pauseStore = UserDefaultsArbitrationPauseStore()
-            let mutingGate = MutingHandoverAudioGate(
+            let audioGate = MutingHandoverAudioGate(
                 volume: CoreAudioSystemOutputVolume(),
                 store: UserDefaultsMutedVolumeStore()
             )
-            let audioGate = PausingHandoverAudioGate(
-                mediaKey: CGEventMediaKeySender(),
-                playback: CoreAudioPlaybackState(),
-                accessibility: AXAccessibilityAuthorization(),
-                fallback: mutingGate
-            )
             // #265: the menu asks this one whether it is suppressing, and
-            // offers the way out. It answers for the fallback, because a
-            // paused player explains itself and a mute does not.
+            // offers the way out — which matters more now that muting is
+            // the mechanism again, since a mute explains nothing itself.
             self.audioGate = audioGate
             // The other half of that requirement: a crash inside a
             // handover window self-heals on this launch rather than
@@ -520,7 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the fallback on an un-granted machine, still has to be
             // healed, and this is the only thing that does it (#267
             // criterion 4).
-            Task { await mutingGate.restoreAfterPreviousRun() }
+            Task { await audioGate.restoreAfterPreviousRun() }
             let node = MacNode(
                 accountId: accountId,
                 nodeId: nodeId,
@@ -584,7 +543,6 @@ extension AppDelegate: NSMenuDelegate {
         refreshStatusItem()
         refreshClaimItem()
         refreshUnmuteItem()
-        refreshAccessibilityItem()
         refreshPauseItem()
     }
 }

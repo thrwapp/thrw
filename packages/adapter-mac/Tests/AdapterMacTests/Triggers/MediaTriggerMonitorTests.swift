@@ -87,6 +87,43 @@ final class MediaTriggerMonitorTests: XCTestCase {
         XCTAssertEqual(node.ended, [.media])
     }
 
+    /// #298, the regression this exists for. The trigger reads the
+    /// **default output device**, and that device changes whenever thrw
+    /// attaches or detaches the headset — so a handover produces a
+    /// short gap in the very signal used to decide whether to hand over.
+    /// Measured on the reference Mac with YouTube playing continuously:
+    /// the holder bounced between devices every ten seconds.
+    ///
+    /// The start debounce is `instant` and the stop debounce `never`, so
+    /// the only way the end could be reported is if the blip were
+    /// treated as a stop — which is precisely the bug.
+    func testAShortSilenceFromADeviceChangeDoesNotEndMedia() async throws {
+        let node = RecordingEventLifecycle()
+        let source = FakeAudioPlaybackSource()
+        let monitor = MediaTriggerMonitor(
+            source: source,
+            node: node,
+            debounce: .zero,
+            stopDebounce: .seconds(10),
+            sleep: { duration in
+                // Start window elapses at once; the stop window does not.
+                if duration != .zero { try await Task.sleep(nanoseconds: 10_000_000_000) }
+            }
+        )
+        let task = Task { try await monitor.run() }
+        defer { task.cancel() }
+
+        source.send(.started)
+        await waitFor("the media event") { !node.emitted.isEmpty }
+
+        // The device change: silent for a moment, then playing again.
+        source.send(.stopped)
+        source.send(.started)
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(node.ended.isEmpty, "a device change is not the user stopping their music")
+    }
+
     /// CoreAudio can report the same state more than once, and a rebind
     /// to a new default device re-reads it.
     func testRepeatedStartedEventsDoNotDoubleReport() async throws {

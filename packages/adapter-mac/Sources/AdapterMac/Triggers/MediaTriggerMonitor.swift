@@ -20,6 +20,40 @@ import Foundation
 /// this kind of tool feel hostile.
 public let defaultMediaDebounce: Duration = .seconds(2)
 
+/// How long audio must be *absent* before it counts as stopped (#298).
+///
+/// The stop side had no debounce at all, and that asymmetry was a bug.
+/// `kAudioDevicePropertyDeviceIsRunningSomewhere` is read on the
+/// **default output device**, and that device changes every time thrw
+/// attaches or detaches the headset — so thrw's own handover produces a
+/// gap in the very signal it uses to decide whether to hand over.
+///
+/// Measured on the reference Mac while YouTube played continuously and
+/// the headset moved between devices:
+///
+/// ```
+/// 18:04:55.590  Tom's AirPods Pro #2  running=true
+/// 18:05:02.643  MacBook Air Speakers  running=false   <- device changed
+/// 18:05:03.149  MacBook Air Speakers  running=true    <- 0.5s later
+/// 18:06:08.385  Tom's AirPods Pro #2  running=false
+/// 18:06:08.890  Tom's AirPods Pro #2  running=true    <- 0.5s
+/// ```
+///
+/// Every one of those half-second gaps ended the `media` trigger, moved
+/// the holder, and started another handover — which produced another
+/// gap. The holder bounced between two devices every ten seconds.
+///
+/// **Four seconds**, not the two the start side uses: the observed blips
+/// are ~0.5s, but ADR 0002's sequential handoff leaves ~2.7s where no
+/// device holds the headset at all (#254, measured), and a stop debounce
+/// shorter than that would still fire mid-handover.
+///
+/// The cost, stated plainly: a genuinely stopped track takes four
+/// seconds to release the headset. That delays auto-return, and it is
+/// the right trade — a late release is mildly annoying, while a false
+/// release takes the headset off whatever you are listening to.
+public let defaultMediaStopDebounce: Duration = .seconds(4)
+
 /// Turns "this Mac is playing audio" into the node's `media` trigger -
 /// architecture.md's rule 4.
 ///
@@ -45,22 +79,27 @@ public final class MediaTriggerMonitor {
     private let source: AudioPlaybackSource
     private let node: EventLifecycle
     private let debounce: Duration
+    private let stopDebounce: Duration
     private let sleep: @Sendable (Duration) async throws -> Void
 
     /// True once the debounce has elapsed and `media` has been reported.
     private var reportedMedia = false
     /// The in-flight debounce, cancelled if audio stops before it fires.
     private var pending: Task<Void, Never>?
+    /// The in-flight *stop* debounce, cancelled if audio resumes (#298).
+    private var pendingStop: Task<Void, Never>?
 
     public init(
         source: AudioPlaybackSource,
         node: EventLifecycle,
         debounce: Duration = defaultMediaDebounce,
+        stopDebounce: Duration = defaultMediaStopDebounce,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.source = source
         self.node = node
         self.debounce = debounce
+        self.stopDebounce = stopDebounce
         self.sleep = sleep
     }
 
@@ -86,6 +125,13 @@ public final class MediaTriggerMonitor {
     }
 
     private func audioStarted() async throws {
+        // #298. Audio came back inside the stop window, so the silence
+        // was a blip and nothing should be reported at all.
+        if pendingStop != nil {
+            pendingStop?.cancel()
+            pendingStop = nil
+            return
+        }
         // Already counting, or already counted - a repeated `started`
         // must not restart the clock or double-report.
         guard pending == nil, !reportedMedia else { return }
@@ -100,9 +146,24 @@ public final class MediaTriggerMonitor {
     private func audioStopped() async throws {
         pending?.cancel()
         pending = nil
+        guard reportedMedia, pendingStop == nil else { return }
+        // #298. Symmetric with the start debounce, and for a sharper
+        // reason: silence must persist before it counts as a stop,
+        // because changing the output device produces silence that is
+        // not one.
+        pendingStop = Task { [weak self] in
+            guard let self else { return }
+            try? await self.sleep(self.stopDebounce)
+            guard !Task.isCancelled else { return }
+            await self.stopDebounceElapsed()
+        }
+    }
+
+    private func stopDebounceElapsed() async {
+        pendingStop = nil
         guard reportedMedia else { return }
         reportedMedia = false
-        try await node.endEvent(type: .media)
+        try? await node.endEvent(type: .media)
     }
 
     private func debounceElapsed() async {
