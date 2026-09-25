@@ -27,6 +27,8 @@ private class Recording : EventLifecycle {
     }
 
     override fun isEventActive(type: EventKind): Boolean = active.contains(type)
+
+    override fun activeEventKinds(): List<EventKind> = active.toList()
 }
 
 /** Fails every publish, to check local state does not drift from what the relay was told. */
@@ -36,6 +38,8 @@ private class Failing : EventLifecycle {
 
     /** Nothing ever succeeded, so nothing is ever active. */
     override fun isEventActive(type: EventKind): Boolean = false
+
+    override fun activeEventKinds(): List<EventKind> = emptyList()
 }
 
 class ManualClaimTest {

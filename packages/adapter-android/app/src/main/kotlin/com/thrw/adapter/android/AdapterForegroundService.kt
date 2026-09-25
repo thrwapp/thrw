@@ -10,7 +10,9 @@ import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
 import com.thrw.adapter.android.audio.MediaSessionHandoverAudioGate
+import com.thrw.adapter.android.claim.ArbitrationPause
 import com.thrw.adapter.android.claim.ManualClaim
+import com.thrw.adapter.android.claim.SharedPreferencesArbitrationPauseStore
 import com.thrw.adapter.android.status.ClaimAction
 import com.thrw.adapter.android.status.NodeStatus
 import com.thrw.adapter.android.status.claimAction
@@ -107,6 +109,8 @@ class AdapterForegroundService : Service() {
 
     /** #212. Non-null only while a node runtime is running. */
     private var manualClaim: ManualClaim? = null
+    /** #290. Non-nil only while a node runtime is running. */
+    private var arbitrationPause: ArbitrationPause? = null
 
     /** The running node, so the notification can ask it for status (#213). */
     private var node: AndroidNode? = null
@@ -136,6 +140,23 @@ class AdapterForegroundService : Service() {
                 scope.launch {
                     runCatching { claim.toggle() }
                         .onFailure { Log.e(TAG, "Manual claim failed", it) }
+                    refreshNotification()
+                }
+            }
+            return START_STICKY
+        }
+
+        // #290. Same shape as the claim toggle above, and handled before
+        // the provisioning read for the same reason: it must never
+        // restart the runtime.
+        if (intent?.action == ACTION_TOGGLE_PAUSE) {
+            val pause = arbitrationPause
+            if (pause == null) {
+                Log.w(TAG, "Pause tapped with no node running - ignoring")
+            } else {
+                scope.launch {
+                    runCatching { pause.toggle() }
+                        .onFailure { Log.e(TAG, "Pause toggle failed", it) }
                     refreshNotification()
                 }
             }
@@ -204,6 +225,10 @@ class AdapterForegroundService : Service() {
             val sequenceGate = CommandSequenceGate(
                 SharedPreferencesSequenceStore(this@AdapterForegroundService),
             )
+            // #290. One store instance, shared between the node (which
+            // reads it on every emit) and the ArbitrationPause the
+            // notification toggles.
+            val pauseStore = SharedPreferencesArbitrationPauseStore(this@AdapterForegroundService)
             val node = AndroidNode(
                 accountId,
                 nodeId,
@@ -222,6 +247,7 @@ class AdapterForegroundService : Service() {
                         AndroidNotificationListenerService::class.java,
                     ),
                 ),
+                pauseStore = pauseStore,
             )
 
             val callMonitor = CallTriggerMonitor(AndroidCallStateSource(this@AdapterForegroundService), node)
@@ -238,6 +264,10 @@ class AdapterForegroundService : Service() {
 
             this@AdapterForegroundService.node = node
             manualClaim = ManualClaim(node)
+            // #290. Shares the store instance the node reads, so the
+            // node's suppression and the notification's label cannot
+            // disagree.
+            arbitrationPause = ArbitrationPause(node, pauseStore)
             NodeRuntime(node, callMonitor, voipMonitor, mediaMonitor).start(thisRuntimeScope, manifest)
             // #234 criterion 4. After `start`, so the state subscription
             // exists; the flow replays its current value to a late
@@ -356,6 +386,24 @@ class AdapterForegroundService : Service() {
             builder.addAction(Notification.Action.Builder(null, action.title, pending).build())
         }
 
+        // #290. Always offered once a node is running, whatever the
+        // claim action is doing: the situation it exists for - a call on
+        // a device thrw cannot see - is exactly when the claim action is
+        // a greyed-out readout and would otherwise leave nothing to tap.
+        arbitrationPause?.let { pause ->
+            val label = getString(
+                if (pause.isPaused()) R.string.resume_switching else R.string.pause_switching,
+            )
+            val intent = Intent(this, AdapterForegroundService::class.java).setAction(ACTION_TOGGLE_PAUSE)
+            val pending = PendingIntent.getService(
+                this,
+                1,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            builder.addAction(Notification.Action.Builder(null, label, pending).build())
+        }
+
         val notification = builder.build()
 
         // minSdk is 31, above the API 29 (Q) floor for the type-aware
@@ -381,6 +429,7 @@ class AdapterForegroundService : Service() {
          * service with this action rather than going anywhere else.
          */
         const val ACTION_TOGGLE_CLAIM = "com.thrw.adapter.android.TOGGLE_CLAIM"
+        const val ACTION_TOGGLE_PAUSE = "com.thrw.adapter.android.TOGGLE_PAUSE"
         private const val NOTIFICATION_CHANNEL_ID = "thrw_adapter"
         private const val NOTIFICATION_ID = 1
     }

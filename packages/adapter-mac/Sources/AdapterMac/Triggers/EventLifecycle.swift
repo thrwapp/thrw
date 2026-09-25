@@ -25,6 +25,15 @@ public protocol EventLifecycle: Sendable {
     /// of tracking its own copy - see that type for what the second copy
     /// cost.
     func isEventActive(_ type: EventKind) -> Bool
+
+    /// Every trigger currently active on this node (#290).
+    ///
+    /// ``ArbitrationPause`` has to end all of them, and cannot get there
+    /// from ``isEventActive(_:)`` without enumerating `EventKind` itself
+    /// — which would silently miss a kind added later. The node already
+    /// keeps this list for `RegistrationPayload.activeEvents`, so asking
+    /// it is both cheaper and harder to get wrong.
+    func activeEventKinds() -> [EventKind]
 }
 
 /// The priority every trigger detector in this package reports.

@@ -40,4 +40,6 @@ class RecordingEventLifecycle : EventLifecycle {
     }
 
     override fun isEventActive(type: EventKind): Boolean = active.contains(type)
+
+    override fun activeEventKinds(): List<EventKind> = active.toList()
 }

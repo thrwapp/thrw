@@ -15,6 +15,7 @@
       than what is reassuring - "Disconnected from relay" is information;
       a confident holder state for a node that is not connected is not.
     -->
+    <string name="status_paused">Paused \u2014 not switching on this device</string>
     <string name="status_disconnected">Disconnected from relay</string>
     <string name="status_holding">Holding headset</string>
     <string name="status_not_holding">Not holding headset</string>
@@ -22,6 +23,8 @@
 
     <!-- #212. The manual claim toggle, as a notification action. -->
     <string name="claim_headset">Claim headset</string>
+    <string name="pause_switching">Pause switching</string>
+    <string name="resume_switching">Resume switching</string>
     <string name="release_headset">Release headset</string>
 
     <!-- ui/ProvisioningActivity (#102): the launcher screen that writes

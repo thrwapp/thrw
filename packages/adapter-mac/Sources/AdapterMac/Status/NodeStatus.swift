@@ -13,6 +13,18 @@ import Foundation
 ///
 /// This is the smallest thing that distinguishes them.
 public enum NodeStatus: Equatable, Sendable {
+    /// The user has paused arbitration on this device (#290).
+    ///
+    /// Outranks everything below, **including ``disconnected``**, and
+    /// that ordering is the interesting part: while paused, whether the
+    /// relay is reachable is not why switching has stopped. Telling
+    /// someone who paused it themselves that they are "Disconnected from
+    /// relay" would send them to debug a connection that is fine.
+    ///
+    /// #290 criterion 6 — a pause the user has forgotten, with nothing
+    /// on screen saying so, is the silent-failure class #213 exists to
+    /// prevent, self-inflicted.
+    case paused
     /// The transport is down. Deliberately outranks everything below:
     /// while it is down, any holder state is a stale belief, and a wrong
     /// answer presented confidently is worse than saying nothing useful.
@@ -30,6 +42,7 @@ public enum NodeStatus: Equatable, Sendable {
     /// glance, usually while something is going wrong.
     public var displayText: String {
         switch self {
+        case .paused: return "Paused \u{2014} not switching on this device"
         case .disconnected: return "Disconnected from relay"
         case .holding: return "Holding headset"
         case .notHolding: return "Not holding headset"
@@ -44,7 +57,15 @@ public enum NodeStatus: Equatable, Sendable {
 /// them is the only decision here and it is easy to get subtly wrong:
 /// checking the route first would report a confident "Not holding" for a
 /// node that is not even talking to the relay.
-public func nodeStatus(isConnected: Bool, holdsRoute: Bool?) -> NodeStatus {
+/// `isPaused` defaults to `false` so every existing caller and test is
+/// unaffected; it is checked first for the reason ``NodeStatus/paused``
+/// documents.
+public func nodeStatus(isConnected: Bool, holdsRoute: Bool?, isPaused: Bool = false) -> NodeStatus {
+    if isPaused { return .paused }
+    return connectedStatus(isConnected: isConnected, holdsRoute: holdsRoute)
+}
+
+private func connectedStatus(isConnected: Bool, holdsRoute: Bool?) -> NodeStatus {
     guard isConnected else { return .disconnected }
     switch holdsRoute {
     case .some(true): return .holding
