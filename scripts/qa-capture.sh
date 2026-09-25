@@ -151,11 +151,27 @@ cmd_mark() {
   echo "marked: $*"
 }
 
+# Kills a pid and everything below it, deepest first.
+#
+# Killing only the recorded pid is not enough, and the failure is not
+# cosmetic: `relay-logs.sh --follow` is a shell wrapping `gcloud compute
+# ssh`, which itself spawns an ssh and an IAP tunnel. Killing the wrapper
+# orphaned a live tunnel to the **production relay VM** on every run,
+# which then accumulated silently. Found by checking for strays after the
+# first real pass rather than by anything failing.
+kill_tree() {
+  local pid="$1" child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do
+    kill_tree "$child"
+  done
+  kill "$pid" 2>/dev/null
+}
+
 cmd_stop() {
   local dir; dir="$(run_dir)"
   for s in android mac relay; do
     local pidfile="$dir/.$s.pid"
-    [ -f "$pidfile" ] && kill "$(cat "$pidfile")" 2>/dev/null
+    [ -f "$pidfile" ] && kill_tree "$(cat "$pidfile")"
     rm -f "$pidfile"
   done
   echo "stopped: $(now_utc)" >> "$dir/run.txt"
