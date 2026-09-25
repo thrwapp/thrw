@@ -99,14 +99,53 @@ reading it runs on a VM. Three ways out, none free:
    in memory by design and has nowhere durable to put this.
 3. **Leave it fixed.**
 
-**Decision: (3), for now.** Adapter-local settings ship first, because
-they are the ones a local file can actually deliver. The re-assert bound
-is the motivating example of a setting users might want, and it is the
-one this cannot give them — which is worth being honest about rather
-than quietly shipping a file that omits it.
+**Decision: (3).** Adapter-local settings ship first, because they are
+the ones a local file can actually deliver. The re-assert bound is the
+motivating example of a setting users might want, and it is the one this
+cannot give them — which is worth being honest about rather than quietly
+shipping a file that omits it.
 
 If evidence says the bound is wrong for real users, the first move is to
 change the constant, not to build (1) or (2).
+
+### 5. The intended path for relay-side policy: centrally managed, per channel
+
+Decision 4 says relay policy stays fixed. It does not say it should stay
+fixed forever, and the direction matters enough to record now so the
+next person does not reach for option (1).
+
+**In the hosted product, each channel carries its own configuration,
+managed centrally.** The relay is the thing that reads relay-side policy,
+so the relay — not a file on a laptop — is where that configuration
+belongs. A tenant sets how aggressive re-assertion is for their devices;
+the relay applies it; no adapter has to assert anything and no two nodes
+can disagree about a resource they share. That last point is what makes
+this strictly better than option (1) rather than merely different.
+
+Two things it needs, neither of which exists today:
+
+- **Durable per-tenant storage in the relay.** State is currently held
+  in memory by design (see `ResourceState`, and ADR 0018's epoch, which
+  exists precisely so the relay needs no durability). Adding a store is
+  a real change, and it should be scoped to *configuration* rather than
+  quietly becoming a place to persist arbitration state — that would
+  undo a deliberate simplification.
+- **A decision about what a "channel" is.** thrw's current vocabulary is
+  *account* (one per user, per ADR 0015's topic structure) and
+  *resource*. Whether a channel is an account, a named group of devices
+  within one, or something else is undecided, and the answer changes the
+  topic structure — which is frozen. That alone makes this its own ADR.
+
+**This is deliberately a hosted-product capability.** Per ADR 0003,
+`services/**` is FSL-licensed while the adapters and protocol are MIT: a
+self-hoster runs their own relay and can already set whatever constants
+they like by editing it. Central management is worth paying for; the
+ability to configure is not something to withhold from someone running
+their own. That split is a feature of this direction, not a compromise
+in it.
+
+Not decided here beyond the direction. When it is built, it gets its own
+ADR.
 
 ## Rationale
 
@@ -133,7 +172,14 @@ than thrw does, and hard-codes what thrw has measured.**
   user convinced they have changed something they have not, and this
   project has enough silent failures in its history.
 - The settings most likely to be asked for first — the re-assert bound —
-  cannot be delivered by this mechanism. See decision 4.
+  cannot be delivered by this mechanism. See decisions 4 and 5: the
+  answer is central per-channel configuration in the hosted relay, and
+  it is not this ADR.
+- Two configuration surfaces will therefore exist: a local file for
+  adapter behaviour, and centrally-managed policy for the relay. They
+  must not overlap. A setting that appears in both is a setting whose
+  precedence someone has to reason about during an incident, which is
+  exactly when nobody wants to.
 - ADR 0005's build-time config is unaffected and stays separate: relay
   URL and licensing are properties of a *build*, not preferences of a
   user.
