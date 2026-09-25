@@ -9,11 +9,15 @@ import com.hivemq.client.mqtt.mqtt3.Mqtt3Client
 import com.hivemq.client.mqtt.mqtt3.message.auth.Mqtt3SimpleAuth
 import com.thrw.adapter.android.config.RelayConfig
 import com.thrw.adapter.android.config.RelayCredentials
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.withTimeout
@@ -36,15 +40,28 @@ import kotlinx.coroutines.withTimeout
  * wrapped in `withContext(Dispatchers.IO)` rather than run on the caller's
  * (on Android, potentially main) thread.
  */
-class HiveMqttTransport private constructor(
+class HiveMqttTransport internal constructor(
     private val client: Mqtt3BlockingClient,
     private val hooks: Hooks,
+    private val jitter: ReconnectJitter = ReconnectJitter(),
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : MqttTransport {
 
     init {
         // Wired here rather than at build time because the listeners are
         // registered on the builder, before this instance exists.
-        hooks.onReconnect = { resubscribeAll() }
+        //
+        // The two halves of a reconnect are deliberately not treated
+        // alike (ADR 0020, #277). Re-subscribing happens **now**, still
+        // on HiveMQ's connected-listener thread, because a node whose
+        // SUBSCRIBE has not been re-sent is deaf to claim and release
+        // while looking perfectly healthy - the #182 failure. Only the
+        // re-registration report is jittered, and it moves onto a
+        // coroutine because it has to wait and this callback must not.
+        hooks.onReconnect = {
+            resubscribeAll()
+            scope.launch { reportReregistration() }
+        }
     }
 
     /**
@@ -60,7 +77,11 @@ class HiveMqttTransport private constructor(
         @Volatile
         var onReconnect: (() -> Unit)? = null
 
-        /** Set by the node, to re-register after a reconnect. */
+        /**
+         * Set by the node, to re-register after a reconnect. Invoked
+         * after [ReconnectJitter]'s delay, not immediately - see
+         * [reportReregistration].
+         */
         @Volatile
         var onReconnected: (() -> Unit)? = null
 
@@ -95,6 +116,10 @@ class HiveMqttTransport private constructor(
      * would never receive another claim or release, while looking
      * perfectly healthy. That silent-deafness failure is the same shape
      * as the bug this issue is about, one layer down.
+     *
+     * Deliberately *not* jittered, and deliberately not suspending -
+     * see [ReconnectJitter], and [reportReregistration] for the half
+     * that is.
      */
     private fun resubscribeAll() {
         val async = client.toAsync()
@@ -109,6 +134,24 @@ class HiveMqttTransport private constructor(
                     .send()
             }.onFailure { Log.e(TAG, "re-subscribe to ${subscription.topic} failed", it) }
         }
+    }
+
+    /**
+     * Tells the node to re-register, after ADR 0020's reconnect jitter.
+     *
+     * The wait applies here and nowhere else: this is the reconciliation
+     * report (#178/#182 - the relay holds its node list in memory, so a
+     * node that reconnects silently is connected but invisible), which
+     * every node sends at the same instant after a relay restart and
+     * which nothing is waiting on in real time. The manual override path
+     * does not come through here - it publishes directly - so a user
+     * pressing the button never waits on the delay.
+     *
+     * `internal` so [HiveMqttTransportTest] can drive it directly
+     * instead of having to provoke a real broker-level reconnect.
+     */
+    internal suspend fun reportReregistration() {
+        jitter.await()
         hooks.onReconnected?.invoke()
     }
 
@@ -138,6 +181,10 @@ class HiveMqttTransport private constructor(
     }.flowOn(Dispatchers.IO)
 
     override suspend fun close() {
+        // Cancelled before the disconnect, so a jittered re-registration
+        // still waiting out its delay does not fire against a transport
+        // that is on its way down.
+        scope.cancel()
         withContext(Dispatchers.IO) { client.disconnect() }
     }
 
