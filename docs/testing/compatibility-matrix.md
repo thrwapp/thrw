@@ -26,7 +26,7 @@ verified by (manual test or telemetry-derived)
 
 | Headset | Host A | Host B | Success rate | Last verified | Known issues | Verified by |
 |---|---|---|---|---|---|---|
-| AirPods Pro 2 (Lightning case, H2; firmware 9A348 observed) | MacBook Air 13" M4 (2025) | Pixel 10 Pro | pending ADR 0019 telemetry | **2026-09-20** — media-driven switch verified in both directions against `relay.thrw.app` | multipoint makes Bluetooth link state useless as a holder signal (see below); a spurious never-ended `call` was observed once (#183) | manual test, see *Verified scope* below |
+| AirPods Pro 2 (Lightning case, H2; firmware 9A348 observed) | MacBook Air 13" M4 (2025) | Pixel 10 Pro | pending ADR 0019 telemetry | **2026-09-20** — media-driven switch verified in both directions against `relay.thrw.app`. **Regressions since: see 2026-09-25 below — do not read the 09-20 row as current.** | multipoint makes Bluetooth link state useless as a holder signal (see below); the Mac can latch into a phantom `media` event and stop reporting its route (#303); a call could not break a wedged holder (#301); ADR 0022's macOS audio suppression is inert on this headset (#304); a spurious never-ended `call` was observed once (#183) | manual test, see *Verified scope* below |
 
 Hardware models are the reference devices from
 docs/spec/architecture.md.
@@ -95,6 +95,71 @@ rule-5 timer.
 - Walking out of Bluetooth range.
 - Provisioning from scratch on a clean install.
 - Any headset other than this one, and any Android OEM other than Pixel.
+
+## Pass of 2026-09-25 (#193), adapters 0.2.4
+
+**Read this before the 09-20 section above.** Two things recorded there
+as verified have since been observed failing, so that section is a record
+of what was true on 09-20 and not a statement about the current build.
+
+This pass was cut short: the Pixel dropped off `adb` partway through, so
+the physical items (call trigger, manual claim, out-of-range, clean
+install) were **not run**. Everything below came from observing the
+reference pair while idle, which turned out to be enough.
+
+**Regressed since 09-20**
+
+- **A call no longer reliably moves the headset.** Both a WhatsApp call
+  and a cellular call on the Pixel failed to take it from the Mac
+  (reported 2026-09-25). The call path itself is unchanged; what changed
+  is that the relay can now reach a state where it believes a node holds
+  the route, that node does not, and #289's re-assert bound has stopped
+  trying — from which no trigger produces a holder change and so no
+  command is sent. #301, fix in #302.
+
+**New findings**
+
+- **The Mac can latch into a phantom `media` event and stop reporting its
+  route** (#303). Observed live for 17 minutes: `activeEvents: ["media"]`
+  with `kAudioDevicePropertyDeviceIsRunningSomewhere` measured at **0**
+  and no media application running, and `observedRoutes: {}` on every
+  registration where the same node had reported `{"audio": false}`
+  reliably for the preceding 13 minutes. Nothing in the system ends this
+  state; restarting the adapter cleared both symptoms in one
+  registration, and the relay logged `route_drift` within milliseconds of
+  the first honest report. A node that omits its route is invisible to
+  ADR 0018 reconciliation, not merely unhelpful.
+- **ADR 0022's macOS audio suppression is inert on this headset** (#304).
+  `HandoverAudioGate` logs "volume of 74-15-F5-12-2A-21:output is
+  unreadable; not muting for handover" on every handover — the AirPods
+  expose no readable main-element volume, so the gate correctly refuses
+  to mute a device it could not restore, and therefore never mutes. This
+  is the same fact that invalidated the ADR's original measurement in
+  #282/#283; what was missed is that it removes the mechanism's basis.
+- **The Mac never reported `observedRoutes: {"audio": true}` once**, in
+  any registration across the whole session, including while it was the
+  believed holder. Not yet explained, and not the same claim as #303 —
+  recorded here so the next pass looks for it deliberately.
+- **A claim can go unresolved past ADR 0019's 8s bound.** The Mac's claim
+  at 20:44:23 never produced a `command_outcome` of any kind, for 17
+  minutes. Part of #303.
+
+**Confirmed still true**
+
+- Multipoint still makes Bluetooth link state useless as a holder signal;
+  the audio route remains the only sound signal. The Android reported
+  `observedRoutes: {"audio": true}` while the Mac believed itself holder,
+  which is exactly the asymmetry the section below describes.
+
+**Tooling**
+
+`scripts/qa-capture.sh` was written during this pass and is what made the
+correlation possible — one run directory holding the relay's decisions,
+both adapters' logs, and timestamped marks for physical actions. Two
+captures earlier in the week were lost outright (Swift `print`
+block-buffering; an `adb logcat` ring overrun), and a finding you cannot
+re-observe is not evidence. `scripts/relay-logs.sh --follow` was added
+alongside it, because the relay could previously only be polled.
 
 ## Observation: an `event_end` with no matching start
 
