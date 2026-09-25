@@ -48,9 +48,21 @@ final class NodeRuntimeTests: XCTestCase {
     /// give them a chance to run before asserting. Polls rather than
     /// sleeping a fixed interval: fast when the work is already done,
     /// and not flaky when the machine is loaded.
+    /// Ten seconds, not two (#298).
+    ///
+    /// The comment above says "not flaky when the machine is loaded".
+    /// That was optimistic: `testStartAlsoSubscribesToTheRetainedStateTopic`
+    /// timed out at 2.203s in CI while passing every time locally, and
+    /// blocked a release that was fixing something else entirely. These
+    /// wait on work `NodeRuntime.start` launches as unstructured `Task`s,
+    /// so *when* it runs is the scheduler's business, not the test's.
+    ///
+    /// A longer deadline costs nothing when the condition is met — the
+    /// loop returns the moment it is true — and is only ever paid by a
+    /// test that was going to fail anyway.
     private func waitUntil(
         _ description: String,
-        timeout: TimeInterval = 2,
+        timeout: TimeInterval = 10,
         condition: @MainActor () -> Bool
     ) async {
         let deadline = Date().addingTimeInterval(timeout)
