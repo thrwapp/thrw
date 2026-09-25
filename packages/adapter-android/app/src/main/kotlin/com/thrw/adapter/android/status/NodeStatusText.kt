@@ -13,6 +13,7 @@ import com.thrw.adapter.android.R
 @get:StringRes
 val NodeStatus.textRes: Int
     get() = when (this) {
+        NodeStatus.PAUSED -> R.string.status_paused
         NodeStatus.DISCONNECTED -> R.string.status_disconnected
         NodeStatus.HOLDING -> R.string.status_holding
         NodeStatus.NOT_HOLDING -> R.string.status_not_holding

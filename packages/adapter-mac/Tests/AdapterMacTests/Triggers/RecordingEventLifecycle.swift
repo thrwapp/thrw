@@ -33,4 +33,8 @@ final class RecordingEventLifecycle: EventLifecycle, @unchecked Sendable {
     func isEventActive(_ type: EventKind) -> Bool {
         active.contains(type)
     }
+
+    func activeEventKinds() -> [EventKind] {
+        active
+    }
 }

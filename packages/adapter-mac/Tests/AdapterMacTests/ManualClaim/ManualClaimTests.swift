@@ -11,6 +11,7 @@ private final class FailingEventLifecycle: EventLifecycle, @unchecked Sendable {
     /// Nothing ever succeeded, so nothing is ever active - which is the
     /// whole point of the test below.
     func isEventActive(_ type: EventKind) -> Bool { false }
+    func activeEventKinds() -> [EventKind] { [] }
 }
 
 final class ManualClaimTests: XCTestCase {

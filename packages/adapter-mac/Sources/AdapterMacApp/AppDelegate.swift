@@ -62,6 +62,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// #267. Hidden once Accessibility is granted.
     private var accessibilityItem: NSMenuItem?
 
+    /// #290. Flips between pausing and resuming arbitration here.
+    private var pauseItem: NSMenuItem?
+
+    /// #290. Non-nil only while a node runtime is running, like
+    /// ``manualClaim`` and for the same reason.
+    private var arbitrationPause: ArbitrationPause?
+
     /// #234. The last derived claim action, kept because
     /// `validateMenuItem` is asked about enablement separately from
     /// `refreshClaimItem` setting the title, and the two must agree.
@@ -156,6 +163,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         accessibilityItem = accessibility
 
+        // #290. "Leave my headset alone on this Mac."
+        //
+        // thrw can only arbitrate between devices it manages. A work
+        // laptop with no adapter is invisible to it, so a trigger here
+        // wins against a call happening there — #287, reported from real
+        // use. #289 bounded how often that repeats; it cannot stop the
+        // first one, because from the relay's point of view nothing else
+        // is using the headset. This is the user telling thrw what it
+        // structurally cannot know.
+        let pause = NSMenuItem(title: Self.pauseTitle, action: #selector(toggleArbitrationPause), keyEquivalent: "p")
+        pause.target = self
+        menu.addItem(pause)
+        menu.addItem(.separator())
+        pauseItem = pause
+
         let setUpItem = NSMenuItem(title: "Set Up\u{2026}", action: #selector(openProvisioning), keyEquivalent: ",")
         setUpItem.target = self
         menu.addItem(setUpItem)
@@ -174,6 +196,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let claimTitle = "Claim Headset"
     private static let unmuteTitle = "Muted for Handover \u{2014} Unmute"
     private static let accessibilityTitle = "Enable Pause During Handover\u{2026}"
+    private static let pauseTitle = "Pause Switching on This Mac"
+    private static let resumeTitle = "Resume Switching on This Mac"
 
     /// #212. The publish is awaited before the title changes, so the menu
     /// never claims a state the relay was not actually told about - a
@@ -264,6 +288,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// it carries no clutter.
     private func refreshAccessibilityItem() {
         accessibilityItem?.isHidden = AXIsProcessTrusted()
+    }
+
+    /// #290. Pauses if running, resumes if paused.
+    ///
+    /// The title is refreshed from the resulting state rather than
+    /// toggled optimistically, so a failure to publish the trigger ends
+    /// leaves the menu telling the truth — the same discipline
+    /// ``toggleManualClaim`` follows.
+    @objc private func toggleArbitrationPause() {
+        guard let arbitrationPause else { return }
+        Task { @MainActor in
+            do {
+                _ = try await arbitrationPause.toggle()
+            } catch {
+                Self.logger.error("Pause toggle failed: \(error.localizedDescription, privacy: .public)")
+            }
+            self.refreshPauseItem()
+            // The status line says "Paused", so it has to move too.
+            self.refreshStatusItem()
+            self.refreshClaimItem()
+        }
+    }
+
+    private func refreshPauseItem() {
+        guard let pauseItem else { return }
+        let paused = arbitrationPause?.isPaused() ?? false
+        pauseItem.title = paused ? Self.resumeTitle : Self.pauseTitle
     }
 
     @objc private func unmuteAfterHandover() {
@@ -433,6 +484,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // System Settings while this runs, and deciding once at
             // launch would leave a user who has just granted it
             // wondering why nothing changed until they relaunched.
+            // #290. Constructed before the node, which reads it on every
+            // emitEvent, and shared with the menu's ArbitrationPause.
+            let pauseStore = UserDefaultsArbitrationPauseStore()
             let mutingGate = MutingHandoverAudioGate(
                 volume: CoreAudioSystemOutputVolume(),
                 store: UserDefaultsMutedVolumeStore()
@@ -481,10 +535,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // broker's QoS 1 redelivery re-run a command already
                 // acted on.
                 sequenceGate: CommandSequenceGate(store: UserDefaultsSequenceStore()),
-                audioGate: audioGate
+                audioGate: audioGate,
+                // #290. The *same instance* the menu's ArbitrationPause
+                // gets below. Two stores over the same UserDefaults key
+                // would also work, but sharing one makes it structurally
+                // impossible for the node's suppression and the menu's
+                // label to disagree.
+                pauseStore: pauseStore
             )
             self.node = node
             manualClaim = ManualClaim(node: node)
+            // #290. UserDefaults-backed: the situation a pause exists
+            // for outlasts the process, and this app relaunches at every
+            // login (#144). A pause that quietly forgot itself would
+            // hand the headset back mid-call.
+            arbitrationPause = ArbitrationPause(node: node, store: pauseStore)
             refreshClaimItem()
             refreshStatusItem()
 
@@ -520,5 +585,6 @@ extension AppDelegate: NSMenuDelegate {
         refreshClaimItem()
         refreshUnmuteItem()
         refreshAccessibilityItem()
+        refreshPauseItem()
     }
 }

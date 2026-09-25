@@ -3,6 +3,8 @@ package com.thrw.adapter.android
 import android.util.Log
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.bluetooth.BluetoothGatewayException
+import com.thrw.adapter.android.claim.ArbitrationPauseStore
+import com.thrw.adapter.android.claim.InMemoryArbitrationPauseStore
 import com.thrw.adapter.android.heartbeat.HeartbeatSink
 import com.thrw.adapter.android.mqtt.MqttTransport
 import com.thrw.adapter.android.audio.HandoverAudioGate
@@ -90,6 +92,12 @@ class AndroidNode(
      * it always has - rather than refusing to hand over at all.
      */
     private val audioGate: HandoverAudioGate = NoOpHandoverAudioGate,
+    /**
+     * #290. "Leave my headset alone on this device." Read on every emit
+     * rather than cached, so a pause takes effect immediately rather
+     * than at the next trigger boundary.
+     */
+    private val pauseStore: ArbitrationPauseStore = InMemoryArbitrationPauseStore(),
 ) : NodeInterface, EventLifecycle, HeartbeatSink {
 
     /**
@@ -139,7 +147,14 @@ class AndroidNode(
      * failures this is meant to expose.
      */
     suspend fun status(): NodeStatus =
-        nodeStatus(transport.isConnected(), bluetooth.isAudioRouteActive(headsetAddress))
+        nodeStatus(
+            transport.isConnected(),
+            bluetooth.isAudioRouteActive(headsetAddress),
+            isPaused = pauseStore.isPaused(),
+        )
+
+    /** Whether the user has told this device to stop grabbing (#290). */
+    fun isArbitrationPaused(): Boolean = pauseStore.isPaused()
 
     /**
      * #234 - the relay's holder, from the retained state topic. Fed by
@@ -228,8 +243,21 @@ class AndroidNode(
     fun mostRecentTrigger(): EventKind? =
         synchronized(activeEventsLock) { activeEvents.lastOrNull() }
 
+    /** [EventLifecycle] conformance (#290). */
+    override fun activeEventKinds(): List<EventKind> = activeEventsSnapshot()
+
     /** Publishes a trigger to the events topic at QoS 1 per `TopicQos`. */
     override suspend fun emitEvent(type: EventKind, priority: Priority) {
+        // #290. A paused node publishes nothing at all, so it has
+        // nothing to win arbitration with and the relay has no reason to
+        // claim it.
+        //
+        // Checked **before** the cooldown, because this is the user's
+        // explicit instruction where the cooldown is an internal
+        // heuristic — and because MANUAL_CLAIM and CALL bypass the
+        // cooldown, so ordering these the other way would let exactly
+        // the two loudest triggers through a pause (criterion 4).
+        if (pauseStore.isPaused()) return
         if (!type.bypassesSelfCooldown() && suppressedBySelfCooldown("emitEvent($type)")) return
         publishToEvents(json.encodeToString(EventPayload.serializer(), EventPayload(type, priority)))
         synchronized(activeEventsLock) { activeEvents.add(type) }

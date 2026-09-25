@@ -43,7 +43,8 @@ private final class Fixture {
     init(
         gateway underlying: BluetoothPeripheralGateway? = nil,
         audioGate: HandoverAudioGate = NoOpHandoverAudioGate(),
-        connectTimeout: Duration = commandOutcomeTimeout
+        connectTimeout: Duration = commandOutcomeTimeout,
+        pauseStore: ArbitrationPauseStore = InMemoryArbitrationPauseStore()
     ) {
         bluetooth = BluetoothConnectionManager(
             gateway: underlying ?? gateway,
@@ -55,7 +56,8 @@ private final class Fixture {
             headsetIdentifier: headsetIdentifier,
             transport: transport,
             bluetooth: bluetooth,
-            audioGate: audioGate
+            audioGate: audioGate,
+            pauseStore: pauseStore
         )
     }
 }
@@ -536,6 +538,77 @@ final class MacNodeTests: XCTestCase {
             [headsetIdentifier],
             "the second command must still be acted on after the first outcome failed to publish"
         )
+    }
+
+    // MARK: - paused arbitration (#290)
+
+    /// The whole mechanism: a paused node publishes nothing, so it has
+    /// nothing to win arbitration with and the relay has no reason to
+    /// claim it.
+    func testAPausedNodePublishesNoTriggers() async throws {
+        let f = Fixture(pauseStore: InMemoryArbitrationPauseStore(paused: true))
+
+        try await f.node.emitEvent(type: .media, priority: unrankedPriority)
+
+        XCTAssertTrue(f.transport.published.isEmpty)
+        XCTAssertFalse(f.node.isEventActive(.media))
+    }
+
+    /// #290 criterion 4, and the reason the pause check comes *before*
+    /// the cooldown check rather than after: `manual_claim` and `call`
+    /// bypass the self-cooldown, so the other order would let exactly
+    /// the two loudest triggers through a pause.
+    func testEvenCooldownExemptTriggersAreSuppressedWhilePaused() async throws {
+        let f = Fixture(pauseStore: InMemoryArbitrationPauseStore(paused: true))
+
+        try await f.node.emitEvent(type: .call, priority: unrankedPriority)
+        try await f.node.emitEvent(type: .manualClaim, priority: unrankedPriority)
+
+        XCTAssertTrue(f.transport.published.isEmpty)
+    }
+
+    func testResumingLetsTriggersThroughAgain() async throws {
+        let store = InMemoryArbitrationPauseStore(paused: true)
+        let f = Fixture(pauseStore: store)
+        try await f.node.emitEvent(type: .media, priority: unrankedPriority)
+        XCTAssertTrue(f.transport.published.isEmpty)
+
+        store.setPaused(false)
+        try await f.node.emitEvent(type: .media, priority: unrankedPriority)
+
+        XCTAssertEqual(f.transport.published.count, 1)
+    }
+
+    /// Pausing stops this node *grabbing*; it does not make it deaf. A
+    /// node that ignored commands would leave the relay believing it
+    /// holds a resource it does not — the drift #287 was about, and not
+    /// a state worth manufacturing deliberately.
+    func testAPausedNodeStillHonoursCommands() async throws {
+        let f = Fixture(pauseStore: InMemoryArbitrationPauseStore(paused: true))
+        f.transport.sendCommand(#"{"type":"claim"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertEqual(f.gateway.connectCalls, [headsetIdentifier])
+    }
+
+    /// #290 criterion 6. A pause the user has forgotten, with nothing on
+    /// screen saying so, is #213's silent-failure class self-inflicted.
+    func testAPausedNodeReportsItInTheStatus() {
+        let f = Fixture(pauseStore: InMemoryArbitrationPauseStore(paused: true))
+
+        XCTAssertEqual(f.node.status(), .paused)
+    }
+
+    /// Paused outranks disconnected: while paused, whether the relay is
+    /// reachable is not why switching stopped, and saying so would send
+    /// the user to debug a connection that is fine.
+    func testPausedOutranksDisconnected() {
+        let f = Fixture(pauseStore: InMemoryArbitrationPauseStore(paused: true))
+        f.transport.connected = false
+
+        XCTAssertEqual(f.node.status(), .paused)
     }
 
     // MARK: - holder state from the retained topic (#234)

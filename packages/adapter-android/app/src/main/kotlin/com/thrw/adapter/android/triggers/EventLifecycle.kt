@@ -42,6 +42,18 @@ interface EventLifecycle {
      * cost.
      */
     fun isEventActive(type: EventKind): Boolean
+
+    /**
+     * Every trigger currently active on this node (#290).
+     *
+     * [com.thrw.adapter.android.claim.ArbitrationPause] has to end all
+     * of them, and cannot get there from [isEventActive] without
+     * enumerating [EventKind] itself — which would silently miss a kind
+     * added later. The node already keeps this list for
+     * `RegistrationPayload.activeEvents`, so asking it is both cheaper
+     * and harder to get wrong.
+     */
+    fun activeEventKinds(): List<EventKind>
 }
 
 /**

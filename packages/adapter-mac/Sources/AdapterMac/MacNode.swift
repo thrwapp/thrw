@@ -49,7 +49,11 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// line is that it can disagree with the relay and so reveal a
     /// stuck handover. See ``holdsClaim()`` for the other one.
     public func status() -> NodeStatus {
-        nodeStatus(isConnected: transport.isConnected(), holdsRoute: routeObserver?.holdsAudioRoute())
+        nodeStatus(
+            isConnected: transport.isConnected(),
+            holdsRoute: routeObserver?.holdsAudioRoute(),
+            isPaused: pauseStore.isPaused()
+        )
     }
 
     /// Whether the **relay** currently has this node as holder, or `nil`
@@ -107,6 +111,11 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// ``listenForState()``, read by ``holdsClaim()``.
     private let holderState = HolderState()
 
+    /// #290 - "leave my headset alone on this device". Read on every
+    /// emit rather than cached, so a pause takes effect immediately
+    /// rather than at the next trigger boundary.
+    private let pauseStore: ArbitrationPauseStore
+
     public init(
         accountId: String,
         nodeId: String,
@@ -117,7 +126,8 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
         routeObserver: AudioRouteObserver? = nil,
         routeTransition: RouteTransition = RouteTransition(),
         sequenceGate: CommandSequenceGate = CommandSequenceGate(),
-        audioGate: HandoverAudioGate = NoOpHandoverAudioGate()
+        audioGate: HandoverAudioGate = NoOpHandoverAudioGate(),
+        pauseStore: ArbitrationPauseStore = InMemoryArbitrationPauseStore()
     ) {
         self.accountId = accountId
         self.nodeId = nodeId
@@ -129,6 +139,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
         self.routeTransition = routeTransition
         self.sequenceGate = sequenceGate
         self.audioGate = audioGate
+        self.pauseStore = pauseStore
     }
 
     /// Publishes this node's manifest so the relay's device registry
@@ -147,6 +158,16 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
 
     /// Publishes a trigger to the events topic at QoS 1 per `TopicQos`.
     public func emitEvent(type: EventKind, priority: Priority) async throws {
+        // #290. A paused node publishes nothing at all, so it has nothing
+        // to win arbitration with and the relay has no reason to claim
+        // it.
+        //
+        // Checked **before** the cooldown, because this is the user's
+        // explicit instruction where the cooldown is an internal
+        // heuristic — and because `manual_claim` and `call` bypass the
+        // cooldown, so ordering these the other way would let exactly
+        // the two loudest triggers through a pause (criterion 4).
+        if pauseStore.isPaused() { return }
         if selfCooldown.isActive(), !type.bypassesSelfCooldown { return }
         try await publishToEvents(EventPayload(type: type, priority: priority))
         activeEvents.insert(type)
@@ -467,6 +488,18 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// rank: see ``ActiveEventSet/mostRecent()``.
     public func mostRecentTrigger() -> EventKind? {
         activeEvents.mostRecent()
+    }
+
+    /// ``EventLifecycle`` conformance (#290).
+    public func activeEventKinds() -> [EventKind] {
+        activeEvents.snapshot()
+    }
+
+    /// Whether the user has told this device to stop grabbing the
+    /// headset (#290). Read by the menu for its label and its status
+    /// line.
+    public func isArbitrationPaused() -> Bool {
+        pauseStore.isPaused()
     }
 
     /// Runs the mechanical claim/release with this device's audio

@@ -7,6 +7,8 @@ import com.thrw.adapter.android.bluetooth.BluetoothClassicGateway
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionManager
 import com.thrw.adapter.android.bluetooth.BluetoothConnectionState
 import com.thrw.adapter.android.bluetooth.BluetoothGatewayException
+import com.thrw.adapter.android.claim.ArbitrationPauseStore
+import com.thrw.adapter.android.claim.InMemoryArbitrationPauseStore
 import com.thrw.adapter.android.mqtt.MqttTransport
 import com.thrw.adapter.android.protocol.COMMAND_OUTCOME_KIND
 import com.thrw.adapter.android.protocol.CommandOutcomePayload
@@ -15,6 +17,7 @@ import com.thrw.adapter.android.protocol.ResourceType
 import com.thrw.adapter.android.protocol.NodeManifest
 import com.thrw.adapter.android.protocol.Platform
 import com.thrw.adapter.android.protocol.ProtocolJson
+import com.thrw.adapter.android.status.NodeStatus
 import com.thrw.adapter.android.triggers.CALL_STYLE_TEMPLATE
 import com.thrw.adapter.android.triggers.CATEGORY_CALL
 import com.thrw.adapter.android.triggers.CallStateSource
@@ -175,11 +178,16 @@ private class Fixture(
     failConnectTimes: Int = 0,
     hangConnect: Boolean = false,
     audioGate: HandoverAudioGate = NoOpHandoverAudioGate,
+    val pauseStore: ArbitrationPauseStore = InMemoryArbitrationPauseStore(),
 ) {
     val transport = FakeMqttTransport()
     val gateway = RecordingGateway(failConnectTimes).also { it.hangNextConnect = hangConnect }
     val bluetooth = BluetoothConnectionManager(gateway)
-    val node = AndroidNode(ACCOUNT, NODE, HEADSET, transport, bluetooth, audioGate = audioGate)
+    val node = AndroidNode(
+        ACCOUNT, NODE, HEADSET, transport, bluetooth,
+        audioGate = audioGate,
+        pauseStore = pauseStore,
+    )
 }
 
 class AndroidNodeTest {
@@ -963,6 +971,93 @@ class AndroidNodeTest {
         f.node.listenForCommands()
 
         assertEquals(listOf(HEADSET), f.gateway.connectCalls)
+    }
+
+    // ---- paused arbitration (#290) ----
+
+    /**
+     * The whole mechanism: a paused node publishes nothing, so it has
+     * nothing to win arbitration with and the relay has no reason to
+     * claim it.
+     */
+    @Test
+    fun `a paused node publishes no triggers`() = runTest {
+        val f = Fixture(pauseStore = InMemoryArbitrationPauseStore(paused = true))
+
+        f.node.emitEvent(EventKind.MEDIA, UNRANKED_PRIORITY)
+
+        assertTrue(f.transport.published.isEmpty())
+        assertFalse(f.node.isEventActive(EventKind.MEDIA))
+    }
+
+    /**
+     * #290 criterion 4, and why the pause check comes *before* the
+     * cooldown check: MANUAL_CLAIM and CALL bypass the self-cooldown, so
+     * the other order would let exactly the two loudest triggers through
+     * a pause.
+     */
+    @Test
+    fun `even cooldown-exempt triggers are suppressed while paused`() = runTest {
+        val f = Fixture(pauseStore = InMemoryArbitrationPauseStore(paused = true))
+
+        f.node.emitEvent(EventKind.CALL, UNRANKED_PRIORITY)
+        f.node.emitEvent(EventKind.MANUAL_CLAIM, UNRANKED_PRIORITY)
+
+        assertTrue(f.transport.published.isEmpty())
+    }
+
+    @Test
+    fun `resuming lets triggers through again`() = runTest {
+        val store = InMemoryArbitrationPauseStore(paused = true)
+        val f = Fixture(pauseStore = store)
+        f.node.emitEvent(EventKind.MEDIA, UNRANKED_PRIORITY)
+        assertTrue(f.transport.published.isEmpty())
+
+        store.setPaused(false)
+        f.node.emitEvent(EventKind.MEDIA, UNRANKED_PRIORITY)
+
+        assertEquals(1, f.transport.published.size)
+    }
+
+    /**
+     * Pausing stops this node *grabbing*; it does not make it deaf. A
+     * node that ignored commands would leave the relay believing it
+     * holds a resource it does not — the drift #287 was about, and not a
+     * state worth manufacturing deliberately.
+     */
+    @Test
+    fun `a paused node still honours commands`() = runTest {
+        val f = Fixture(pauseStore = InMemoryArbitrationPauseStore(paused = true))
+        f.transport.commands.send("""{"type":"claim"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        assertEquals(listOf(HEADSET), f.gateway.connectCalls)
+    }
+
+    /**
+     * #290 criterion 6. A pause the user has forgotten, with nothing on
+     * screen saying so, is #213's silent-failure class self-inflicted.
+     */
+    @Test
+    fun `a paused node reports it in the status`() = runTest {
+        val f = Fixture(pauseStore = InMemoryArbitrationPauseStore(paused = true))
+
+        assertEquals(NodeStatus.PAUSED, f.node.status())
+    }
+
+    /**
+     * Paused outranks disconnected: while paused, whether the relay is
+     * reachable is not why switching stopped, and saying so would send
+     * the user to debug a connection that is fine.
+     */
+    @Test
+    fun `paused outranks disconnected`() = runTest {
+        val f = Fixture(pauseStore = InMemoryArbitrationPauseStore(paused = true))
+        f.transport.connected = false
+
+        assertEquals(NodeStatus.PAUSED, f.node.status())
     }
 
     // ---- holder state from the retained topic (#234) ----

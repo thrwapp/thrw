@@ -17,6 +17,21 @@ package com.thrw.adapter.android.status
  */
 enum class NodeStatus {
     /**
+     * The user has paused arbitration on this device (#290).
+     *
+     * Outranks everything below, **including [DISCONNECTED]**, and that
+     * ordering is the interesting part: while paused, whether the relay
+     * is reachable is not why switching has stopped. Telling someone who
+     * paused it themselves that they are disconnected would send them to
+     * debug a connection that is fine.
+     *
+     * #290 criterion 6 — a pause the user has forgotten, with nothing on
+     * screen saying so, is the silent-failure class #213 exists to
+     * prevent, self-inflicted.
+     */
+    PAUSED,
+
+    /**
      * The transport is down. Deliberately outranks everything below:
      * while it is down any holder state is a stale belief, and a wrong
      * answer presented confidently is worse than saying nothing useful.
@@ -45,7 +60,8 @@ enum class NodeStatus {
  * checking the route first would report a confident "not holding" for a
  * node that is not even talking to the relay.
  */
-fun nodeStatus(isConnected: Boolean, holdsRoute: Boolean?): NodeStatus = when {
+fun nodeStatus(isConnected: Boolean, holdsRoute: Boolean?, isPaused: Boolean = false): NodeStatus = when {
+    isPaused -> NodeStatus.PAUSED
     !isConnected -> NodeStatus.DISCONNECTED
     holdsRoute == true -> NodeStatus.HOLDING
     holdsRoute == false -> NodeStatus.NOT_HOLDING
