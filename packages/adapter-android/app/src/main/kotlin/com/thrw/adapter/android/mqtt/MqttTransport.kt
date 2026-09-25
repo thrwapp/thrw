@@ -36,6 +36,13 @@ interface MqttTransport {
      * is most likely to be stale, and #178 made registration a safe,
      * repeatable statement of current state rather than an edge.
      *
+     * [HiveMqttTransport] runs [handler] after a short random delay
+     * (ADR 0020's reconnect jitter, see [ReconnectJitter]), because a
+     * relay restart drops and re-establishes every node's connection at
+     * the same instant. Nothing else on this interface is delayed - in
+     * particular [publish] is not, so the manual override path stays
+     * immediate.
+     *
      * Default no-op so the fakes in this module's tests, and any
      * transport without a reconnect story, need no change.
      */
