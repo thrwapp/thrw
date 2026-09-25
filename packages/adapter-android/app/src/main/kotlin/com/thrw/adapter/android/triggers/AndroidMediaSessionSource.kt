@@ -65,7 +65,20 @@ class AndroidMediaSessionSource(
         // state for a session nothing is watching any more.
         val callbacks = mutableMapOf<String, Pair<MediaController, MediaController.Callback>>()
 
-        fun playing(state: PlaybackState?) = state?.state == PlaybackState.STATE_PLAYING
+        // #288. Three-valued, because a transient state means different
+        // things before and during playback, and this boundary must not
+        // be the thing that decides which — see MediaTriggerMonitor.
+        fun playback(state: PlaybackState?) = when (state?.state) {
+            PlaybackState.STATE_PLAYING -> MediaSessionState.Playback.PLAYING
+            // Both observed on the reference Pixel within one Spotify
+            // session: CONNECTING on the way up, BUFFERING three times
+            // mid-playback. Same class — in flight, and says nothing
+            // about whether the user's audio has stopped.
+            PlaybackState.STATE_BUFFERING,
+            PlaybackState.STATE_CONNECTING,
+            -> MediaSessionState.Playback.TRANSIENT
+            else -> MediaSessionState.Playback.STOPPED
+        }
 
         // Decides nothing: [reconcileSessions] does that, over plain data,
         // where it can be tested (#179). Everything here is execution -
@@ -77,7 +90,7 @@ class AndroidMediaSessionSource(
             val plan = reconcileSessions(
                 tracked = callbacks.mapValues { (_, registered) -> registered.first.sessionToken },
                 live = controllers.map {
-                    SessionRef(it.packageName, it.sessionToken, playing(it.playbackState))
+                    SessionRef(it.packageName, it.sessionToken, playback(it.playbackState))
                 },
             )
 
@@ -89,7 +102,7 @@ class AndroidMediaSessionSource(
                 val controller = byKey[key] ?: continue
                 val cb = object : MediaController.Callback() {
                     override fun onPlaybackStateChanged(state: PlaybackState?) {
-                        trySend(MediaSessionEvent.Changed(MediaSessionState(key, playing(state))))
+                        trySend(MediaSessionEvent.Changed(MediaSessionState(key, playback(state))))
                     }
 
                     override fun onSessionDestroyed() {

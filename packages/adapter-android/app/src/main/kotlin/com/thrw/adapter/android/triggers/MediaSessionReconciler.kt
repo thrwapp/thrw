@@ -12,7 +12,7 @@ package com.thrw.adapter.android.triggers
 data class SessionRef(
     val key: String,
     val token: Any?,
-    val isPlaying: Boolean,
+    val playback: MediaSessionState.Playback,
 )
 
 /**
@@ -86,7 +86,7 @@ fun reconcileSessions(tracked: Map<String, Any?>, live: List<SessionRef>): Recon
         // before the new one is registered, or its callback outlives it.
         if (isTracked) unregister += ref.key
         register += ref.key
-        events += MediaSessionEvent.Changed(MediaSessionState(ref.key, ref.isPlaying))
+        events += MediaSessionEvent.Changed(MediaSessionState(ref.key, ref.playback))
     }
 
     return Reconciliation(unregister = unregister, register = register, events = events)

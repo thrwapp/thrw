@@ -21,12 +21,12 @@ class MediaSessionReconcilerTest {
     fun `a new session is registered and reported`() {
         val plan = reconcileSessions(
             tracked = emptyMap(),
-            live = listOf(SessionRef(spotify, token = 1, isPlaying = true)),
+            live = listOf(SessionRef(spotify, token = 1, playback = MediaSessionState.Playback.PLAYING)),
         )
 
         assertEquals(listOf(spotify), plan.register)
         assertEquals(emptyList(), plan.unregister)
-        assertEquals(listOf(MediaSessionEvent.Changed(MediaSessionState(spotify, true))), plan.events)
+        assertEquals(listOf(MediaSessionEvent.Changed(MediaSessionState(spotify, MediaSessionState.Playback.PLAYING))), plan.events)
     }
 
     /**
@@ -40,12 +40,12 @@ class MediaSessionReconcilerTest {
     fun `a replaced session unregisters the old controller and registers the new one`() {
         val plan = reconcileSessions(
             tracked = mapOf(spotify to 11),
-            live = listOf(SessionRef(spotify, token = 12, isPlaying = true)),
+            live = listOf(SessionRef(spotify, token = 12, playback = MediaSessionState.Playback.PLAYING)),
         )
 
         assertEquals(listOf(spotify), plan.unregister, "the dead controller must be released")
         assertEquals(listOf(spotify), plan.register, "the new controller must be registered")
-        assertEquals(listOf(MediaSessionEvent.Changed(MediaSessionState(spotify, true))), plan.events)
+        assertEquals(listOf(MediaSessionEvent.Changed(MediaSessionState(spotify, MediaSessionState.Playback.PLAYING))), plan.events)
     }
 
     /**
@@ -58,7 +58,7 @@ class MediaSessionReconcilerTest {
     fun `an unchanged session produces no actions`() {
         val plan = reconcileSessions(
             tracked = mapOf(spotify to 11),
-            live = listOf(SessionRef(spotify, token = 11, isPlaying = true)),
+            live = listOf(SessionRef(spotify, token = 11, playback = MediaSessionState.Playback.PLAYING)),
         )
 
         assertEquals(Reconciliation(), plan)
@@ -85,7 +85,7 @@ class MediaSessionReconcilerTest {
     fun `one session going away leaves the others alone`() {
         val plan = reconcileSessions(
             tracked = mapOf(spotify to 11, audible to 21),
-            live = listOf(SessionRef(audible, token = 21, isPlaying = false)),
+            live = listOf(SessionRef(audible, token = 21, playback = MediaSessionState.Playback.STOPPED)),
         )
 
         assertEquals(listOf(spotify), plan.unregister)
@@ -103,13 +103,13 @@ class MediaSessionReconcilerTest {
     fun `departures are reported before arrivals`() {
         val plan = reconcileSessions(
             tracked = mapOf(spotify to 11),
-            live = listOf(SessionRef(audible, token = 21, isPlaying = true)),
+            live = listOf(SessionRef(audible, token = 21, playback = MediaSessionState.Playback.PLAYING)),
         )
 
         assertEquals(
             listOf(
                 MediaSessionEvent.Gone(spotify),
-                MediaSessionEvent.Changed(MediaSessionState(audible, true)),
+                MediaSessionEvent.Changed(MediaSessionState(audible, MediaSessionState.Playback.PLAYING)),
             ),
             plan.events,
         )
@@ -117,7 +117,7 @@ class MediaSessionReconcilerTest {
 
     /**
      * A session that holds a controller but has never played reports
-     * `STATE_NONE`, which the source maps to `isPlaying = false`. It must
+     * `STATE_NONE`, which the source maps to `playback = MediaSessionState.Playback.STOPPED`. It must
      * still be tracked - it is how Audible sits on the reference device
      * indefinitely - so that it is noticed when it does start.
      */
@@ -125,11 +125,11 @@ class MediaSessionReconcilerTest {
     fun `an idle session is still registered`() {
         val plan = reconcileSessions(
             tracked = emptyMap(),
-            live = listOf(SessionRef(audible, token = 21, isPlaying = false)),
+            live = listOf(SessionRef(audible, token = 21, playback = MediaSessionState.Playback.STOPPED)),
         )
 
         assertEquals(listOf(audible), plan.register)
-        assertEquals(listOf(MediaSessionEvent.Changed(MediaSessionState(audible, false))), plan.events)
+        assertEquals(listOf(MediaSessionEvent.Changed(MediaSessionState(audible, MediaSessionState.Playback.STOPPED))), plan.events)
     }
 
     @Test

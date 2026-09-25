@@ -10,18 +10,47 @@ import com.thrw.adapter.android.protocol.EventKind
  * ## What counts as "playing"
  *
  * Exactly one thing: a session reporting `PlaybackState.STATE_PLAYING`,
- * reduced to [MediaSessionState.isPlaying] at the source boundary.
+ * reduced to [MediaSessionState.Playback] at the source boundary.
  *
  * Deliberately **not** counted, each for a reason:
- * - **`STATE_BUFFERING`**: a track that is loading is on its way to
- *   playing, but treating it as playing means a skipped track or a
- *   momentary network stall can start and stop the trigger repeatedly.
- *   Buffering resolves to `STATE_PLAYING` within moments when it
- *   succeeds, so waiting costs very little and avoids the flapping.
  * - **`STATE_PAUSED` / `STATE_STOPPED` / `STATE_NONE`**: not playing.
  *   `STATE_NONE` in particular is what an app reports when it holds a
  *   session but has never played anything - the reference device has
  *   Audible sitting in exactly that state indefinitely.
+ *
+ * ## `STATE_BUFFERING` is neither a start nor a stop (#288)
+ *
+ * It does not start the trigger, and it does not end one that is already
+ * running. A buffering session is left exactly as it was.
+ *
+ * An earlier version of this comment argued that buffering should simply
+ * not count, because "a track that is loading is on its way to playing,
+ * but treating it as playing means a skipped track or a momentary
+ * network stall can start and stop the trigger repeatedly". That
+ * reasoning is correct for buffering **before playback starts** -
+ * `NONE -> BUFFERING -> PLAYING` - and it is why buffering still does
+ * not start the trigger.
+ *
+ * It is exactly wrong for buffering **during** playback, which is what
+ * actually happens. Measured on the reference Pixel with Spotify playing
+ * continuously and sounding perfect:
+ *
+ * ```
+ * 14:58:42.159  PLAYING   -> BUFFERING
+ * 14:58:44.420  BUFFERING -> PLAYING     (2.26s)
+ * 15:02:42.316  PLAYING   -> BUFFERING
+ * 15:02:43.386  BUFFERING -> PLAYING     (1.07s)
+ * ```
+ *
+ * Treating that as "stopped" published an `event_end` and then a fresh
+ * `media` a second later, every few minutes, for as long as music played
+ * - the flapping the old comment set out to prevent, caused by the rule
+ * meant to prevent it. With a contending node it is #236-shaped
+ * oscillation.
+ *
+ * The distinction is what preceded the buffering, which is why this is a
+ * third state rather than a boolean: the same `STATE_BUFFERING` means
+ * "not yet" before playback and "still playing" during it.
  *
  * ## Multiple simultaneous sessions
  *
@@ -62,8 +91,14 @@ class MediaTriggerMonitor(
      */
     suspend fun onSessionEvent(event: MediaSessionEvent) {
         when (event) {
-            is MediaSessionEvent.Changed ->
-                if (event.session.isPlaying) startSession(event.session.key) else endSession(event.session.key)
+            is MediaSessionEvent.Changed -> when (event.session.playback) {
+                MediaSessionState.Playback.PLAYING -> startSession(event.session.key)
+                MediaSessionState.Playback.STOPPED -> endSession(event.session.key)
+                // #288. Neither a start nor a stop: a session already
+                // tracked stays tracked, one that is not stays untracked.
+                // See "What counts as playing" above for why.
+                MediaSessionState.Playback.TRANSIENT -> Unit
+            }
 
             is MediaSessionEvent.Gone -> endSession(event.key)
         }
