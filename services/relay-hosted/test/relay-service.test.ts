@@ -781,6 +781,60 @@ describe("RelayService (real broker)", () => {
       await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }, { type: "claim" }]);
       expect(service.engineFor(account)?.currentHolder()).toBe(nodeA.nodeId);
     });
+
+    // #284. A node already holding the route needs no repair, and the
+    // command is not free: the adapter runs its audio gate around every
+    // one, so a claim that changes nothing still pauses and resumes the
+    // user's media.
+    it("does not re-assert to a holder that reports it already holds the route", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      await startService([account], scheduler, () => now);
+      const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+
+      now += 120_000;
+      await publishRegistration(rawClient, account, nodeA, ["media"], { audio: true });
+      now += 120_000;
+      await publishRegistration(rawClient, account, nodeA, ["media"], { audio: true });
+
+      // Deliberately a settle rather than a poll: the assertion is that
+      // nothing *more* arrives, which a poll cannot express.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(commandsA).toEqual([{ type: "claim" }]);
+    });
+
+    // #287. The loop that fought a user on a call: the headset was moved
+    // to a laptop running no adapter, so the holder kept reporting no
+    // route, and the relay kept taking it back - every two minutes, for
+    // half an hour.
+    it("gives up re-asserting after a bounded number of attempts", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      await startService([account], scheduler, () => now);
+      const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      await expect.poll(() => commandsA, { timeout: 2000 }).toEqual([{ type: "claim" }]);
+
+      // Five periodic registrations, each saying "I am the holder and I
+      // do not have the route" - the exact shape #287 recorded.
+      for (let i = 0; i < 5; i += 1) {
+        now += 120_000;
+        await publishRegistration(rawClient, account, nodeA, ["media"], { audio: false });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      // The initial claim, plus MAX_HOLDER_REASSERTS re-assertions, and
+      // then silence - not one per registration for as long as it runs.
+      expect(commandsA).toEqual([{ type: "claim" }, { type: "claim" }, { type: "claim" }]);
+    });
   });
 
   // ADR 0019 / #206. Before this a command was fire-and-forget: the relay

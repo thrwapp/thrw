@@ -326,6 +326,21 @@ const DEFAULT_HEARTBEAT_SWEEP_INTERVAL_MS = 15_000;
 // the one action that cannot be undone.
 const DEFAULT_NODE_DEPARTURE_TIMEOUT_MS = 300_000;
 
+/**
+ * How many times the holder's claim may be re-asserted before the relay
+ * stops and waits for something to genuinely change (#287).
+ *
+ * Two, because the failure this repairs — a node that restarted and came
+ * back holding nothing — is repaired by the first attempt. The second is
+ * there for a claim that lost a race with the node still starting up.
+ *
+ * A third would buy nothing, and each one costs the user: on the 120s
+ * registration cadence, this is up to four minutes of the relay pulling
+ * the headset back to a node that is not using it. Half an hour of that
+ * is what #287 was reported for.
+ */
+const MAX_HOLDER_REASSERTS = 2;
+
 export interface RelayServiceOptions {
   /** An already-connected client - this class never calls `RelayMqttClient.connect` itself. */
   client: RelayMqttClient;
@@ -432,6 +447,23 @@ interface ResourceState {
   readonly resource: ResourceType;
   readonly engine: PriorityEngine;
   lastHolder: string | null;
+  /**
+   * How many times the holder's claim has been re-asserted since it
+   * became the holder (#287).
+   *
+   * Reset only by a holder **change**, never by the node reporting that
+   * it holds the route — and that distinction is the whole point.
+   *
+   * The failure this bounds is not a claim that fails. It is a claim
+   * that *succeeds*, repeatedly, against the user's wishes: the headset
+   * was moved to a device thrw cannot see, the relay saw its holder
+   * without the route, re-asserted, and took it back. The node then
+   * reports the route as held, so any budget keyed on success resets and
+   * the loop runs forever. Keying it on holder tenure instead means the
+   * relay tries a bounded number of times and then leaves the user
+   * alone until something genuinely changes.
+   */
+  reassertsThisTenure: number;
   /**
    * What this process has published on the retained state topic (#222).
    *
@@ -633,6 +665,7 @@ export class RelayService {
         // PriorityEngine itself needing to know anything changed.
         engine: new PriorityEngine({ scheduler: this.observingScheduler(account, resource) }),
         lastHolder: null,
+        reassertsThisTenure: 0,
         publishedHolder: undefined,
       });
     }
@@ -726,13 +759,7 @@ export class RelayService {
       }
 
       if (resourceState.lastHolder === node && holderBefore === node) {
-        // Bypasses coalescing deliberately (#277). This is not a transition -
-        // it re-asserts a claim to a node that has just restarted and lost its
-        // own copy of the state. Routed through `submit` it could be dropped as
-        // "already in target state" (the relay did last send this node a
-        // claim), leaving the relay believing the node holds the route while
-        // the node believes it holds nothing. See CommandCoalescer's own kdoc.
-        this.coalescer.dispatchImmediately(state.account, node, resourceState.resource, "claim");
+        this.reassertHolderClaim(state.account, resourceState, node, holdsRoute);
       }
 
       // #222. Registration is the only thing that runs after a relay
@@ -932,6 +959,82 @@ export class RelayService {
     });
   }
 
+  /**
+   * Re-asserts a claim to the node the relay already believes is the
+   * holder, on its periodic registration (#178) — bounded, since #287.
+   *
+   * ## What this is for
+   *
+   * The relay's holder state is durable; a node's Bluetooth connection
+   * is not. A node that restarts while holding comes back holding
+   * nothing, and `syncHolder` says nothing to it because from the
+   * relay's point of view the holder never changed. Without this the
+   * node is stuck: it never connects, and nothing can take the route
+   * from it short of outranking it.
+   *
+   * ## Why it used to fire unconditionally, and why that was wrong
+   *
+   * It was sent on *every* registration from the holder, on the reasoning
+   * that a claim is idempotent for a node that really is connected. It
+   * is idempotent to the **relay**. It is not idempotent to the user:
+   * #284 measured one of these completing in 53ms with no holder change,
+   * and the adapter still ran its audio gate around it — pausing and
+   * resuming media for a command that changed nothing.
+   *
+   * Worse, in #287 it became a loop that fought the user. The headset
+   * was moved to a work laptop, which runs no adapter and is therefore
+   * invisible. The relay saw its holder reporting no route, concluded
+   * its picture was stale, and told the Pixel to take the headset back —
+   * every two minutes, for half an hour, while the user was on a call.
+   *
+   * ## The two rules
+   *
+   * 1. **A node already holding the route needs no repair.** Skipping
+   *    those removes the redundant commands entirely for a healthy
+   *    system, which is #284.
+   * 2. **A bounded number of attempts per holder tenure.** Reconciliation
+   *    exists to repair a restart, and a restart is repaired by the
+   *    first attempt. Repeating indefinitely cannot be right whatever
+   *    the cause: either the node cannot take the route, or something
+   *    outside thrw legitimately has it. Both are reasons to stop, and
+   *    the relay cannot tell them apart — ADR 0018 decision 2 assumed
+   *    that case away.
+   *
+   * The budget deliberately does **not** reset when the node reports the
+   * route as held; see `ResourceState.reassertsThisTenure`.
+   */
+  private reassertHolderClaim(
+    account: string,
+    resourceState: ResourceState,
+    node: string,
+    holdsRoute: boolean | undefined,
+  ): void {
+    // Rule 1. `undefined` is "cannot tell" and is deliberately not
+    // treated as "holds it": a node with no route observer still needs
+    // the restart repair this exists for.
+    if (holdsRoute === true) return;
+
+    // Rule 2.
+    if (resourceState.reassertsThisTenure >= MAX_HOLDER_REASSERTS) {
+      logEvent("reassert_exhausted", {
+        account,
+        node,
+        resource: resourceState.resource,
+        attempts: resourceState.reassertsThisTenure,
+      });
+      return;
+    }
+    resourceState.reassertsThisTenure += 1;
+
+    // Bypasses coalescing deliberately (#277). This is not a transition -
+    // it re-asserts a claim to a node that has just restarted and lost its
+    // own copy of the state. Routed through `submit` it could be dropped as
+    // "already in target state" (the relay did last send this node a
+    // claim), leaving the relay believing the node holds the route while
+    // the node believes it holds nothing. See CommandCoalescer's own kdoc.
+    this.coalescer.dispatchImmediately(account, node, resourceState.resource, "claim");
+  }
+
   private syncHolder(account: string, resource: ResourceType): void {
     const resourceState = this.states.get(account)?.resources.get(resource);
     if (!resourceState) return;
@@ -941,6 +1044,11 @@ export class RelayService {
 
     const previousHolder = resourceState.lastHolder;
     resourceState.lastHolder = nextHolder;
+    // #287. A holder change is a fresh arbitration decision, and the
+    // only thing that earns a node a new budget of re-assertions. See
+    // `reassertsThisTenure` for why the budget cannot be reset by the
+    // node reporting success instead.
+    resourceState.reassertsThisTenure = 0;
 
     // Sequential handoff (ADR 0002 / architecture.md: "disconnect the
     // losing device, reconnect to the winning device") - RELEASE before
