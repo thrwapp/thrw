@@ -174,6 +174,28 @@ private class RecordingAudioGate : HandoverAudioGate {
     override suspend fun restore() { calls += "restore" }
 }
 
+/**
+ * #295. Stands in for the trigger monitor the gate provokes: pausing the
+ * media session stops playback, and [MediaTriggerMonitor] watches that
+ * same session. Reproducing it here rather than waiting for the
+ * framework is what makes the regression testable at all.
+ */
+private class TriggerProvokingGate : HandoverAudioGate {
+    lateinit var node: AndroidNode
+    override suspend fun silence() { node.endEvent(EventKind.MEDIA) }
+    override suspend fun restore() { node.emitEvent(EventKind.MEDIA, UNRANKED_PRIORITY) }
+}
+
+/**
+ * #295. A genuine call arriving while a handover is in flight - the
+ * signal that must survive the window that hides our own effects.
+ */
+private class CallDuringHandoverGate : HandoverAudioGate {
+    lateinit var node: AndroidNode
+    override suspend fun silence() { node.emitEvent(EventKind.CALL, UNRANKED_PRIORITY) }
+    override suspend fun restore() = Unit
+}
+
 private class Fixture(
     failConnectTimes: Int = 0,
     hangConnect: Boolean = false,
@@ -971,6 +993,67 @@ class AndroidNodeTest {
         f.node.listenForCommands()
 
         assertEquals(listOf(HEADSET), f.gateway.connectCalls)
+    }
+
+    // ---- thrw must not react to its own audio suppression (#295) ----
+
+    /**
+     * The regression v0.2.2 shipped, reproduced. The gate pauses this
+     * device's media session to cover the handover; the media trigger
+     * watches that session, so the pause arrived as "the user stopped
+     * their music". On real hardware that published event_end media,
+     * lost the claim, and thrashed the holder between two devices with
+     * start/end pairs 260ms apart.
+     */
+    @Test
+    fun `a trigger ended by our own suppression is ignored entirely`() = runTest {
+        val transport = FakeMqttTransport()
+        val gate = TriggerProvokingGate()
+        val node = AndroidNode(
+            ACCOUNT, NODE, HEADSET, transport,
+            BluetoothConnectionManager(RecordingGateway()),
+            audioGate = gate,
+        )
+        gate.node = node
+        node.emitEvent(EventKind.MEDIA, UNRANKED_PRIORITY)
+        val publishedBefore = transport.published.size
+
+        transport.commands.send("""{"type":"claim"}""")
+        transport.commands.close()
+        node.listenForCommands()
+
+        assertTrue(
+            node.isEventActive(EventKind.MEDIA),
+            "the user's media never stopped - only thrw paused it, so the trigger must survive",
+        )
+        val ends = transport.published.drop(publishedBefore)
+            .map { ProtocolJson.parseToJsonElement(it.payload) }
+            .filterIsInstance<JsonObject>()
+            .filter { it["kind"]?.jsonPrimitive?.content == "event_end" }
+        assertTrue(ends.isEmpty(), "publishing this end is what moved the holder and started the thrash")
+    }
+
+    /**
+     * The other half: a call starting mid-handover is the one signal this
+     * product cannot afford to swallow, so the exemption that already
+     * covers the self-cooldown covers this window too.
+     */
+    @Test
+    fun `a call starting mid-handover is still reported`() = runTest {
+        val transport = FakeMqttTransport()
+        val gate = CallDuringHandoverGate()
+        val node = AndroidNode(
+            ACCOUNT, NODE, HEADSET, transport,
+            BluetoothConnectionManager(RecordingGateway()),
+            audioGate = gate,
+        )
+        gate.node = node
+
+        transport.commands.send("""{"type":"claim"}""")
+        transport.commands.close()
+        node.listenForCommands()
+
+        assertTrue(node.isEventActive(EventKind.CALL), "a real call during a handover must not be swallowed")
     }
 
     // ---- paused arbitration (#290) ----

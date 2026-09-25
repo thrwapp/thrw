@@ -47,6 +47,25 @@ class RouteTransition(
      */
     fun isSettling(): Boolean = synchronized(lock) { inProgress > 0 || now() < settledAt }
 
+    /**
+     * True only while a command is actually executing — **not** during
+     * the settle tail (#295).
+     *
+     * A narrower question with a different answer, for a different
+     * consumer. [isSettling] asks *"could a route observation be
+     * misleading?"*, which stays true for six seconds after the work
+     * finishes because the route is still moving. This asks *"is thrw
+     * currently doing something to this device's audio?"*, which stops
+     * being true the moment it stops doing it.
+     *
+     * Triggers are ignored while this is true, because ADR 0022's audio
+     * gate pauses and resumes the media session to cover the handover —
+     * and [MediaTriggerMonitor] watches exactly that session. Without
+     * it, thrw reads its own suppression as the user stopping their
+     * music.
+     */
+    fun isExecuting(): Boolean = synchronized(lock) { inProgress > 0 }
+
     companion object {
         /**
          * Six seconds: comfortably past the 3-5s settle measured on the

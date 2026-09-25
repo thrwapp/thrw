@@ -258,6 +258,10 @@ class AndroidNode(
         // cooldown, so ordering these the other way would let exactly
         // the two loudest triggers through a pause (criterion 4).
         if (pauseStore.isPaused()) return
+        // #295. Ignored, not merely unpublished — see [endEvent] for the
+        // whole argument. The gate's own resume must not be recorded as
+        // the user starting something.
+        if (!type.bypassesSelfCooldown() && routeTransition.isExecuting()) return
         if (!type.bypassesSelfCooldown() && suppressedBySelfCooldown("emitEvent($type)")) return
         publishToEvents(json.encodeToString(EventPayload.serializer(), EventPayload(type, priority)))
         synchronized(activeEventsLock) { activeEvents.add(type) }
@@ -275,6 +279,33 @@ class AndroidNode(
      * argument, and docs/handoffs/68.md.
      */
     override suspend fun endEvent(type: EventKind) {
+        // #295. Checked **before** the removal below, and this ordering
+        // is the entire fix.
+        //
+        // ADR 0022's audio gate pauses this device's media session to
+        // cover the handover window, and [MediaTriggerMonitor] watches
+        // that same session — so the gate's own pause arrives here as
+        // "the user stopped their music", and its resume arrives at
+        // [emitEvent] as "the user started something". Neither happened.
+        //
+        // Observed on v0.2.2 across both adapters: a device paused itself
+        // for a handover, read its own pause as a real stop, published
+        // event_end media, lost the claim, and the holder thrashed
+        // between the two devices - start/end pairs 260ms apart.
+        //
+        // The self-cooldown cannot fix this. It is armed *after* the
+        // mechanical work, so the gate's pause lands before it exists;
+        // and even armed, the removal below would still delete the local
+        // entry while suppressing the publish, so #178's next
+        // registration would report the wrong state and move the holder
+        // anyway - the same bug, two minutes slower and far harder to
+        // see.
+        //
+        // So this returns **without touching anything**: no publish, no
+        // state change. What thrw does to its own audio leaves no trace,
+        // which is the only description of correct here.
+        if (!type.bypassesSelfCooldown() && routeTransition.isExecuting()) return
+
         // Forgotten locally **before** the cooldown check, and regardless
         // of whether it is published (#183).
         //
@@ -501,6 +532,12 @@ class AndroidNode(
                 // moved to another device, and continuing to play here
                 // is never what they wanted. That is what the platform
                 // itself does on AUDIO_BECOMING_NOISY.
+                // #295. The window opens **before** the gate, so the
+                // gate's own pause and resume fall inside it and leave no
+                // trace on this node's triggers. onClaim/onRelease begin
+                // it again below; the counter nests, so that is harmless
+                // and keeps their route-settling behaviour unchanged.
+                if (command != null) routeTransition.begin()
                 if (command != null) audioGate.silence()
                 try {
                     when (command?.type) {
@@ -545,6 +582,12 @@ class AndroidNode(
                         failureReasonFor(e),
                         elapsedMs(startedAt),
                     )
+                } finally {
+                    // #295. Closes the window opened before the gate, on
+                    // every path including the cancellation rethrow -
+                    // leaving it open would make this node permanently
+                    // deaf to its own triggers.
+                    if (command != null) routeTransition.end()
                 }
             }
     }
