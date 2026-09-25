@@ -835,6 +835,60 @@ describe("RelayService (real broker)", () => {
       // then silence - not one per registration for as long as it runs.
       expect(commandsA).toEqual([{ type: "claim" }, { type: "claim" }, { type: "claim" }]);
     });
+
+    // #301, reported from real use: "I just tried a call (whatsapp and
+    // mobile) neither moved the call from mac to pixel."
+    //
+    // Arbitration acts on holder *changes*, so once the bound above has
+    // given up on a holder that cannot take the route, nothing moves the
+    // headset: every recomputation finds the holder unchanged and sends
+    // nothing. A call must always be able to break that.
+    it("lets a call break a wedge the re-assert bound has given up on", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      await startService([account], scheduler, () => now);
+      const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      // Exhaust the budget: the holder keeps saying it has no route.
+      for (let i = 0; i < 5; i += 1) {
+        now += 120_000;
+        await publishRegistration(rawClient, account, nodeA, ["media"], { audio: false });
+      }
+      await expect.poll(() => commandsA.length, { timeout: 2000 }).toBe(3);
+
+      // The call. The holder does not change - this node already is the
+      // holder - so without #301 nothing at all is sent.
+      await publishEvent(rawClient, account, nodeA.nodeId, "call");
+
+      await expect.poll(() => commandsA.length, { timeout: 2000 }).toBe(4);
+      expect(commandsA[3]).toEqual({ type: "claim" });
+    });
+
+    // Ambient triggers must not do this. They fire constantly, and
+    // dispatching on every one is how #287's fighting started.
+    it("does not let media break the wedge", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      await startService([account], scheduler, () => now);
+      const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      for (let i = 0; i < 5; i += 1) {
+        now += 120_000;
+        await publishRegistration(rawClient, account, nodeA, ["media"], { audio: false });
+      }
+      await expect.poll(() => commandsA.length, { timeout: 2000 }).toBe(3);
+
+      await publishEvent(rawClient, account, nodeA.nodeId, "media");
+
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(commandsA.length).toBe(3);
+    });
   });
 
   // ADR 0019 / #206. Before this a command was fire-and-forget: the relay
