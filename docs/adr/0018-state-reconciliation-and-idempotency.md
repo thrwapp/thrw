@@ -1,7 +1,9 @@
 # ADR 0018: State reconciliation and command idempotency
 
 ## Status
-Accepted — decisions 1-3 amended 2026-09-20, see *Revision* below.
+Accepted — decisions 1-3 amended 2026-09-20, see *Revision* below;
+decision 2's correction behaviour amended again 2026-09-25 (**bounded
+re-assertion**), see the amendment at the end of this file.
 
 > **Revision (2026-09-20).** Decisions 1, 2 and 3 were amended before
 > any implementation began, on evidence from running the existing
@@ -214,3 +216,76 @@ what makes that safe to do.
   implemented identically in both adapters; a per-adapter
   interpretation of "already in the target state" reintroduces exactly
   the divergence this ADR closes.
+
+## Amendment (2026-09-25): reconciliation gives up, rather than repeating
+
+Decision 2 says what to *report* and says nothing about how many times
+the relay may act on a disagreement. The implementation re-asserted a
+claim to the believed holder on **every** registration — every two
+minutes, indefinitely. That is now bounded (#287).
+
+### What happened
+
+A user's headset was connected to a work laptop, which runs no adapter.
+The relay's holder was the phone, whose registrations correctly reported
+`observedRoutes: {"audio": false}`. The relay read that as drift, told
+the phone to re-claim, and the phone took the headset off the laptop —
+repeatedly, for half an hour, while the user was on a call.
+
+Every component behaved as specified. The reading was the audio route,
+not the Bluetooth link, exactly as this decision requires. The report
+was accurate. The correction was the one described. The outcome was that
+thrw repeatedly took a headset away from a live call.
+
+### What the ADR assumed
+
+That a holder without the route is a **fault to repair** — a node that
+restarted and lost its connection. That is one cause. The other is a
+user who moved their headset somewhere thrw cannot see, which for a
+locked-down work machine is not an edge case but the normal state of
+affairs.
+
+The two are indistinguishable from the relay. Decision 2 did not
+consider the second, so it prescribed repair unconditionally.
+
+This ADR already warned about the failure *shape*: under the Bluetooth-
+link reading, it says, "the drift is unresolvable — it would issue
+corrective commands forever". That hazard was real and the guard against
+it was correct; it simply had a second entrance that was not guarded.
+
+### The amendment
+
+**A correction is a bounded attempt, not a standing intention.**
+
+1. A node reporting that it **already holds the route** is not
+   corrected. There is nothing to repair, and the command is not free:
+   the adapter's handover audio gate (ADR 0022) runs around every
+   command, so a claim that changes nothing still interrupts playback
+   (#284).
+
+2. At most **two** corrections per holder tenure, where a tenure begins
+   at a holder *change*. Two because the fault this repairs — a node
+   that restarted holding nothing — is fixed by the first attempt, with
+   one spare for a claim that raced a starting adapter.
+
+3. The budget **must not** reset on the node reporting the route as
+   held. That is the trap: each correction *succeeds*, so a budget keyed
+   on failure never depletes and the loop is unbounded. Only a genuine
+   arbitration decision earns a fresh budget.
+
+4. Exhaustion is logged (`reassert_exhausted`), because a relay that has
+   given up is a state someone will need to see.
+
+### What this costs
+
+A node that genuinely loses its route more than twice within one holder
+tenure stops being repaired until arbitration moves. That is a real
+regression in the case decision 2 was written for, accepted because the
+alternative — an unbounded loop — is worse in the case decision 2 was
+not written for, and the failure it produces is the most user-hostile
+this project has shipped.
+
+The narrower fix would be to teach the relay that a device outside thrw
+holds the resource. Nothing on the wire carries that today, and
+inventing it here would be designing a feature inside an amendment.
+Raised as #287, not decided here.
