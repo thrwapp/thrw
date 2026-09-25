@@ -100,6 +100,34 @@ private struct CancellingGateway: BluetoothPeripheralGateway {
     func disconnect(deviceIdentifier: UUID) async throws { throw CancellationError() }
 }
 
+/// #295. Stands in for the trigger monitor the gate provokes: silencing
+/// this device stops its audio, and the media monitor reads exactly that
+/// a few milliseconds later. Reproducing it here rather than waiting for
+/// CoreAudio is what makes the regression testable at all.
+private final class TriggerProvokingGate: HandoverAudioGate, @unchecked Sendable {
+    weak var node: MacNode?
+
+    func silence() async {
+        try? await node?.endEvent(type: .media)
+    }
+
+    func restore() async {
+        try? await node?.emitEvent(type: .media, priority: unrankedPriority)
+    }
+}
+
+/// #295. A genuine `call` arriving while a handover is in flight — the
+/// signal that must survive the window that hides our own effects.
+private final class CallDuringHandoverGate: HandoverAudioGate, @unchecked Sendable {
+    weak var node: MacNode?
+
+    func silence() async {
+        try? await node?.emitEvent(type: .call, priority: unrankedPriority)
+    }
+
+    func restore() async {}
+}
+
 /// #264. A provisioning fault — the device is not in macOS's paired
 /// list, so nothing was ever asked of the headset.
 private struct UnpairedGateway: BluetoothPeripheralGateway {
@@ -538,6 +566,74 @@ final class MacNodeTests: XCTestCase {
             [headsetIdentifier],
             "the second command must still be acted on after the first outcome failed to publish"
         )
+    }
+
+    // MARK: - thrw must not react to its own audio suppression (#295)
+
+    /// The regression v0.2.2 shipped, reproduced.
+    ///
+    /// ADR 0022's gate pauses this device's playback to cover the
+    /// handover window. The media trigger reads whether this device is
+    /// playing audio, so the gate's own pause arrives as "the user
+    /// stopped their music" — and on real hardware that published
+    /// `event_end media`, lost the claim, and thrashed the holder
+    /// between two devices with start/end pairs 260ms apart.
+    ///
+    /// The fake gate stands in for the monitor it provokes: it reports
+    /// the trigger ending the moment it is asked to silence, which is
+    /// what CoreAudio does a few milliseconds later in reality.
+    func testATriggerEndedByOurOwnSuppressionIsIgnoredEntirely() async throws {
+        let transport = FakeMqttTransport()
+        let gateway = FakeBluetoothPeripheralGateway()
+        let gate = TriggerProvokingGate()
+        let node = MacNode(
+            accountId: accountId,
+            nodeId: nodeId,
+            headsetIdentifier: headsetIdentifier,
+            transport: transport,
+            bluetooth: BluetoothConnectionManager(gateway: gateway),
+            audioGate: gate
+        )
+        gate.node = node
+        try await node.emitEvent(type: .media, priority: unrankedPriority)
+        let publishedBefore = transport.published.count
+
+        transport.sendCommand(#"{"type":"claim"}"#)
+        transport.finishCommands()
+        try await node.listenForCommands()
+
+        XCTAssertTrue(
+            node.isEventActive(.media),
+            "the user's media never stopped - only thrw paused it, so the trigger must survive"
+        )
+        let ends = transport.published.dropFirst(publishedBefore).compactMap {
+            try? JSONDecoder().decode(EventEndPayload.self, from: Data($0.payload.utf8))
+        }
+        XCTAssertTrue(ends.isEmpty, "publishing this end is what moved the holder and started the thrash")
+    }
+
+    /// The other half: a `call` starting mid-handover is the one signal
+    /// this product cannot afford to swallow, so the exemption that
+    /// already covers the self-cooldown covers this window too.
+    func testACallStartingMidHandoverIsStillReported() async throws {
+        let transport = FakeMqttTransport()
+        let gateway = FakeBluetoothPeripheralGateway()
+        let gate = CallDuringHandoverGate()
+        let node = MacNode(
+            accountId: accountId,
+            nodeId: nodeId,
+            headsetIdentifier: headsetIdentifier,
+            transport: transport,
+            bluetooth: BluetoothConnectionManager(gateway: gateway),
+            audioGate: gate
+        )
+        gate.node = node
+
+        transport.sendCommand(#"{"type":"claim"}"#)
+        transport.finishCommands()
+        try await node.listenForCommands()
+
+        XCTAssertTrue(node.isEventActive(.call), "a real call during a handover must not be swallowed")
     }
 
     // MARK: - paused arbitration (#290)

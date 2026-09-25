@@ -71,4 +71,24 @@ public final class RouteTransition: @unchecked Sendable {
         guard let until = settledUntil else { return false }
         return now() < until
     }
+
+    /// True only while a command is actually executing — **not** during
+    /// the settle tail (#295).
+    ///
+    /// A narrower question with a different answer, for a different
+    /// consumer. ``isSettling()`` asks *"could a route observation be
+    /// misleading?"*, which stays true for six seconds after the work
+    /// finishes because the route is still moving. This asks *"is thrw
+    /// currently doing something to this device's audio?"*, which stops
+    /// being true the moment it stops doing it.
+    ///
+    /// Triggers are ignored while this is true, because ADR 0022's audio
+    /// gate pauses and resumes playback to cover the handover — and the
+    /// media trigger reads exactly that. Without it, thrw reads its own
+    /// suppression as the user stopping their music.
+    public func isExecuting() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return inProgress > 0
+    }
 }

@@ -168,6 +168,10 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
         // cooldown, so ordering these the other way would let exactly
         // the two loudest triggers through a pause (criterion 4).
         if pauseStore.isPaused() { return }
+        // #295. Ignored, not merely unpublished — see ``endEvent(type:)``
+        // for the whole argument. The gate's own resume must not be
+        // recorded as the user starting something.
+        if routeTransition.isExecuting(), !type.bypassesSelfCooldown { return }
         if selfCooldown.isActive(), !type.bypassesSelfCooldown { return }
         try await publishToEvents(EventPayload(type: type, priority: priority))
         activeEvents.insert(type)
@@ -178,6 +182,33 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// `EventEndPayload` on the same events topic at the same QoS -
     /// mirrors `AndroidNode.kt`'s own `endEvent` (#68).
     public func endEvent(type: EventKind) async throws {
+        // #295. Checked **before** the removal below, and this ordering
+        // is the entire fix.
+        //
+        // ADR 0022's audio gate pauses this device's playback to cover
+        // the handover window. The media trigger reads whether this
+        // device is playing audio — so the gate's own pause arrives here
+        // as "the user stopped their music", and its resume arrives at
+        // `emitEvent` as "the user started something". Neither happened.
+        //
+        // Observed on v0.2.2: the Mac paused itself for a handover, read
+        // its own pause as a real stop, published `event_end media`, lost
+        // the claim, and the holder thrashed between the two devices —
+        // start/end pairs 260ms apart.
+        //
+        // The self-cooldown cannot fix this. It is armed *after* the
+        // mechanical work, so the gate's pause lands before it exists;
+        // and even armed, the removal below would still delete the local
+        // entry while suppressing the publish, so #178's next
+        // registration would report the wrong state and move the holder
+        // anyway — the same bug, two minutes slower and far harder to
+        // see.
+        //
+        // So this returns **without touching anything**: no publish, no
+        // state change. What thrw does to its own audio leaves no trace,
+        // which is the only description of correct here.
+        if routeTransition.isExecuting(), !type.bypassesSelfCooldown { return }
+
         // Forgotten locally **before** the cooldown check, and regardless
         // of whether it is published (#183).
         //
@@ -527,6 +558,14 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
         for type: CommandType,
         _ body: () async throws -> Void
     ) async rethrows {
+        // #295. The window opens **before** the gate and closes after it,
+        // so the gate's own pause and resume fall inside it and leave no
+        // trace on this node's triggers. `onClaim`/`onRelease` begin it
+        // again inside `body`; the counter nests, so that is harmless and
+        // keeps their route-settling behaviour unchanged.
+        routeTransition.begin()
+        defer { routeTransition.end() }
+
         await audioGate.silence()
         do {
             try await body()
