@@ -14,6 +14,7 @@
 #   ./scripts/relay-logs.sh --archives            # list archived logs
 #   ./scripts/relay-logs.sh --cat <filename>      # print one archive
 #   ./scripts/relay-logs.sh --live [container]    # live container logs
+#   ./scripts/relay-logs.sh --follow [container]  # live logs, streaming
 #
 # Env overrides (defaults match deploy.yml's):
 #   GCP_RELAY_VM_NAME (thrw-relay), GCP_RELAY_ZONE (us-central1-a),
@@ -112,6 +113,26 @@ echo "relay-logs: retrying with sudo (no docker group access)" >&2
 sudo docker logs --tail "$n" "$c" 2>&1
 '
 
+# --follow is --live that does not return. Added for #193: a QA pass has
+# to correlate a physical action against what the relay decided at that
+# moment, and `--live` can only be polled - which either misses lines
+# between polls or re-prints the same tail.
+#
+# `docker logs -f` inherits the SSH session's lifetime, so closing this
+# end (Ctrl-C, or the capture script's trap) ends the remote process
+# too. The `--tail` is deliberately small: the point here is what
+# happens next, not what already happened, and --archives covers the
+# past.
+REMOTE_FOLLOW='
+c="$THRW_CONTAINER"
+n="$THRW_TAIL"
+if docker logs --tail "$n" -f "$c" 2>&1; then
+  exit 0
+fi
+echo "relay-logs: retrying with sudo (no docker group access)" >&2
+sudo docker logs --tail "$n" -f "$c" 2>&1
+'
+
 case "${1:---help}" in
   --archives)
     remote "THRW_DIR='$ARCHIVE_DIR'$REMOTE_LIST"
@@ -125,6 +146,9 @@ case "${1:---help}" in
     ;;
   --live)
     remote "THRW_CONTAINER='${2:-relay-service}' THRW_TAIL='$TAIL_LINES'$REMOTE_LIVE"
+    ;;
+  --follow)
+    remote "THRW_CONTAINER='${2:-relay-service}' THRW_TAIL='${THRW_FOLLOW_TAIL:-5}'$REMOTE_FOLLOW"
     ;;
   --help | -h)
     usage
