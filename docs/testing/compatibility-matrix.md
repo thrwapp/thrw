@@ -26,7 +26,7 @@ verified by (manual test or telemetry-derived)
 
 | Headset | Host A | Host B | Success rate | Last verified | Known issues | Verified by |
 |---|---|---|---|---|---|---|
-| AirPods Pro 2 (Lightning case, H2; firmware 9A348 observed) | MacBook Air 13" M4 (2025) | Pixel 10 Pro | pending ADR 0019 telemetry | **2026-09-20** — media-driven switch verified in both directions against `relay.thrw.app`. **Regressions since: see 2026-09-25 below — do not read the 09-20 row as current.** | multipoint makes Bluetooth link state useless as a holder signal (see below); the Mac can latch into a phantom `media` event and stop reporting its route (#303); a call could not break a wedged holder (#301); ADR 0022's macOS audio suppression is inert on this headset (#304); a spurious never-ended `call` was observed once (#183) | manual test, see *Verified scope* below |
+| AirPods Pro 2 (Lightning case, H2; firmware 9A348 observed) | MacBook Air 13" M4 (2025) | Pixel 10 Pro | pending ADR 0019 telemetry | **2026-09-26** — call trigger and auto-return verified both directions; media-driven switch verified 2026-09-20. **Read the 2026-09-25/26 section before treating the 09-20 notes as current.** | the relay never stops believing a holder both nodes contradict, reachable from the ordinary morning path (#307); the Mac can latch into a phantom `media` event and stop reporting its route (#303); ADR 0022's macOS audio suppression is inert on this headset, so a call ends playback permanently (#304); multipoint makes Bluetooth link state useless as a holder signal (see below); a spurious never-ended `call` was observed once (#183) | manual test, see *Verified scope* below |
 
 Hardware models are the reference devices from
 docs/spec/architecture.md.
@@ -102,10 +102,11 @@ rule-5 timer.
 as verified have since been observed failing, so that section is a record
 of what was true on 09-20 and not a statement about the current build.
 
-This pass was cut short: the Pixel dropped off `adb` partway through, so
-the physical items (call trigger, manual claim, out-of-range, clean
-install) were **not run**. Everything below came from observing the
-reference pair while idle, which turned out to be enough.
+The 09-25 half of this pass was cut short: the Pixel dropped off `adb`,
+so the physical items were not run, and everything in the "new findings"
+list below came from observing the reference pair while idle. **Item 1
+was run on 2026-09-26** and is recorded further down; items 2-5 remain
+unrun.
 
 **Regressed since 09-20**
 
@@ -150,6 +151,47 @@ reference pair while idle, which turned out to be enough.
   the audio route remains the only sound signal. The Android reported
   `observedRoutes: {"audio": true}` while the Mac believed itself holder,
   which is exactly the asymmetry the section below describes.
+
+**Item 1 (call trigger and auto-return) — PASSES, both forms**
+
+Re-run 2026-09-26 against the relay carrying #302. Verified physically on
+both devices at each step, not inferred from relay traffic.
+
+| | release | claim | note |
+|---|---|---|---|
+| Outgoing call, Mac→Pixel | 16ms | 26ms | no-op: the Pixel already held the route, so `connect` took its already-connected skip path |
+| Auto-return on call end, Pixel→Mac | 781ms | 897ms | immediate, because the Mac still had active `media` |
+| Incoming call, Mac→Pixel | 755ms | **3340ms** | a real claim |
+| Auto-return after 90s grace, Pixel→Mac | — | 764ms | the Mac had no trigger, so `DEFAULT_AUTO_RETURN_MS` applied |
+
+The 3340ms claim is the **second** real measurement of claim settle time,
+against #254's single ~4.9s sample. Both sit inside
+`DEFAULT_CLAIM_WINDOW_MS` (6000), which the coalescer derives from the
+first. Two points is still not a distribution.
+
+Both auto-return paths behaved as designed and the distinction between
+them is worth recording: with a live trigger on the previous holder the
+return is immediate; without one it waits out the 90s grace. On
+2026-09-25 the second case was briefly misread here as "the headset does
+not come back" — it does, after 90 seconds.
+
+**What does not come back is the playback.** The call stopped YouTube on
+the Mac (user confirmed they did not pause it), and nothing resumes it,
+so the headset returns silent. That is #304's cost, not a separate fault.
+
+**Not covered by this pass:** #302's own guard never fired. Both calls
+landed on a node that was *not* the believed holder, so they produced
+genuine holder changes through ordinary arbitration. The shape #302
+fixes — an urgent trigger on the node the relay already believes is
+holder — remains unverified on hardware.
+
+**The wedge is reachable from the ordinary morning path** (#307). Taking
+the AirPods out of the case connected them to the Pixel, with no
+involvement from thrw, while the relay's retained belief still pointed at
+the Mac. From there: the Mac reported `{"audio": false}`, the Pixel
+reported `{"audio": true}`, the relay logged `route_drift` for both and
+`reassert_exhausted`, and issued nothing. YouTube played out of the
+MacBook speakers until an incoming call happened to reset the tenure.
 
 **Tooling**
 
