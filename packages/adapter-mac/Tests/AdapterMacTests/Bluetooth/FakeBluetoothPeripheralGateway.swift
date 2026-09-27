@@ -15,7 +15,40 @@ final class FakeBluetoothPeripheralGateway: BluetoothPeripheralGateway, @uncheck
     /// manager while a connection is genuinely in flight - the only way
     /// to reach the `.connecting` branch through the public API, since
     /// the actor serializes everything else.
+    ///
+    /// **This block answers cancellation**, because it waits on an
+    /// `AsyncStream`. That is convenient and it is also why #244's bound
+    /// looked bounded when it was not - see
+    /// ``blockNextConnectUncancellably``.
     var blockNextConnect = false
+
+    /// #303. Holds the next `connect` open in a suspension that does
+    /// **not** answer cancellation, which is the shape production
+    /// actually has and the one no test had.
+    ///
+    /// ``IOBluetoothPeripheralGateway/connect`` suspends on a
+    /// `withCheckedThrowingContinuation` resumed only by `IOBluetooth`'s
+    /// `connectionComplete` callback. A checked continuation is not
+    /// cancellation-aware, so if that callback never arrives the task
+    /// cannot be cancelled out of it - and a `withThrowingTaskGroup`
+    /// timeout, which must await every child before returning, never
+    /// returns at all. That is the seventeen-minute wedge in #303: no
+    /// `command_outcome` published, and ``RouteTransition``'s counter
+    /// latched by `defer`s belonging to frames that never unwound.
+    ///
+    /// `blockNextConnect` above cannot express that, because cancelling
+    /// its `AsyncStream` wait works.
+    var blockNextConnectUncancellably = false
+
+    /// The release-side equivalent. `disconnect` was not bounded at all
+    /// before #303, and ADR 0002's sequential handoff means a stuck
+    /// release strands the claim queued behind it.
+    var blockNextDisconnectUncancellably = false
+
+    /// Continuations for the blocks above, held rather than dropped so
+    /// the runtime does not report them as leaked. Nothing ever resumes
+    /// them - that is the point.
+    private var neverResumed: [CheckedContinuation<Void, Never>] = []
 
     // Two one-shot signals, each an `AsyncStream` rather than a
     // `CheckedContinuation`. That is the whole point: a continuation
@@ -30,6 +63,11 @@ final class FakeBluetoothPeripheralGateway: BluetoothPeripheralGateway, @uncheck
 
     func connect(deviceIdentifier: UUID) async throws {
         connectCalls.append(deviceIdentifier)
+        if blockNextConnectUncancellably {
+            blockNextConnectUncancellably = false
+            started.continuation.yield(())
+            await hangForever()
+        }
         if blockNextConnect {
             blockNextConnect = false
             started.continuation.yield(())
@@ -52,8 +90,20 @@ final class FakeBluetoothPeripheralGateway: BluetoothPeripheralGateway, @uncheck
         release.continuation.yield(())
     }
 
+    /// Suspends forever, and cannot be cancelled out of.
+    private func hangForever() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            neverResumed.append(continuation)
+        }
+    }
+
     func disconnect(deviceIdentifier: UUID) async throws {
         disconnectCalls.append(deviceIdentifier)
+        if blockNextDisconnectUncancellably {
+            blockNextDisconnectUncancellably = false
+            started.continuation.yield(())
+            await hangForever()
+        }
         if failNextDisconnect {
             failNextDisconnect = false
             throw FakeGatewayError.simulatedFailure

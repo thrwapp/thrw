@@ -27,16 +27,22 @@ public actor BluetoothConnectionManager {
     /// #244. Injectable purely so tests don't wait on wall time - the
     /// same reasoning `HeartbeatPublisher`'s injectable `sleep` uses.
     /// Production callers take ``commandOutcomeTimeout``.
-    private let connectTimeout: Duration
+    ///
+    /// Bounds **both** operations as of #303. It was `connectTimeout`
+    /// when only `connect` was bounded; a release that never resolves
+    /// wedges this state machine the same way a claim does, and one
+    /// bound for both is also what ADR 0019 means by every command
+    /// resolving within the same window.
+    private let operationTimeout: Duration
 
     public init(
         gateway: BluetoothPeripheralGateway,
         routeSource: DeviceAudioRouteSource? = nil,
-        connectTimeout: Duration = commandOutcomeTimeout
+        operationTimeout: Duration = commandOutcomeTimeout
     ) {
         self.gateway = gateway
         self.routeSource = routeSource
-        self.connectTimeout = connectTimeout
+        self.operationTimeout = operationTimeout
     }
 
     /// Connects to `deviceIdentifier`. A no-op if that device is already
@@ -118,7 +124,7 @@ public actor BluetoothConnectionManager {
         do {
             let gateway = self.gateway
             try await withBluetoothTimeout(
-                connectTimeout,
+                operationTimeout,
                 deviceIdentifier: deviceIdentifier,
                 operation: "connect"
             ) {
@@ -130,7 +136,7 @@ public actor BluetoothConnectionManager {
             if error is BluetoothOperationTimedOut {
                 logAdapterError(
                     category: "BluetoothConnectionManager",
-                    "connect did not resolve within \(connectTimeout) for \(deviceIdentifier) - giving up so later claims are not skipped"
+                    "connect did not resolve within \(operationTimeout) for \(deviceIdentifier) - giving up so later claims are not skipped"
                 )
             }
             throw error
@@ -143,6 +149,21 @@ public actor BluetoothConnectionManager {
     /// State always ends at `.disconnected`, whether or not the
     /// underlying gateway call succeeds — the error (if any) still
     /// propagates to the caller.
+    ///
+    /// ## Why this is bounded too (#303)
+    ///
+    /// "State always ends at `.disconnected`" was only true if this
+    /// frame unwound, and an unbounded `await` on the gateway is exactly
+    /// the case where it does not.
+    /// ``IOBluetoothPeripheralGateway/disconnect`` suspends on a
+    /// continuation resumed by a one-shot disconnect notification; if
+    /// that never arrives, the `defer` never runs, `states` stays at
+    /// `.disconnecting` - which the switch above skips - and every later
+    /// release for that device is a silent no-op for the life of the
+    /// process. That is #244's claim-side wedge with the arrow reversed,
+    /// and ADR 0002's sequential handoff makes it worse: the winning
+    /// device cannot take the route until the losing one lets go, so a
+    /// stuck release strands the claim queued behind it.
     public func disconnect(deviceIdentifier: UUID) async throws {
         switch states[deviceIdentifier] {
         case nil, .disconnected, .disconnecting:
@@ -152,7 +173,22 @@ public actor BluetoothConnectionManager {
         }
 
         defer { states[deviceIdentifier] = .disconnected }
-        try await gateway.disconnect(deviceIdentifier: deviceIdentifier)
+        do {
+            let gateway = self.gateway
+            try await withBluetoothTimeout(
+                operationTimeout,
+                deviceIdentifier: deviceIdentifier,
+                operation: "disconnect"
+            ) {
+                try await gateway.disconnect(deviceIdentifier: deviceIdentifier)
+            }
+        } catch is BluetoothOperationTimedOut {
+            logAdapterError(
+                category: "BluetoothConnectionManager",
+                "disconnect did not resolve within \(operationTimeout) for \(deviceIdentifier) - giving up so the release still reports an outcome"
+            )
+            throw BluetoothOperationTimedOut(deviceIdentifier: deviceIdentifier, operation: "disconnect")
+        }
     }
 
     /// Current known connection state for `deviceIdentifier`; unknown

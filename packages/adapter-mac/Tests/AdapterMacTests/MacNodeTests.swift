@@ -36,19 +36,24 @@ private final class Fixture {
     /// `gateway` overrides the recording fake for the one test that
     /// needs a gateway which *cancels* rather than fails (#223).
     ///
-    /// `audioGate` and `connectTimeout` are for ADR 0022 / #254: the
+    /// `audioGate` and `operationTimeout` are for ADR 0022 / #254: the
     /// first records silence/restore calls, the second lets the
     /// timed-out-claim test finish in milliseconds instead of the real
     /// 8s bound.
+    /// `routeObserver` and `routeTransition` are for #303: that wedge is
+    /// about what this node reports *after* a command that never
+    /// resolved, which needs a route to report and a clock to move.
     init(
         gateway underlying: BluetoothPeripheralGateway? = nil,
         audioGate: HandoverAudioGate = NoOpHandoverAudioGate(),
-        connectTimeout: Duration = commandOutcomeTimeout,
-        pauseStore: ArbitrationPauseStore = InMemoryArbitrationPauseStore()
+        operationTimeout: Duration = commandOutcomeTimeout,
+        pauseStore: ArbitrationPauseStore = InMemoryArbitrationPauseStore(),
+        routeObserver: AudioRouteObserver? = nil,
+        routeTransition: RouteTransition = RouteTransition()
     ) {
         bluetooth = BluetoothConnectionManager(
             gateway: underlying ?? gateway,
-            connectTimeout: connectTimeout
+            operationTimeout: operationTimeout
         )
         node = MacNode(
             accountId: accountId,
@@ -56,6 +61,8 @@ private final class Fixture {
             headsetIdentifier: headsetIdentifier,
             transport: transport,
             bluetooth: bluetooth,
+            routeObserver: routeObserver,
+            routeTransition: routeTransition,
             audioGate: audioGate,
             pauseStore: pauseStore
         )
@@ -916,7 +923,7 @@ final class MacNodeTests: XCTestCase {
     /// error" - #244's bound resolves the claim without either.
     func testATimedOutClaimStillRestores() async throws {
         let audio = RecordingAudioGate()
-        let f = Fixture(audioGate: audio, connectTimeout: .milliseconds(50))
+        let f = Fixture(audioGate: audio, operationTimeout: .milliseconds(50))
         f.gateway.blockNextConnect = true
         f.transport.sendCommand(#"{"type":"claim"}"#)
         f.transport.finishCommands()
@@ -1197,6 +1204,90 @@ final class MacNodeTests: XCTestCase {
 
         XCTAssertEqual(f.gateway.connectCalls, [headsetIdentifier])
     }
+
+    // MARK: - a command that never resolves (#303)
+
+    /// #303, end to end, as the reference Mac reached it: a claim whose
+    /// gateway call neither finishes nor answers cancellation.
+    ///
+    /// Two things had to be true and were not. ADR 0019 requires every
+    /// command to resolve to an outcome within its bound - **no
+    /// `command_outcome` was published at all**, for seventeen minutes.
+    /// And the `defer`s that close the route transition belong to frames
+    /// that never unwound, so this node reported `observedRoutes: {}` -
+    /// "no information", which the relay must omit rather than act on -
+    /// on every registration until the app was quit. The relay went on
+    /// believing a node that did not hold the route was the holder.
+    ///
+    /// Driven through ``finishWithinDeadline`` so that a command loop
+    /// which cannot resolve **fails** this test rather than hanging the
+    /// suite.
+    func testAClaimThatIgnoresCancellationStillReportsAnOutcome() async throws {
+        let f = Fixture(operationTimeout: .milliseconds(50))
+        f.gateway.blockNextConnectUncancellably = true
+        f.transport.sendCommand(#"{"type":"claim"}"#)
+        f.transport.finishCommands()
+
+        let finished = await finishWithinDeadline { try await f.node.listenForCommands() }
+        XCTAssertTrue(finished, "the command loop never resolved - this is #303")
+
+        let sent = try XCTUnwrap(f.transport.published.last)
+        let decoded = try JSONDecoder().decode(CommandOutcomePayload.self, from: Data(sent.payload.utf8))
+        XCTAssertEqual(decoded.outcome, "timed_out")
+    }
+
+    /// The other half: the node goes back to reporting its route, which
+    /// is what lets the relay see the drift and act on it.
+    func testAfterAClaimThatIgnoresCancellationTheNodeReportsItsRouteAgain() async throws {
+        let clock = TestRouteClock()
+        let f = Fixture(
+            operationTimeout: .milliseconds(50),
+            routeObserver: StubRouteObserver(holds: false),
+            routeTransition: RouteTransition(settle: .seconds(6), now: { clock.now })
+        )
+        f.gateway.blockNextConnectUncancellably = true
+        f.transport.sendCommand(#"{"type":"claim"}"#)
+        f.transport.finishCommands()
+
+        let finished = await finishWithinDeadline { try await f.node.listenForCommands() }
+        XCTAssertTrue(finished, "the command loop never resolved - this is #303")
+
+        // Immediately afterwards the settle tail is legitimately running,
+        // and omitting is correct (ADR 0018 decision 2).
+        try await f.node.register(manifest: manifest)
+        XCTAssertEqual(try decodeRegistration(f).observedRoutes, [:], "still settling")
+
+        clock.advance(by: .seconds(7))
+        try await f.node.register(manifest: manifest)
+        XCTAssertEqual(
+            try decodeRegistration(f).observedRoutes,
+            ["audio": false],
+            "a node that stops reporting its route is invisible to reconciliation - #303"
+        )
+    }
+
+    /// Runs `body` on its own task, reporting whether it finished inside
+    /// `deadline`. Deliberately does not await it: the subject is work
+    /// that cannot be cancelled out of, and awaiting it would hang the
+    /// suite instead of failing a test.
+    private func finishWithinDeadline(
+        _ deadline: Duration = .seconds(3),
+        _ body: @escaping @Sendable () async throws -> Void
+    ) async -> Bool {
+        let done = DoneFlag()
+        let work = Task {
+            _ = try? await body()
+            done.set()
+        }
+        defer { work.cancel() }
+
+        let start = ContinuousClock.now
+        while ContinuousClock.now - start < deadline {
+            if done.isSet { return true }
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        return false
+    }
 }
 
 /// #210. The relay stamps every command with `seq` and `epoch`.
@@ -1249,5 +1340,48 @@ final class CommandPayloadForwardCompatibilityTests: XCTestCase {
         let wire = #"{"type":"claim","seq":1,"epoch":"e","somethingAddedLater":{"a":[1,2]}}"#
 
         XCTAssertEqual(try JSONDecoder().decode(CommandPayload.self, from: Data(wire.utf8)).type, .claim)
+    }
+
+}
+
+/// A settable clock for ``RouteTransition``, so #303's tests move the
+/// settle window instead of waiting six seconds for it.
+private final class TestRouteClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var instant = ContinuousClock.now
+
+    var now: ContinuousClock.Instant {
+        lock.lock()
+        defer { lock.unlock() }
+        return instant
+    }
+
+    func advance(by duration: Duration) {
+        lock.lock()
+        instant = instant.advanced(by: duration)
+        lock.unlock()
+    }
+}
+
+/// Reports a fixed answer for "do I hold the route".
+private struct StubRouteObserver: AudioRouteObserver {
+    let holds: Bool?
+    func holdsAudioRoute() -> Bool? { holds }
+}
+
+private final class DoneFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return done
+    }
+
+    func set() {
+        lock.lock()
+        done = true
+        lock.unlock()
     }
 }

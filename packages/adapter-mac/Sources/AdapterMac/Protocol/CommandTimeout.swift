@@ -43,29 +43,133 @@ public struct BluetoothOperationTimedOut: Error, Equatable {
 /// Runs `operation`, throwing ``BluetoothOperationTimedOut`` if it has
 /// not finished within `timeout`.
 ///
-/// A free function rather than a method on the actor: the task group's
-/// child closures are `@Sendable` and must not be actor-isolated, and
-/// keeping this outside the actor makes that structural rather than
-/// something to remember.
+/// ## Why this is unstructured, and why it has to be (#303)
 ///
-/// The losing child is always cancelled — without the `cancelAll` a
-/// completed connect would leave its sleep task alive for the rest of
-/// the window, and a timed-out connect would leave the gateway call
-/// running unattended, still able to mutate the Bluetooth stack after
-/// the manager has given up on it.
+/// This was a `withThrowingTaskGroup` racing `body()` against a sleep,
+/// which reads as obviously correct and **cannot time out at all** when
+/// the work is stuck in a suspension that does not answer cancellation.
+/// A task group is guaranteed empty when it returns, so it awaits every
+/// child before propagating anything - including the child that will
+/// never finish. The timeout error is produced on schedule and then
+/// waits forever behind the thing it was supposed to escape.
+///
+/// That is not hypothetical. ``IOBluetoothPeripheralGateway/connect``
+/// suspends on a `withCheckedThrowingContinuation` resumed only by
+/// `IOBluetooth`'s `connectionComplete` callback, and a checked
+/// continuation is not cancellation-aware: if that callback never
+/// arrives, `cancelAll()` does nothing and the group never returns. On
+/// the reference Mac that hung a claim for seventeen minutes with **no
+/// `command_outcome` published at all** (ADR 0019 requires one within
+/// 8s), and it latched ``RouteTransition``'s counter, because the
+/// `defer`s that decrement it belong to frames that never unwound.
+///
+/// #244's own test missed this for a precise reason worth keeping: its
+/// fake blocks on an `AsyncStream`, which *is* cancellation-aware, so
+/// `cancelAll()` unsticks it and the group returns. The bound looked
+/// bounded in tests and was not in production - see
+/// ``FakeBluetoothPeripheralGateway/blockNextConnectUncancellably``,
+/// which reproduces the real shape.
+///
+/// So the race is run over unstructured tasks and a one-shot
+/// continuation: whichever of the two finishes first resolves the
+/// caller, and the loser is cancelled but never awaited.
+///
+/// ## What this leaks, deliberately
+///
+/// A `body()` that neither finishes nor answers cancellation keeps
+/// running after this returns - one abandoned task per stuck command.
+/// That is not a choice this code can avoid: a continuation nobody
+/// resumes can never be reclaimed. The alternative is the current
+/// behaviour, where the whole adapter wedges instead, so the trade is
+/// not close. It is bounded in practice by how many commands a node
+/// receives, and `BluetoothConnectionManager` resolves its own state on
+/// the timeout so later claims are still attempted (#244).
 func withBluetoothTimeout(
     _ timeout: Duration,
     deviceIdentifier: UUID,
     operation: String,
     _ body: @escaping @Sendable () async throws -> Void
 ) async throws {
-    try await withThrowingTaskGroup(of: Void.self) { group in
-        group.addTask { try await body() }
-        group.addTask {
-            try await Task.sleep(for: timeout)
-            throw BluetoothOperationTimedOut(deviceIdentifier: deviceIdentifier, operation: operation)
+    let outcome = FirstOutcome()
+
+    let work = Task {
+        do {
+            try await body()
+            outcome.finish(.success(()))
+        } catch {
+            outcome.finish(.failure(error))
         }
-        defer { group.cancelAll() }
-        try await group.next()
+    }
+    let timer = Task {
+        // A cancelled sleep is the ordinary "the work won already" path,
+        // not a timeout - so it must not report one.
+        guard (try? await Task.sleep(for: timeout)) != nil else { return }
+        outcome.finish(
+            .failure(BluetoothOperationTimedOut(deviceIdentifier: deviceIdentifier, operation: operation))
+        )
+    }
+    // Cancelling the loser matters even though it is never awaited: a
+    // cancellable body (every test fake, and any future gateway that
+    // handles cancellation) really does stop here, and the timer task
+    // would otherwise sleep out its full window after a fast success.
+    defer {
+        work.cancel()
+        timer.cancel()
+    }
+
+    // Unstructured tasks do not inherit cancellation, which is what
+    // makes abandoning one possible - and also means this has to
+    // propagate cancellation by hand.
+    try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { continuation in
+            outcome.attach(continuation)
+        }
+    } onCancel: {
+        outcome.finish(.failure(CancellationError()))
+    }
+}
+
+/// A one-shot rendezvous: the first of several racers to report wins,
+/// and the caller is resumed exactly once however the ordering falls.
+///
+/// An `NSLock` rather than an actor because ``withBluetoothTimeout``'s
+/// `onCancel` handler is synchronous and cannot await one. The stored
+/// `pending` result covers the case that made the first version of this
+/// flaky by construction: a racer can finish before the caller has
+/// attached its continuation, and a signal-only rendezvous would resume
+/// nobody.
+private final class FirstOutcome: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var pending: Result<Void, Error>?
+    private var resolved = false
+
+    func attach(_ continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        if let pending, !resolved {
+            resolved = true
+            lock.unlock()
+            continuation.resume(with: pending)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func finish(_ result: Result<Void, Error>) {
+        lock.lock()
+        guard !resolved else {
+            lock.unlock()
+            return
+        }
+        if let continuation {
+            resolved = true
+            self.continuation = nil
+            lock.unlock()
+            continuation.resume(with: result)
+            return
+        }
+        if pending == nil { pending = result }
+        lock.unlock()
     }
 }

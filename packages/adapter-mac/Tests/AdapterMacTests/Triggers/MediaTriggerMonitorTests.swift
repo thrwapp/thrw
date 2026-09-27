@@ -19,6 +19,62 @@ private final class FakeAudioPlaybackSource: AudioPlaybackSource, @unchecked Sen
     func finish() { continuation.finish() }
 }
 
+/// #303. Swallows the first `endsToSwallow` calls to `endEvent` exactly
+/// the way ``MacNode`` does while a route transition is executing: it
+/// returns without publishing **and without clearing the trigger**, so
+/// the node goes on reporting it.
+///
+/// That is the state the reference Mac was stuck in for seventeen
+/// minutes - `activeEvents: ["media"]` on every registration with
+/// CoreAudio reporting nothing playing - because the monitor had already
+/// forgotten the trigger and nothing retried.
+private final class SwallowingEventLifecycle: EventLifecycle, @unchecked Sendable {
+    private let lock = NSLock()
+    private var active: [EventKind] = []
+    private var swallowsLeft: Int
+    private var endAttempts = 0
+
+    init(endsToSwallow: Int) {
+        swallowsLeft = endsToSwallow
+    }
+
+    var attemptedEnds: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return endAttempts
+    }
+
+    func emitEvent(type: EventKind, priority: Priority) async throws {
+        lock.lock()
+        if !active.contains(type) { active.append(type) }
+        lock.unlock()
+    }
+
+    func endEvent(type: EventKind) async throws {
+        lock.lock()
+        endAttempts += 1
+        if swallowsLeft > 0 {
+            swallowsLeft -= 1
+            lock.unlock()
+            return
+        }
+        active.removeAll { $0 == type }
+        lock.unlock()
+    }
+
+    func isEventActive(_ type: EventKind) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return active.contains(type)
+    }
+
+    func activeEventKinds() -> [EventKind] {
+        lock.lock()
+        defer { lock.unlock() }
+        return active
+    }
+}
+
 @MainActor
 final class MediaTriggerMonitorTests: XCTestCase {
     /// Debounce that completes immediately, so tests never wait on wall
@@ -159,4 +215,50 @@ final class MediaTriggerMonitorTests: XCTestCase {
     func testTheDefaultDebounceIsTheTwoSecondsDocumented() {
         XCTAssertEqual(defaultMediaDebounce, .seconds(2))
     }
+
+    // MARK: - an end the node swallows mid-transition (#303)
+
+    /// The phantom `media` event, and the retry that ends it.
+    ///
+    /// `MacNode.endEvent` returns without touching anything while a route
+    /// transition is executing (#295, so the audio gate's own pause
+    /// leaves no trace on this node's triggers). This monitor had already
+    /// cleared `reportedMedia` by then, so the end was lost with nothing
+    /// to retry it: the node kept reporting `media` as active, the relay
+    /// kept a node that could not hold the route as its holder, and only
+    /// quitting the app cleared it.
+    func testAnEndSwallowedMidTransitionIsRetriedUntilItLands() async throws {
+        let node = SwallowingEventLifecycle(endsToSwallow: 1)
+        let source = FakeAudioPlaybackSource()
+        let monitor = MediaTriggerMonitor(source: source, node: node, sleep: instant())
+        let task = Task { try await monitor.run() }
+        defer { task.cancel() }
+
+        source.send(.started)
+        await waitFor("the media event") { node.isEventActive(.media) }
+
+        source.send(.stopped)
+        await waitFor("the retried end to land") { !node.isEventActive(.media) }
+
+        XCTAssertEqual(node.attemptedEnds, 2, "the first end was swallowed, so exactly one retry was needed")
+    }
+
+    /// The property that matters, stated on its own: the trigger does not
+    /// survive the transition that swallowed its end. Without the retry
+    /// this stays active forever.
+    func testMediaDoesNotStayActiveAfterASwallowedEnd() async throws {
+        let node = SwallowingEventLifecycle(endsToSwallow: 3)
+        let source = FakeAudioPlaybackSource()
+        let monitor = MediaTriggerMonitor(source: source, node: node, sleep: instant())
+        let task = Task { try await monitor.run() }
+        defer { task.cancel() }
+
+        source.send(.started)
+        await waitFor("the media event") { node.isEventActive(.media) }
+        source.send(.stopped)
+
+        await waitFor("media to stop being active") { !node.isEventActive(.media) }
+        XCTAssertEqual(node.attemptedEnds, 4)
+    }
+
 }
