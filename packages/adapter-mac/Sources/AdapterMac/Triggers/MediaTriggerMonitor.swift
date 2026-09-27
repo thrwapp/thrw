@@ -151,6 +151,10 @@ public final class MediaTriggerMonitor {
         // reason: silence must persist before it counts as a stop,
         // because changing the output device produces silence that is
         // not one.
+        armStopDebounce()
+    }
+
+    private func armStopDebounce() {
         pendingStop = Task { [weak self] in
             guard let self else { return }
             try? await self.sleep(self.stopDebounce)
@@ -164,6 +168,45 @@ public final class MediaTriggerMonitor {
         guard reportedMedia else { return }
         reportedMedia = false
         try? await node.endEvent(type: .media)
+
+        // #303. The end can be **swallowed**: `MacNode.endEvent` returns
+        // without touching anything while a route transition is
+        // executing (#295, so the audio gate's own pause leaves no
+        // trace). This monitor has already forgotten the trigger by
+        // then, and nothing else ever retries - so the node goes on
+        // reporting `media` as active on every registration while
+        // CoreAudio says nothing is playing, and the relay keeps a node
+        // that cannot hold the route as its holder.
+        //
+        // Observed on the reference Mac for seventeen minutes, cleared
+        // only by quitting the app: `activeEvents: ["media"]` every two
+        // minutes with `kAudioDevicePropertyDeviceIsRunningSomewhere`
+        // reading 0 throughout.
+        //
+        // `isEventActive` immediately after `endEvent` is an exact
+        // signal, not a guess: the route-transition check is the only
+        // early return that skips the local removal, so the trigger
+        // still being active here means precisely "that end was
+        // swallowed". The self-cooldown skips only the *publish*, after
+        // removing it locally, which the next registration reconciles on
+        // its own.
+        //
+        // So put the monitor back in step with the node and try again a
+        // stop-debounce later. The retry is what makes this recover
+        // without a restart; it terminates because the transition itself
+        // is now bounded (``defaultRouteTransitionCeiling``), and if
+        // playback resumes meanwhile ``audioStarted()`` cancels it and
+        // treats the silence as the blip it was.
+        if node.isEventActive(.media) {
+            reportedMedia = true
+            logAdapterInfo(
+                category: "MediaTriggerMonitor",
+                "media end swallowed mid-transition - retrying in \(stopDebounce) (#303)"
+            )
+            armStopDebounce()
+            return
+        }
+        logAdapterInfo(category: "MediaTriggerMonitor", "media ended")
     }
 
     private func debounceElapsed() async {
@@ -171,5 +214,6 @@ public final class MediaTriggerMonitor {
         guard !reportedMedia else { return }
         reportedMedia = true
         try? await node.emitEvent(type: .media, priority: unrankedPriority)
+        logAdapterInfo(category: "MediaTriggerMonitor", "media reported after \(debounce) of continuous audio")
     }
 }

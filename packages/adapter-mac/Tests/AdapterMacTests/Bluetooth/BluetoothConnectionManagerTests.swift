@@ -177,6 +177,181 @@ final class BluetoothConnectionManagerRouteTests: XCTestCase {
         XCTAssertEqual(state, .connected)
     }
 
+    // MARK: - a gateway call that never resolves *and* ignores cancellation (#303)
+
+    /// #303's mechanism, in a unit test.
+    ///
+    /// The bound above is enforced by ``withBluetoothTimeout``, which was
+    /// a `withThrowingTaskGroup` racing the work against a sleep. A task
+    /// group is guaranteed empty when it returns, so it awaits every
+    /// child - including one stuck in a suspension that ignores
+    /// cancellation. The timeout error was produced on schedule and then
+    /// queued behind the very thing it existed to escape.
+    ///
+    /// #244's own test could not see that, because its fake blocks on an
+    /// `AsyncStream` and `cancelAll()` unsticks it. This one blocks the
+    /// way `IOBluetooth` does.
+    ///
+    /// Run through ``callWithDeadline`` so that a bound which cannot fire
+    /// **fails** this test rather than hanging the whole suite.
+    func testAConnectThatIgnoresCancellationStillTimesOut() async {
+        let gateway = FakeBluetoothPeripheralGateway()
+        gateway.blockNextConnectUncancellably = true
+        let manager = BluetoothConnectionManager(
+            gateway: gateway,
+            operationTimeout: .milliseconds(50)
+        )
+
+        let result = await callWithDeadline {
+            try await manager.connect(deviceIdentifier: deviceIdentifier)
+        }
+
+        switch result {
+        case .didNotFinish:
+            XCTFail("the bound never fired - this is #303: the claim hangs with no outcome at all")
+        case .finished(let error as BluetoothOperationTimedOut):
+            XCTAssertEqual(error.operation, "connect")
+        case .finished(let other):
+            XCTFail("expected a timeout, got \(String(describing: other))")
+        }
+
+        let state = await manager.connectionState(deviceIdentifier: deviceIdentifier)
+        XCTAssertEqual(state, .disconnected, "the state must resolve even though the work never will")
+    }
+
+    /// The consequence that made #303 a wedge rather than a slow switch:
+    /// with the state resolved, a later claim is attempted. The abandoned
+    /// task is still hung in the gateway, and that is fine - it holds
+    /// nothing this manager needs.
+    func testAClaimAfterAConnectThatIgnoresCancellationIsStillAttempted() async {
+        let gateway = FakeBluetoothPeripheralGateway()
+        gateway.blockNextConnectUncancellably = true
+        let manager = BluetoothConnectionManager(
+            gateway: gateway,
+            operationTimeout: .milliseconds(50)
+        )
+
+        _ = await callWithDeadline { try await manager.connect(deviceIdentifier: deviceIdentifier) }
+        let second = await callWithDeadline { try await manager.connect(deviceIdentifier: deviceIdentifier) }
+
+        if case .didNotFinish = second {
+            XCTFail("the second claim did not finish")
+        }
+        XCTAssertEqual(
+            gateway.connectCalls,
+            [deviceIdentifier, deviceIdentifier],
+            "a claim after an unkillable one must not be skipped"
+        )
+    }
+
+    /// The release side, which was not bounded at all before #303.
+    ///
+    /// `disconnect` promised "state always ends at `.disconnected`" via a
+    /// `defer` - true only if the frame unwinds, which an unbounded
+    /// `await` on a stuck gateway prevents. Left at `.disconnecting`,
+    /// every later release for that device is a silent no-op, and ADR
+    /// 0002's sequential handoff means the claim queued behind it never
+    /// happens either.
+    func testADisconnectThatIgnoresCancellationTimesOutAndResolvesTheState() async throws {
+        let gateway = FakeBluetoothPeripheralGateway()
+        let manager = BluetoothConnectionManager(
+            gateway: gateway,
+            operationTimeout: .milliseconds(50)
+        )
+        try await manager.connect(deviceIdentifier: deviceIdentifier)
+        gateway.blockNextDisconnectUncancellably = true
+
+        let result = await callWithDeadline {
+            try await manager.disconnect(deviceIdentifier: deviceIdentifier)
+        }
+
+        switch result {
+        case .didNotFinish:
+            XCTFail("the release hung with no bound - this is #303 on the release path")
+        case .finished(let error as BluetoothOperationTimedOut):
+            XCTAssertEqual(error.operation, "disconnect")
+        case .finished(let other):
+            XCTFail("expected a timeout, got \(String(describing: other))")
+        }
+
+        let state = await manager.connectionState(deviceIdentifier: deviceIdentifier)
+        XCTAssertEqual(state, .disconnected)
+    }
+
+    /// And the release after it is attempted rather than skipped.
+    func testAReleaseAfterOneThatIgnoredCancellationIsStillAttempted() async throws {
+        let gateway = FakeBluetoothPeripheralGateway()
+        let manager = BluetoothConnectionManager(
+            gateway: gateway,
+            operationTimeout: .milliseconds(50)
+        )
+        try await manager.connect(deviceIdentifier: deviceIdentifier)
+        gateway.blockNextDisconnectUncancellably = true
+        _ = await callWithDeadline { try await manager.disconnect(deviceIdentifier: deviceIdentifier) }
+
+        try await manager.connect(deviceIdentifier: deviceIdentifier)
+        _ = await callWithDeadline { try await manager.disconnect(deviceIdentifier: deviceIdentifier) }
+
+        XCTAssertEqual(gateway.disconnectCalls, [deviceIdentifier, deviceIdentifier])
+    }
+
+    // MARK: - the deadline harness for the tests above
+
+    private enum BoundedCall {
+        case finished(Error?)
+        case didNotFinish
+    }
+
+    /// Runs `operation` on its own task and reports how it ended, giving
+    /// up after `deadline`.
+    ///
+    /// Deliberately does **not** await the task: the whole subject of
+    /// these tests is work that cannot be cancelled or awaited out of, so
+    /// awaiting it would hang the suite instead of failing a test. The
+    /// abandoned task is left running; the test process outlives it by
+    /// seconds.
+    private func callWithDeadline(
+        _ deadline: Duration = .seconds(3),
+        _ operation: @escaping @Sendable () async throws -> Void
+    ) async -> BoundedCall {
+        let box = OutcomeBox()
+        let work = Task {
+            do {
+                try await operation()
+                box.finish(nil)
+            } catch {
+                box.finish(error)
+            }
+        }
+        defer { work.cancel() }
+
+        let start = ContinuousClock.now
+        while ContinuousClock.now - start < deadline {
+            if let outcome = box.outcome { return .finished(outcome.error) }
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        return .didNotFinish
+    }
+
+    private final class OutcomeBox: @unchecked Sendable {
+        struct Outcome { let error: Error? }
+
+        private let lock = NSLock()
+        private var stored: Outcome?
+
+        var outcome: Outcome? {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+
+        func finish(_ error: Error?) {
+            lock.lock()
+            if stored == nil { stored = Outcome(error: error) }
+            lock.unlock()
+        }
+    }
+
     // MARK: - a connect that never resolves (#244)
 
     /// #244, reproduced. A `gateway.connect` that never returns used to
@@ -195,7 +370,7 @@ final class BluetoothConnectionManagerRouteTests: XCTestCase {
         gateway.blockNextConnect = true
         let manager = BluetoothConnectionManager(
             gateway: gateway,
-            connectTimeout: .milliseconds(50)
+            operationTimeout: .milliseconds(50)
         )
 
         do {
@@ -221,7 +396,7 @@ final class BluetoothConnectionManagerRouteTests: XCTestCase {
         gateway.blockNextConnect = true
         let manager = BluetoothConnectionManager(
             gateway: gateway,
-            connectTimeout: .milliseconds(50)
+            operationTimeout: .milliseconds(50)
         )
 
         _ = try? await manager.connect(deviceIdentifier: deviceIdentifier)
