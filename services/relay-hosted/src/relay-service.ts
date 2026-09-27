@@ -758,6 +758,33 @@ export class RelayService {
         }
       }
 
+      // #307. The believed holder denying the route is the one drift the
+      // relay can act on without guessing, and until now it acted on none
+      // of them: `reassertHolderClaim` below tries to *make* the belief
+      // true, and once its bound is spent (#289) nothing ever changes the
+      // belief itself. A node that is holder only by rule 5's sticky
+      // fallback then stays holder forever - and because arbitration acts
+      // on holder *changes*, no trigger the user can produce will move it.
+      //
+      // Deliberately before the re-assert: having stopped believing there
+      // is nothing left to re-assert, and `syncHolder` is what turns the
+      // cleared fallback into a real transition.
+      //
+      // `=== false` rather than `!holdsRoute`: `undefined` means the node
+      // could not answer, which is #303's permanent state, and reading
+      // that as a denial would let one stuck node continuously reassign
+      // the headset.
+      if (holdsRoute === false && resourceState.lastHolder === node) {
+        if (resourceState.engine.releaseStaleFallback(node)) {
+          logEvent("fallback_released", {
+            account: state.account,
+            node,
+            resource: resourceState.resource,
+          });
+          this.syncHolder(state.account, resourceState.resource);
+        }
+      }
+
       if (resourceState.lastHolder === node && holderBefore === node) {
         this.reassertHolderClaim(state.account, resourceState, node, holdsRoute);
       }
