@@ -891,6 +891,128 @@ describe("RelayService (real broker)", () => {
     });
   });
 
+  // #307, observed on the reference pair from the most ordinary action
+  // there is: taking the AirPods out of their case, which connects them
+  // to whichever device they favour with no involvement from thrw. The
+  // relay's retained belief still points at the other device, and from
+  // there nothing the user does moves the headset.
+  describe("stale holder belief (#307)", () => {
+    it("stops believing a holder that says it does not have the route", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      await startService([account], scheduler, () => now);
+      const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+      // A holds the route via media, then stops playing. Rule 5 keeps it
+      // as holder, which is correct and is the behaviour being preserved.
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      await expect.poll(() => commandsA.length, { timeout: 2000 }).toBe(1);
+      await publishEventEnd(rawClient, account, nodeA.nodeId, "media");
+
+      // Now the headset physically leaves - the user took the AirPods out
+      // of the case and they went to the phone. A reports honestly that
+      // it no longer has the route, with no active triggers.
+      now += 120_000;
+      await publishRegistration(rawClient, account, nodeA, [], { audio: false });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // The user plays something on A. Before #307 this produced
+      // holderBefore === holderAfter === A and therefore no command at
+      // all, and the audio came out of the laptop speakers.
+      await publishEvent(rawClient, account, nodeA.nodeId, "media");
+
+      // The reclaim lands one release-window later, not immediately:
+      // clearing the belief publishes a RELEASE, and the coalescer holds
+      // any claim arriving inside `DEFAULT_RELEASE_WINDOW_MS` of it (ADR
+      // 0020 decision 1). That is correct - the route is still settling -
+      // so the held timer has to be fired rather than waited on.
+      //
+      // Fired *inside* the poll, not once before it. `publishEvent`
+      // returns when the message is on the wire, not when the relay has
+      // handled it, so a single `fire()` can land before the claim has
+      // been queued - and then nothing ever fires it. That is exactly how
+      // this test passed locally and failed in CI. Firing on every poll
+      // tick makes the ordering irrelevant; `fire` only ever runs timers
+      // already pending, so extra calls are harmless.
+      await expect
+        .poll(
+          () => {
+            scheduler.fire(5_000);
+            return commandsA.length;
+          },
+          { timeout: 5000 },
+        )
+        .toBe(3);
+
+      // claim (initial), release (belief cleared: holder -> null), claim.
+      //
+      // The release is not incidental. Having accepted that this node does
+      // not hold the route, the relay says so, which is what reconciles a
+      // node whose own connection state still believes otherwise. It is
+      // idempotent and cheap - see CommandCoalescer on why a release is
+      // never the expensive direction.
+      expect(commandsA).toEqual([{ type: "claim" }, { type: "release" }, { type: "claim" }]);
+    });
+
+    // #303 is a node whose route reading is stuck at "no information"
+    // indefinitely. Reading that as a denial would let it reassign the
+    // headset on every registration, forever.
+    it("does not treat an absent route reading as a denial", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      await startService([account], scheduler, () => now);
+      const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      await expect.poll(() => commandsA.length, { timeout: 2000 }).toBe(1);
+      await publishEventEnd(rawClient, account, nodeA.nodeId, "media");
+
+      // No observedRoutes at all - the #303 shape.
+      now += 120_000;
+      await publishRegistration(rawClient, account, nodeA, []);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      await publishEvent(rawClient, account, nodeA.nodeId, "media");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      // The discriminating signal is the **absence of a release**: the
+      // belief is only ever cleared by taking the holder to null, and
+      // that is the one thing that publishes one here.
+      //
+      // The second claim is the pre-existing bounded re-assert, which
+      // treats `undefined` as "cannot tell" on purpose (rule 1) so that a
+      // node with no route observer still gets the restart repair. Not
+      // this change, and asserted so a regression in either is visible.
+      expect(commandsA).toEqual([{ type: "claim" }, { type: "claim" }]);
+    });
+
+    // The fallback is only cleared when it is what makes this node the
+    // holder. A node with a live trigger denying the route is the
+    // bounded re-assert's job, and rule 5 must not change meaning there.
+    it("leaves the holder alone when it still has an active trigger", async () => {
+      const account = randomUUID();
+      const nodeA = manifest();
+      const scheduler = new FakeScheduler();
+      let now = 0;
+      await startService([account], scheduler, () => now);
+      const commandsA = collectCommands(rawClient, account, nodeA.nodeId);
+
+      await publishRegistration(rawClient, account, nodeA, ["media"]);
+      await expect.poll(() => commandsA.length, { timeout: 2000 }).toBe(1);
+
+      // Media still active, route denied: the re-assert path, bounded at
+      // MAX_HOLDER_REASSERTS. Not a fallback release.
+      now += 120_000;
+      await publishRegistration(rawClient, account, nodeA, ["media"], { audio: false });
+      await expect.poll(() => commandsA.length, { timeout: 2000 }).toBe(2);
+      expect(commandsA[1]).toEqual({ type: "claim" });
+    });
+  });
+
   // ADR 0019 / #206. Before this a command was fire-and-forget: the relay
   // published it and never learned whether the switch happened.
   describe("command outcomes (#206)", () => {

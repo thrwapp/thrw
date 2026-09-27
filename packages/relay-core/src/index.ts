@@ -171,6 +171,75 @@ export class PriorityEngine {
   }
 
   /**
+   * `nodeId` has told us, first hand, that it does not hold the route -
+   * so stop using it as the rule-5 fallback (#307).
+   *
+   * ## The state this exists to escape
+   *
+   * `lastClaimed` is deliberately sticky: it is what keeps the headset
+   * on the device you were last using once every trigger has ended, and
+   * `restartNode` goes out of its way to preserve it. That is right
+   * while the relay's belief is true. When it is false, nothing here
+   * ever corrected it.
+   *
+   * Observed on the reference pair, 2026-09-26, from the most ordinary
+   * action there is - taking the AirPods out of their case, which
+   * connects them to whichever device they favour with no involvement
+   * from thrw at all:
+   *
+   * ```
+   * route_drift  node=mac     nodeHoldsRoute=false  believedHolder=mac
+   * registration node=mac     activeEvents=[]  observedRoutes={audio:false}
+   * route_drift  node=android nodeHoldsRoute=true   believedHolder=mac
+   * node_event   node=mac     type=media  holderBefore=mac  holderAfter=mac
+   * ```
+   *
+   * The Mac says it does not hold the route. The Pixel says it does.
+   * Neither has an active trigger, so `computeActiveHolder` is null and
+   * `currentHolder` falls through to `lastClaimed`, which still says
+   * "mac". When the user then plays something on the Mac, arbitration
+   * recomputes, finds the Mac *already* the holder, and issues no
+   * command - so the music comes out of the laptop speakers and no
+   * trigger the user can produce will move it.
+   *
+   * Clearing the fallback here means that same `media` event produces a
+   * real transition (null -> mac) and therefore a real CLAIM.
+   *
+   * ## Why only the fallback, and only on a first-hand denial
+   *
+   * **Signals are untouched.** The node is present and registering; this
+   * says nothing about what it is playing.
+   *
+   * **Only the believed holder's own report counts.** A *different* node
+   * claiming to hold the route is explicitly not acted on in
+   * `RelayService` - under multipoint two hosts can hold a Bluetooth
+   * link at once (`docs/testing/compatibility-matrix.md`), so that
+   * signal is not trustworthy on its own. A node reporting that it does
+   * **not** have the route is the one report only that node can make,
+   * and ADR 0018 already requires it to be omitted entirely rather than
+   * reported as `false` while a transition is settling.
+   *
+   * **Nothing is cleared while some node has an active trigger.** Then
+   * `computeActiveHolder` already decides the holder and the fallback is
+   * not in play; clearing it would change rule 5's meaning for a case
+   * that is not broken. That case - a holder with live triggers denying
+   * the route - is what the bounded re-assertion in
+   * `RelayService.reassertHolderClaim` is for.
+   *
+   * Returns whether anything changed, so the caller can re-run
+   * arbitration only when it did.
+   */
+  releaseStaleFallback(nodeId: string): boolean {
+    if (this.lastClaimed !== nodeId) return false;
+    if (this.computeActiveHolder() !== null) return false;
+    this.lastClaimed = null;
+    // A pending auto-return would put this exact belief back seconds
+    // later, which is the wedge again on a timer.
+    this.clearPendingReturn();
+    return true;
+  }
+
+  /**
    * Sets `nodeId`'s active signals to exactly `active`, preserving the
    * rule-5 fallback (#178).
    *
