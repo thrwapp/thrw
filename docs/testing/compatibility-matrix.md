@@ -90,8 +90,8 @@ rule-5 timer.
 
 **Not yet verified** — do not infer these from the above
 
-- Manual claim from either device (#212/#213 built; the tap-to-wire path
-  is unconfirmed on both platforms).
+- ~~Manual claim from either device~~ — **done 2026-09-26/27**, see item 2
+  below.
 - Walking out of Bluetooth range.
 - Provisioning from scratch on a clean install.
 - Any headset other than this one, and any Android OEM other than Pixel.
@@ -192,6 +192,47 @@ the Mac. From there: the Mac reported `{"audio": false}`, the Pixel
 reported `{"audio": true}`, the relay logged `route_drift` for both and
 `reassert_exhausted`, and issued nothing. YouTube played out of the
 MacBook speakers until an incoming call happened to reset the tenure.
+
+**Item 2 (manual claim) — the online half PASSES, the offline half fails as ADR 0020 predicted**
+
+Run 2026-09-26/27. The tap-to-wire path had never been exercised on
+either platform before this.
+
+| | result |
+|---|---|
+| Claim from the Pixel, over **live media on the Mac** | pass — `manual_claim` outranked `media`; release 700ms, claim 1167ms |
+| Persistence: Mac starts media while the Pixel holds a manual claim | pass — `holderBefore=pixel holderAfter=pixel`, no command issued. Media elsewhere cannot take a manual claim back, which is the whole point of the control |
+| Claim from the Mac, contesting the Pixel's claim | pass — most-recently-started won; release 341ms, claim 949ms |
+| The losing node **ends its own claim** rather than suspending it | pass — `event_end manual_claim` from the Pixel at 08:23:24.220. First hardware verification of #234 criterion 5 |
+| Toggle off, then on | pass |
+| **Claim with the relay unreachable** (airplane mode) | **fail** — see below |
+| **Feedback when a claim fails** | **fail** — #309 |
+
+The offline failure is ADR 0020 decision 2, until now only a code reading:
+
+```
+20:52:37.939  E AdapterForegroundService: Manual claim failed
+20:52:43.588  E AdapterForegroundService: Manual claim failed
+20:52:44.726  E AdapterForegroundService: Manual claim failed
+20:53:51.354  E AdapterForegroundService: Manual claim failed
+```
+
+`mActiveDevice` stayed `null` throughout and the Mac kept the route.
+`ManualClaim.toggle()` awaits an MQTT publish before changing local state,
+so with no relay it fails shut — the ADR's own consequences rule that out
+("a path that blocks on an MQTT publish is not offline-capable, however
+short its timeout"). Still blocked on ADR 0014.
+
+**Four taps is the finding, not the four failures.** The user was told
+nothing, so they tried again three more times. The failure reaches an `E`
+log line and the notification re-renders identical state, so a failed
+claim looks exactly like never having tapped. Filed separately as #309
+because it applies to *every* failure path — Bluetooth timeout, headset in
+its case, relay rejection, cooldown — and unlike decision 2 it is not
+blocked on anything.
+
+**Also re-verified on 0.2.4:** the media-driven switch (Pixel→Mac at
+19:51:02, release 25ms / claim 1089ms), last confirmed 2026-09-20.
 
 **Tooling**
 
