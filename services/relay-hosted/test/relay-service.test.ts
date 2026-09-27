@@ -927,9 +927,24 @@ describe("RelayService (real broker)", () => {
       // clearing the belief publishes a RELEASE, and the coalescer holds
       // any claim arriving inside `DEFAULT_RELEASE_WINDOW_MS` of it (ADR
       // 0020 decision 1). That is correct - the route is still settling -
-      // and it is why the timer has to be fired rather than waited on.
-      await expect.poll(() => commandsA.length, { timeout: 2000 }).toBe(2);
-      scheduler.fire(5_000);
+      // so the held timer has to be fired rather than waited on.
+      //
+      // Fired *inside* the poll, not once before it. `publishEvent`
+      // returns when the message is on the wire, not when the relay has
+      // handled it, so a single `fire()` can land before the claim has
+      // been queued - and then nothing ever fires it. That is exactly how
+      // this test passed locally and failed in CI. Firing on every poll
+      // tick makes the ordering irrelevant; `fire` only ever runs timers
+      // already pending, so extra calls are harmless.
+      await expect
+        .poll(
+          () => {
+            scheduler.fire(5_000);
+            return commandsA.length;
+          },
+          { timeout: 5000 },
+        )
+        .toBe(3);
 
       // claim (initial), release (belief cleared: holder -> null), claim.
       //
@@ -938,7 +953,6 @@ describe("RelayService (real broker)", () => {
       // node whose own connection state still believes otherwise. It is
       // idempotent and cheap - see CommandCoalescer on why a release is
       // never the expensive direction.
-      await expect.poll(() => commandsA.length, { timeout: 2000 }).toBe(3);
       expect(commandsA).toEqual([{ type: "claim" }, { type: "release" }, { type: "claim" }]);
     });
 
