@@ -119,6 +119,30 @@ cmd_start() {
 
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
+# Seconds since the capture file was last written, or empty if it has
+# never been written.
+data_age() {
+  local f="$1"
+  [ -f "$f" ] || return 1
+  local mtime; mtime="$(stat -f %m "$f" 2>/dev/null)" || return 1
+  echo $(( $(date +%s) - mtime ))
+}
+
+# How long a source may go quiet before silence is suspicious.
+#
+# relay: every node re-registers on a ~120s cadence, so a healthy relay
+# is never quiet for long. android: logcat -b all on a real phone is
+# never quiet at all. mac: os.Logger here only carries errors and
+# recoveries, so hours of silence is the *normal* case and there is no
+# useful threshold - hence 0, meaning "never flag".
+stall_threshold() {
+  case "$1" in
+    relay) echo 600 ;;
+    android) echo 300 ;;
+    *) echo 0 ;;
+  esac
+}
+
 cmd_status() {
   local dir; dir="$(run_dir)"
   local bad=0
@@ -128,8 +152,23 @@ cmd_status() {
       # cat-into-wc rather than `wc -l < glob`: the capture file is
       # .log for one source and .ndjson for the others, and a glob on
       # the left of `<` is an ambiguous redirect, not a file list.
-      printf "  %-8s capturing (pid %s, %s lines)\n" "$s" "$(cat "$pidfile")" \
-        "$(cat "$dir/$s".* 2>/dev/null | wc -l | tr -d ' ')"
+      local lines age limit
+      lines="$(cat "$dir/$s".* 2>/dev/null | wc -l | tr -d ' ')"
+      age="$(data_age "$dir/$s.ndjson" || data_age "$dir/$s.log" || echo "")"
+      limit="$(stall_threshold "$s")"
+      # A live process is not a live capture. `relay-logs.sh --follow`
+      # runs `docker logs -f` over an SSH tunnel; when that tunnel dies
+      # the wrapper survives and this reported "capturing" for 35 hours
+      # while nothing arrived (#193 pass, 2026-09-27). Liveness has to be
+      # measured by data, not by the pid.
+      if [ -n "$age" ] && [ "$limit" -gt 0 ] && [ "$age" -gt "$limit" ]; then
+        printf "  %-8s STALLED - pid %s alive but no data for %ss (%s lines)\n" \
+          "$s" "$(cat "$pidfile")" "$age" "$lines"
+        bad=1
+      else
+        printf "  %-8s capturing (pid %s, %s lines, last data %ss ago)\n" \
+          "$s" "$(cat "$pidfile")" "$lines" "${age:-never}"
+      fi
     elif [ -f "$pidfile" ]; then
       printf "  %-8s DEAD - see %s\n" "$s" "$dir/$s.err"
       bad=1
