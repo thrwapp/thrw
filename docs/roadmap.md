@@ -515,10 +515,11 @@ decision 2, and #183 if it recurs.
 
 ### Phase 3 — speed
 
-- **Claim on ring, not on answer** (ADR 0021's executing pre-claim) —
-  a call rings for several seconds, so M1's switch time can largely
-  disappear. This is the biggest available win and it is for the
-  highest-priority trigger.
+- **Claim on ring, not on answer** — ADR 0021 decision 5 already
+  accepts `RINGING` as a speculative `call` event, and nothing
+  implements it yet. ADR 0021 puts a ringing call's lead at 1-3s, which
+  hides most of a ~3.3s claim before the user answers. The biggest
+  available win, and it is for the highest-priority trigger.
 - **Profile ordering**, using Phase 0's timings: connect the call
   profile first for calls and the media profile first for media, and
   measure rather than assume.
