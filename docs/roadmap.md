@@ -19,103 +19,84 @@ opening line conceding the last snapshot went stale within days). So:
   section is what the document is actually used for; when it points at
   closed work, the rest is decoration.
 
-Status snapshot as of **2026-09-20**: **both adapters are
-code-complete, can now reach the production relay, and the blocker is
-no longer credentials — it is that neither app can be installed, and
-that a node never recovers from a dropped connection.**
+Status snapshot as of **2026-09-28** (adapters v0.2.5): **the product
+works on the reference pair and is not yet reliable. The work has moved
+from "make it run" to "make it bulletproof across a defined set of
+scenarios", and that set now exists: `docs/spec/scenarios.md`.**
 
-M1 (protocol + relay-core) is fully built and tested.
-`packages/adapter-android` is a substantially complete node — Bluetooth
-Classic connect/disconnect, the node interface over real MQTT,
-call/VoIP/media trigger detection (#165/#168 added media, hardened for
-real devices by #174/#175/#176), a foreground `Service` composition
-root, a provisioning UI with a bonded-device picker, and heartbeats
-(#142). Several on-device-only failures have been found and fixed since
-the last snapshot: an MQTT connect that hung forever on the phone while
-working from the JVM (#158), an uncaught Bluetooth error taking down the
-whole adapter (#161), and an RFCOMM socket that could not move the audio
-route (#162, the Android mirror of the Mac's own #95→#101 correction).
-`packages/adapter-mac` has now caught up: real classic-Bluetooth
-connect/disconnect via `IOBluetooth` (#95, corrected by #101), the node
-interface over real MQTT (#112), VoIP trigger detection (#127), a
-menu-bar composition root (#128), a provisioning UI with a paired-device
-picker (#143), media-playback detection via CoreAudio (#166/#169), and
-heartbeats (#142). Both adapters also suppress their own side effects for
-~3s after acting, so thrw stops misreading its own claim/release as a
-fresh trigger (#167/#170, ADR 0010). `packages/adapter-linux` has a
-bootstrapped BlueZ connection seam (#108), one stage behind where
-adapter-mac was before #112. `packages/adapter-ipad` is still a bare
-skeleton and, per #115's research, faces a real platform ceiling (below).
+The milestone sections below (M1-M10) were last refreshed on 2026-09-20
+and are kept for their history and lane assignments. Where they and this
+snapshot disagree, this snapshot is the newer summary, and the repo beats
+both.
 
-`services/relay-hosted` is done for this stage: a live EMQX broker on GCP
-(#80/#81), TLS termination (#119), and #118's real
-`PriorityEngine`/`DeviceRegistry` process actually deployed alongside it
-and verified end-to-end against `relay.thrw.app` (#129). Every other
-service (`licensing`, `billing`, `accounts`, `ai-engine`, `telemetry`)
-remains a one-line placeholder, genuinely not started.
+**What works.** A Mac and a Pixel hand AirPods Pro 2 back and forth
+through the production relay. #193's pass (recorded in #310,
+`docs/testing/compatibility-matrix.md`) verified the call trigger in
+both directions (four calls, four clean handovers, a 3.3s claim),
+auto-return in both of its modes, and manual claim online, with the
+offline half failing shut exactly as ADR 0020 decision 2 requires.
+Media-driven switching was verified both ways on 2026-09-20 (#197).
+ADR 0018 (reconciliation and idempotency) and ADR 0019 (confirmed
+outcomes) are implemented; ADR 0020's coalescing (#279) and Android
+reconnect jitter (#305) are in, with decision 2 still open on #277.
+Installable builds exist for both platforms (#187-#190 closed), and
+every build reports its `adapterVersion` on registration.
 
-The relay has also learned to recover its own state: it re-claims for a
-node that restarts while holding the resource (#173/#177), and every
-node re-announces itself every 2 minutes carrying its currently-active
-triggers, so a relay that lost its in-memory picture — on restart, or
-merely on its MQTT connection dropping — gets it back without anyone
-restarting an adapter by hand (#178/#185).
+**What the last week looked like.** Between 2026-09-22 and 2026-09-27
+there were roughly twelve adapter releases, v0.1.1 to v0.2.5, and almost
+none of it was new capability. The bugs fell into two groups:
 
-**#147 is closed: both adapters can now authenticate against the
-production broker**, reading `relay.username`/`relay.password` from a
-gitignored `config/adapter.local.properties` overlay (ADR 0005). What
-blocks a real demo now is three separate things, none of them adapter
-logic:
+- **Media auto-switching** — #243, #247, #251, #254, #282, #284, #288,
+  #295, #298, #303, #304. The media trigger reads audio state that
+  thrw's own handover perturbs (the default output device changes, the
+  audio gate pauses), so each fix exposed the next case.
+- **The relay holding a belief both nodes contradict** — #287, #289,
+  #301, #307. Each fix closed one entrance to a wedge and showed another.
 
-1. ~~A node never recovers from a dropped connection (#182)~~ — **fixed
-   and verified on real hardware the same day** (#192): both platforms
-   reconnect after connectivity loss, and a claim was confirmed
-   delivered on a restored subscription, which is the part that matters
-   — a client that returns but is deaf looks identical to a healthy one
-   until a claim goes missing (#197).
-2. **Neither app can be installed.** CI builds an Android AAB, which
-   cannot be sideloaded (#188), and no Mac `.app` artifact exists at
-   all (#189) — while any CI-built release would ship with empty relay
-   credentials anyway (#187). See M10.
-3. **The ADR 0015 topic migration hasn't happened** (#171), and should
-   land before test builds are installed so the apps are installed once
-   against the real topic structure, carrying ADR 0018's command
-   sequence numbers as the same flag day.
+Every fix was locally justified, and most commit messages say so
+convincingly. The system they add up to is about nine interacting timers
+and bounds: the 6s self-cooldown, 2s/4s media start/stop debounce,
+3s/6s claim coalescing, 90s/300s stale/gone, two re-asserts per tenure,
+90s auto-return, the 8s outcome bound, the 3s unreachable threshold and
+#307's stale-fallback release. v0.2.2 and v0.2.3 each shipped a defect
+found by hand rather than by any suite, and most of the week's fixes
+carry "not verified on hardware". The only loop that finds these bugs is
+Tom with the devices, and that is the bottleneck.
 
-Everything adapter-side in M3 is still verified only against fakes, a
-local broker, or ad-hoc manual runs. Bluetooth has never run in CI at
-all — there is no hardware — so both gateways' real connect/disconnect
-paths are exercised only when Tom runs them.
+**Physical limits** that no fix removes: a switch takes ~2.2s to release
+and ~3.3-4.9s to claim, with ~2.7s where nothing holds the headset
+(#254); AirPods expose no settable volume, so muting across the handover
+does nothing (#304); the only macOS pause mechanism is a play/pause
+toggle; the Mac cannot detect phone calls (architecture.md); iPad cannot
+move the route at all (#115); Linux does not talk to the relay (#271).
 
-### Reliability hardening, decided but not yet built
+**Not started:** `services/accounts`, `licensing`, `billing`,
+`ai-engine` and `telemetry` are still one-line placeholders. Outcomes
+reach the relay but are not persisted anywhere (#207), so switch success
+rate is not yet a number anyone can read.
 
-ADRs 0018-0020 (#184) closed five failure classes on paper — state
-reconciliation and command idempotency, confirmed switch outcomes with
-failure telemetry, and relay-side debouncing with defined offline
-behaviour — and #186 corrected three of those decisions from
-measurements on the reference hardware before any of it was
-implemented. Two consequences for this roadmap:
+## v1 — the goal everything below serves (decided 2026-09-28)
 
-- **AGENTS.md now sequences this work ahead of peripheral (HID) adapter
-  work and further focus-tracking**, which bears on M4's and M9's
-  ordering below.
-- Of it, only the periodic-reconciliation carrier exists (#185). The
-  audio-route reporting it is supposed to carry (#191), confirmed
-  outcomes (ADR 0019) and coalescing/offline behaviour (ADR 0020) are
-  unbuilt, and only #191 has an issue so far.
+**thrw is headed for a paid product. v1 is the handoff for professionals
+who use a Pixel and a Mac: the headset is always on the right device,
+moves seamlessly, and gets there as fast as the hardware allows.** The
+project is also a deliberate test of agent-driven development, which
+shapes the plan below as much as the product does.
 
-`docs/testing/compatibility-matrix.md` (#184) is where verified
-hardware combinations are recorded, and #197 filled in its first row
-from a real pass against `relay.thrw.app`: a media-driven switch in
-both directions with route evidence on each side, no oscillation when
-the losing device kept playing (the first real exercise of #167's
-self-cooldown in a handoff), and reconnect verified on both platforms.
-
-Explicitly **not** verified by that pass, and still open in #193: the
-call trigger and auto-return, manual claim, out-of-range behaviour,
-clean-install provisioning, any other headset, and any non-Pixel
-Android. The file's own rule is that an untested combination stays
-unverified however similar it looks, so that list is not a formality.
+- **In scope:** the reference pair, and every scenario in
+  `docs/spec/scenarios.md` — including media auto-switching, which has
+  to be reliable rather than switched off by default. The heuristics
+  behind it may change; the scenario outcomes may not without a change
+  to that file.
+- **Out of scope until v1 ships:** M4 (iPad, Linux), other headsets,
+  HID and focus work, M5 (AI engine), M6/M7 (licensing, billing,
+  accounts). The exception is #132's store-account admin, which has lead
+  time and costs nothing to start.
+- **Done means**, on one build: every scenario passes in the simulator,
+  every scenario passes in one scripted hardware pass, and 14
+  consecutive days of daily use show zero stuck states and at least 99%
+  switch success, computed from persisted outcomes. See the scenario
+  file for the definitions of those terms.
 
 This document breaks the remaining work into milestones and states, for
 each one, which pipeline lane it runs through.
@@ -448,71 +429,112 @@ explicitly not fine for M10b, which needs per-device credentials from
 `services/accounts` (M7). `config/adapter.properties` says so in its own
 comment.
 
+
 ## Suggested immediate next step
 
-The previous version of this section was entirely about #147, which is
-closed. Before that it was about #127/#128, also closed. That is the
-third time, hence the reading rule at the top of this file: check the
-issue numbers below before trusting the prose around them.
+This section is what the document is used for, and it goes stale when
+its items close (see the reading rule at the top). As of 2026-09-28 it
+is the v1 plan, in phases. Phase issues are to be opened against this
+text; until they exist, the phase names below are the reference.
 
-**The goal this sequence serves: test builds of both apps, installed on
-the reference hardware, used daily for a few days.** Everything below is
-ordered by what that requires, and #193 is the pass that ends it.
+**The change of method matters more than any single phase.** Until now,
+bugs were found by hand, fixed against mocks and shipped. From here, a
+bug is reproduced as a failing scenario (`docs/spec/scenarios.md`)
+before it is fixed, and hardware is where a fix is confirmed, not where
+it is first discovered. That is also the only version of agent-driven
+development that can be tested: an agent that can run the scenarios can
+observe what it is changing.
 
-1. ~~#182 — adapters must survive a dropped connection.~~ **Done**
-   (#192), and verified on hardware rather than only in tests: both
-   platforms reconnect, and a claim arrived on a restored subscription
-   (#197). This was the item everything else waited on.
-2. **#171 — the ADR 0015 topic migration, carrying ADR 0018's command
-   sequence numbers and relay epoch as one flag day.** Both change the
-   same command payloads across `packages/protocol`, `packages/relay-core`,
-   `services/relay-hosted` and both adapters, and each alone already
-   costs a relay redeploy and a reinstall on both devices. Doing them
-   together means the structure under test is the real one and the apps
-   are installed once. If ever split, 0015 goes first — its topic shape
-   is what the sequence number rides on.
-3. **#187, #188, #189 — an artifact that installs and can authenticate**,
-   with #190 as the cleanup each of them will otherwise trip over. See
-   M10a.
-4. **#191 — reconcile the audio route, not the Bluetooth link.** Worth
-   landing before the QA pass rather than after: on multipoint headsets
-   both devices report a live Bluetooth link at once, so under the link
-   reading both adapters claim to hold the headset and the relay cannot
-   resolve the drift. That makes a hardware session confusing rather
-   than informative — and confusion is expensive when the whole point
-   is to learn what real devices do.
-5. **#193 — the QA pass**, now worth narrowing rather than re-running:
-   #197 already evidenced the media-driven switch both ways, the
-   self-cooldown holding, and reconnect. What remains unverified is the
-   call trigger and auto-return, manual claim, out-of-range, and
-   clean-install provisioning — plus everything on non-reference
-   hardware, which the matrix treats as unverified on principle.
+### Phase 0 — spec and measurement
 
-Worth being plain about how thin the evidence still is. One pass on one
-headset and two hosts, much of it observed rather than instrumented,
-against adapters whose Bluetooth paths have never run in CI — there is
-no hardware — so `IOBluetoothPeripheralGateway`'s and
-`AndroidBluetoothClassicGateway`'s real connect/disconnect paths are
-exercised only when someone runs them by hand. Days of ordinary use are
-a different test from one deliberate session, which is the point of
-getting installable builds onto the devices.
+1. **The scenario set** — `docs/spec/scenarios.md`, landed with this
+   refresh. Every later phase is judged against it.
+2. **Per-phase switch timings.** ADR 0019's outcomes carry one
+   `durationMs`; Phase 3 needs where that time goes: relay dispatch,
+   node receipt, Bluetooth connect accepted, profile connected, route
+   observed. Adding fields to the outcome payload touches the frozen
+   confirmed-outcome shape, so this is an ADR 0019 amendment first,
+   human-merged, then the implementation. Optional fields only, so older
+   builds stay valid.
+3. **#207 — persist outcomes somewhere readable.** The v1 exit criterion
+   is a computed success rate over 14 days; relay logs that die on
+   redeploy cannot produce it. The smallest thing that works (outcome
+   events appended to durable storage, one query to compute the rate per
+   scenario class) beats the full M8 service.
 
-Not on the critical path, but cheap and due: #180 (`deploy.yml` breaks
-permanently after any manual deploy) will bite during a testing week,
-since it involves redeploying the relay. #183 (a spurious `call` event,
-seen once) is unexplained and will muddy the signal if it recurs.
+### Phase 1 — a deterministic simulator
 
-Lower-priority, but each unblocked and ready to scope whenever it's
-prioritized: `packages/adapter-linux`'s node-interface/MQTT wiring
-(mirroring #112's own shape, one milestone behind where Mac just got to),
-and `packages/adapter-ipad`'s now-scoped bootstrap (#115 answered the
-open question — an issue can be written today around "observe + prompt,"
-not "connect/disconnect").
+The key investment, and the one the agent-driven-development goal
+depends on. `packages/testkit` is still a placeholder; this is its job.
 
-**Accepted but untracked**, and the most likely thing to quietly rot:
-ADR 0019's confirmed switch outcomes and ADR 0020's relay-side
-coalescing, fail-safe offline behaviour and reconnect jitter have no
-issues open against them. Both are accepted policy in `docs/adr/`, both
-are deliberately sequenced after the first hardware pass, and neither
-will happen on its own. #191 is the only one of the three reliability
-ADRs' implementation work currently tracked.
+- A virtual clock; fake Bluetooth with latencies drawn from measurement
+  (#254's release and claim figures, #257's accepted-versus-connected
+  gap); fake audio signals **including thrw's own perturbations** — the
+  ~0.5s `DeviceIsRunningSomewhere` gap when the default output changes
+  (#298), the audio gate's pause (#295), Spotify's periodic buffering
+  (#288), a checked continuation that never resumes (#303).
+- The real `relay-core` and `relay-hosted` decision logic runs inside
+  it unmodified.
+- **The open design question:** the adapters' trigger and debounce
+  logic is Swift and Kotlin, and a TypeScript simulator cannot run it.
+  The options are (a) scenarios as language-neutral fixtures (JSON
+  signal traces plus expected outcomes) that the TS relay simulator and
+  each adapter's own test suite all consume, or (b) modelling adapter
+  behaviour in TS, which drifts. (a) is the likely answer; Phase 2's
+  question about where debouncing belongs may make it simpler, if
+  adapters end up reporting raw signals and the relay decides.
+- Every scenario becomes a simulator test, and every past bug with a
+  trace (#251, #288, #295, #298, #303, #307 at minimum) becomes a
+  regression case. **Expectation: several scenarios fail on v0.2.5
+  before anything is changed.** That is the point; it is the backlog.
+
+### Phase 2 — better heuristics, fewer timers
+
+Driven by whatever Phase 1 shows failing, but three things are already
+clear:
+
+- **Per-process audio detection on macOS.** The Mac's media trigger
+  watches the *default output device*, which thrw itself changes on
+  every handover — the root of #298, #295 and #303. Recent macOS exposes
+  per-process audio state that does not depend on which device is the
+  default; a spike should confirm it is readable without a TCC grant and
+  that it behaves on the reference Mac. If it does, it removes the cause
+  rather than debouncing the symptom.
+- **User actions as the primary signal, audio state as secondary.**
+  Pressing play, answering a call, a manual claim and unlocking a device
+  are intent; "audio is flowing" is evidence, and noisy evidence.
+- **One arbitration model in place of the scattered timers**, written as
+  a new ADR (it changes frozen contract, so human review) and validated
+  against the full scenario set in the simulator. It should decide where
+  debouncing lives, adapter or relay. Success is fewer mechanisms, not
+  more.
+
+Folds in #304 (macOS suppression is inert on AirPods), #308 and #309
+(UI truth and failure feedback, needed for M7 and R3), #277's open
+decision 2, and #183 if it recurs.
+
+### Phase 3 — speed
+
+- **Claim on ring, not on answer** (ADR 0021's executing pre-claim) —
+  a call rings for several seconds, so M1's switch time can largely
+  disappear. This is the biggest available win and it is for the
+  highest-priority trigger.
+- **Profile ordering**, using Phase 0's timings: connect the call
+  profile first for calls and the media profile first for media, and
+  measure rather than assume.
+- **Targets are set after measurement.** Media cannot hide latency the
+  way a ringing call can, so there is a floor, and the honest thing is
+  to find it before promising a number.
+
+### Phase 4 — soak, then v1 distribution
+
+- #193 becomes the **scripted** hardware pass: every scenario, on one
+  named `adapterVersion`, recorded in `docs/testing/` with
+  `scripts/qa-capture.sh` running throughout.
+- The 14-day run on that build, judged only by #207's numbers.
+- Then distribution: Play internal testing and a Developer-ID-signed,
+  notarised Mac build (#132, M10b), and M7/M6 after that.
+
+**Explicitly deferred**, however ready they look: #271 (Linux), the iPad
+bootstrap, #274 (site content), #287's unmanaged-device detection beyond
+the pause control that already ships, and anything under M5-M7.
