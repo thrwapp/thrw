@@ -133,10 +133,25 @@ The per-device logs stay in the run directory for when one of those
 needs explaining. They are deliberately not in the merged view: the
 Bluetooth chatter is voluminous and nobody reads it by choice.
 
-## A warning about inference
+## Two warnings about reading `mac.ndjson`
 
-The Mac's `Triggers/` and `Route/` contain **no logging at all**, so an
-empty `mac.ndjson` means "this code does not log", not "nothing
-happened". The 2026-09-25 pass nearly concluded that triggers were being
-suppressed on that basis, which the code does not support. Check whether
-a path logs before reading its silence as a result.
+**Silence is not a result.** At the time of the 2026-09-25 pass the Mac's
+`Triggers/` and `Route/` contained no logging at all, so an empty
+`mac.ndjson` meant "this code does not log", not "nothing happened" —
+and that pass nearly concluded triggers were being suppressed on that
+basis. #303 has since instrumented both (`transition opened`,
+`media reported`, `media ended`), so this is now largely historical; the
+habit is not. Check whether a path logs before reading its silence as a
+result.
+
+**Do not run the test suites during a capture.** `swift test` writes to
+the same `app.thrw.mac` subsystem the capture subscribes to, so the run
+directory fills with the adapter's *unit tests* rather than the device.
+One capture collected 2795 Mac lines this way and none of them were
+production — the tell is `simulatedFailure`, UUIDs like
+`AAAAAAAA-BBBB-CCCC-...`, and sub-second timeouts such as "did not
+resolve within 0.05 seconds", none of which a real device produces.
+
+If a suite has to run mid-pass, mark it (`qa-capture.sh mark "running
+swift test"`) so the noise has a recorded cause, exactly as a physical
+action would.
