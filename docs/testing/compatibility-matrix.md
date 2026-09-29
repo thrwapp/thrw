@@ -93,6 +93,11 @@ rule-5 timer.
 - ~~Manual claim from either device~~ — **done 2026-09-26/27**, see item 2
   below.
 - Walking out of Bluetooth range.
+- Any headset thrw is not provisioned for. `ProvisioningState` binds a
+  single `headsetIdentifier`, so a second headset is not "untested" — it
+  is outside the product. Recorded because it came up in real use
+  (2026-09-29, a Sony set on a flight) and the honest answer was to pause
+  arbitration, not to expect thrw to cope.
 - Provisioning from scratch on a clean install.
 - Any headset other than this one, and any Android OEM other than Pixel.
 
@@ -233,6 +238,33 @@ blocked on anything.
 
 **Also re-verified on 0.2.4:** the media-driven switch (Pixel→Mac at
 19:51:02, release 25ms / claim 1089ms), last confirmed 2026-09-20.
+
+**Arbitration pause (#290) — PASSES, both platforms, 2026-09-29, 0.2.5**
+
+First hardware verification. Not a planned item: it was exercised because
+Tom was travelling with a **different headset (Sony)**, which thrw does
+not manage at all — `ProvisioningState` binds one `headsetIdentifier`, so
+another headset is invisible to it. Pausing was the right answer to "stop
+thrw doing anything while I use these", and verifying it was free.
+
+- **Mac:** `defaults read app.thrw.mac` →
+  `app.thrw.mac.arbitrationPaused = 1`.
+- **Pixel:** the notification read *"Paused — not switching on this
+  device"* with its action correctly flipped to *"Resume switching"*.
+
+Worth recording that the Pixel's text and its own action **agreed** here.
+That is the healthy counterpart to #308, where they contradicted each
+other — same notification, same refresh path, and the difference is that
+pause state is local and changes only when tapped, so it cannot go stale
+the way a route reading can.
+
+**Two things pause does not do**, both found while relying on it:
+
+- It does not reveal or dislodge a **third node** holding the resource
+  (#316). Pausing stops *this* node claiming; it says nothing about
+  anyone else's claim.
+- It makes #318's mute **permanent in practice**: the restore only ever
+  happens on a later claim, and a paused node will never be claimed.
 
 **Tooling**
 
