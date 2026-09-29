@@ -84,6 +84,11 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// undo the suppression (#167).
     private let activeEvents = ActiveEventSet()
 
+    /// #309 / scenarios.md R3. The last command this node could not
+    /// carry out, for the menu to report. Written by the command loop,
+    /// read on the main actor when the menu opens.
+    private let lastCommandFailure = LastCommandFailure()
+
     /// #191 - reads whether this Mac currently holds the audio route.
     /// Optional: a node built without one simply reports no observation,
     /// which the relay treats as "no information" rather than as "no".
@@ -368,6 +373,16 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
                 // "nothing answered at all", and #244's bound is what
                 // produces the second.
                 let timedOut = error is BluetoothOperationTimedOut
+                // #309. The relay hears about this either way, via the
+                // outcome below. The person holding the Mac did not,
+                // until now.
+                lastCommandFailure.record(
+                    CommandFailure(
+                        type: command.type,
+                        outcome: timedOut ? .timedOut : .failed,
+                        reason: timedOut ? nil : Self.failureReason(for: error)
+                    )
+                )
                 await reportOutcome(
                     command: command,
                     outcome: timedOut ? .timedOut : .failed,
@@ -380,6 +395,7 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
             // above skips this, so the mark stays where it is and the
             // broker's redelivery gets to retry.
             sequenceGate.record(command)
+            lastCommandFailure.clear()
             await reportOutcome(
                 command: command,
                 outcome: .succeeded,
@@ -529,6 +545,12 @@ public final class MacNode: NodeInterface, EventLifecycle, HeartbeatSink {
     /// Whether the user has told this device to stop grabbing the
     /// headset (#290). Read by the menu for its label and its status
     /// line.
+    /// #309. The last claim or release this node could not carry out,
+    /// or nil if the most recent command succeeded.
+    public func recentCommandFailure() -> CommandFailure? {
+        lastCommandFailure.current()
+    }
+
     public func isArbitrationPaused() -> Bool {
         pauseStore.isPaused()
     }

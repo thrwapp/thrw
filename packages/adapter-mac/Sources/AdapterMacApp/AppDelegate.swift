@@ -186,17 +186,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             do {
                 _ = try await manualClaim.toggle()
+                self.claimFailed = false
             } catch {
-                // Logged rather than swallowed: the title stays as it was,
-                // so the menu keeps telling the truth and the next tap
-                // retries.
+                // Logged *and* shown (#309). Logging alone is what made
+                // this invisible: the title stays as it was, so a refused
+                // tap and a tap that never registered look identical.
                 Self.logger.error("Manual claim failed: \(error.localizedDescription, privacy: .public)")
+                self.claimFailed = true
             }
             self.refreshClaimItem()
+            self.refreshStatusItem()
         }
     }
 
+    /// #309 / R3. One line the user can act on, from an outcome that is
+    /// otherwise only meaningful to the relay.
+    ///
+    /// `target_device_unreachable` is named as the headset rather than
+    /// as a device id because that is the one the user can do something
+    /// about: take it out of the case, or walk back into range.
+    /// Returns nil when the failure is not worth telling the user about,
+    /// so the caller falls through to the ordinary status line.
+    static func describe(_ failure: CommandFailure) -> String? {
+        // A superseded command is idempotency working correctly, not a
+        // switch that went wrong - ADR 0019 tracks it separately for
+        // exactly that reason. `MacNode` does not record it as a failure
+        // today (its guard `continue`s first), so this is defensive
+        // rather than reachable; it is here so that if that ever changes
+        // the user is not alarmed by normal operation.
+        if failure.reason == .supersededByNewerCommand { return nil }
+        let verb = failure.type == .claim ? "Could not take the headset" : "Could not release the headset"
+        switch (failure.outcome, failure.reason) {
+        case (.timedOut, _):
+            return "\(verb) \u{2014} it did not respond"
+        case (_, .targetDeviceUnreachable):
+            return "\(verb) \u{2014} it may be in its case or out of range"
+        case (_, .bluetoothUnavailable):
+            return "\(verb) \u{2014} Bluetooth is unavailable"
+        default:
+            return verb
+        }
+    }
+
+    /// #309. Set when a manual-claim toggle threw, cleared by the next
+    /// one that succeeds.
+    ///
+    /// Cleared on success rather than on a timer: a stale failure notice
+    /// is the same class of lie as the static status line #213 replaced.
+    private var claimFailed = false
+
     private func refreshStatusItem() {
+        // #309. A failed claim outranks the status readout. The status is
+        // still true - this Mac genuinely is not holding - and saying only
+        // that is exactly how a refused tap stayed invisible.
+        //
+        // Named the relay specifically, because at toggle time that is the
+        // only thing that can fail: the Bluetooth work happens later and
+        // reports itself through the command outcome (ADR 0019).
+        if claimFailed {
+            statusMenuItem?.title = "Claim failed \u{2014} could not reach the relay"
+            return
+        }
+        // #309 / R3. A command thrw actually attempted and could not
+        // complete - the headset in its case, out of range, Bluetooth
+        // refusing. Checked after the publish failure above because that
+        // one is about a tap the user just made; this one may be about a
+        // switch they never asked for, so it is the weaker claim on the
+        // single line available.
+        if let failure = node?.recentCommandFailure(), let text = Self.describe(failure) {
+            statusMenuItem?.title = text
+            return
+        }
         // No node yet means nothing has connected, which is precisely
         // what "disconnected" says - true rather than a placeholder.
         statusMenuItem?.title = (node?.status() ?? .disconnected).displayText

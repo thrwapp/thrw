@@ -21,6 +21,21 @@
     <string name="status_not_holding">Not holding headset</string>
     <string name="status_unknown">Connected \u2014 headset state unknown</string>
 
+    <!-- #309. Shown after a manual claim that did not publish. Names the
+         relay specifically: at toggle time the only thing that can fail
+         is reaching it - the Bluetooth work happens later, and reports
+         itself through the command outcome. -->
+    <string name="claim_failed">Claim failed \u2014 could not reach the relay</string>
+
+    <!-- #309 / scenarios.md R3. A command thrw actually attempted and
+         could not complete. "in its case or out of range" names what the
+         user can act on, rather than the device id the relay cares
+         about. -->
+    <string name="command_failed_unreachable">Could not take the headset \u2014 it may be in its case or out of range</string>
+    <string name="command_failed_no_response">Could not take the headset \u2014 it did not respond</string>
+    <string name="command_failed_bluetooth">Could not take the headset \u2014 Bluetooth is unavailable</string>
+    <string name="command_failed_release">Could not release the headset</string>
+
     <!-- #212. The manual claim toggle, as a notification action. -->
     <string name="claim_headset">Claim headset</string>
     <string name="pause_switching">Pause switching</string>

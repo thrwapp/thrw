@@ -14,6 +14,8 @@ import com.thrw.adapter.android.claim.ArbitrationPause
 import com.thrw.adapter.android.claim.ManualClaim
 import com.thrw.adapter.android.claim.SharedPreferencesArbitrationPauseStore
 import com.thrw.adapter.android.status.ClaimAction
+import com.thrw.adapter.android.status.NotificationTextResources
+import com.thrw.adapter.android.status.notificationTextRes
 import com.thrw.adapter.android.status.NodeStatus
 import com.thrw.adapter.android.status.claimAction
 import com.thrw.adapter.android.status.textRes
@@ -24,7 +26,10 @@ import com.thrw.adapter.android.config.RelayCredentials
 import com.thrw.adapter.android.identity.AdapterProvisioning
 import com.thrw.adapter.android.identity.DeviceIdentity
 import com.thrw.adapter.android.mqtt.HiveMqttTransport
+import com.thrw.adapter.android.protocol.CommandFailureReason
+import com.thrw.adapter.android.protocol.CommandOutcome
 import com.thrw.adapter.android.protocol.CommandSequenceGate
+import com.thrw.adapter.android.protocol.CommandType
 import com.thrw.adapter.android.protocol.SharedPreferencesSequenceStore
 import com.thrw.adapter.android.triggers.AndroidCallStateSource
 import android.content.ComponentName
@@ -109,6 +114,18 @@ class AdapterForegroundService : Service() {
 
     /** #212. Non-null only while a node runtime is running. */
     private var manualClaim: ManualClaim? = null
+
+    /**
+     * #309. Set when a manual-claim toggle failed to publish, cleared by
+     * the next one that succeeds.
+     *
+     * Deliberately not a timestamp or a counter: the notification is a
+     * readout of what is true now, and what is true is "your last tap did
+     * not take". It clears on the next success rather than on a timer,
+     * because a stale failure notice is the same class of lie as the
+     * stale status line #213 removed.
+     */
+    private var claimFailed: Boolean = false
     /** #290. Non-nil only while a node runtime is running. */
     private var arbitrationPause: ArbitrationPause? = null
 
@@ -139,7 +156,16 @@ class AdapterForegroundService : Service() {
             } else {
                 scope.launch {
                     runCatching { claim.toggle() }
-                        .onFailure { Log.e(TAG, "Manual claim failed", it) }
+                        .onFailure {
+                            Log.e(TAG, "Manual claim failed", it)
+                            // #309. The log line is not the user's
+                            // problem to read. Tom tapped this four
+                            // times on a relay-less phone because
+                            // nothing on screen changed, which is what a
+                            // control with no failure signal earns.
+                            claimFailed = true
+                        }
+                        .onSuccess { claimFailed = false }
                     refreshNotification()
                 }
             }
@@ -273,6 +299,7 @@ class AdapterForegroundService : Service() {
             // exists; the flow replays its current value to a late
             // collector, so nothing is missed by not racing it.
             observeHolderChanges(node)
+            observeCommandFailures(node)
             refreshNotification()
         }
 
@@ -348,6 +375,41 @@ class AdapterForegroundService : Service() {
         }
     }
 
+    /**
+     * #309 / R3. Re-posts the notification when a command fails, and
+     * again when one succeeds and clears it.
+     *
+     * Separate from [observeHolderChanges] because a failed claim is
+     * precisely the case where the holder does **not** change - so
+     * piggybacking on that flow would miss every failure it exists to
+     * report.
+     */
+    /**
+     * #309. One line, and three things competing for it.
+     *
+     * Order is deliberate. A failed *tap* comes first: the user just
+     * acted and deserves to know it did not take. A failed *command*
+     * comes next — thrw attempted something and could not finish it,
+     * which may be about a switch the user never asked for. The ordinary
+     * status line comes last, because it is still true in both of those
+     * cases and saying only it is exactly how both stayed invisible.
+     */
+    /** #309. Delegates to the pure decision in `status/`, which is where it is tested. */
+    private fun contentTextRes(status: NodeStatus?): Int =
+        notificationTextRes(
+            claimFailed = claimFailed,
+            failure = node?.commandFailures()?.value,
+            statusRes = status?.textRes,
+            defaultRes = R.string.adapter_notification_text,
+            res = NOTIFICATION_TEXT_RESOURCES,
+        )
+
+    private fun observeCommandFailures(node: AndroidNode) {
+        scope.launch {
+            node.commandFailures().collect { refreshNotification() }
+        }
+    }
+
     private fun startForegroundWithNotification(
         status: NodeStatus? = null,
         claimAction: ClaimAction? = null,
@@ -358,7 +420,10 @@ class AdapterForegroundService : Service() {
             // said the same thing whether the adapter was working or had
             // silently lost its connection two hours ago (#182), which is
             // exactly the failure this is meant to make visible.
-            .setContentText(getString(status?.textRes ?: R.string.adapter_notification_text))
+            // #309. A failed claim outranks the status line: the status
+            // is still true (this node genuinely is not holding), and
+            // saying only that is how a refused tap became invisible.
+            .setContentText(getString(contentTextRes(status)))
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setOngoing(true)
 
@@ -428,6 +493,15 @@ class AdapterForegroundService : Service() {
          * `onStartCommand`, so the notification action re-enters the
          * service with this action rather than going anywhere else.
          */
+        /** #309. Bound once, so the pure decision stays free of `R`. */
+        private val NOTIFICATION_TEXT_RESOURCES = NotificationTextResources(
+            claimFailed = R.string.claim_failed,
+            commandFailedUnreachable = R.string.command_failed_unreachable,
+            commandFailedNoResponse = R.string.command_failed_no_response,
+            commandFailedBluetooth = R.string.command_failed_bluetooth,
+            commandFailedRelease = R.string.command_failed_release,
+        )
+
         const val ACTION_TOGGLE_CLAIM = "com.thrw.adapter.android.TOGGLE_CLAIM"
         const val ACTION_TOGGLE_PAUSE = "com.thrw.adapter.android.TOGGLE_PAUSE"
         private const val NOTIFICATION_CHANNEL_ID = "thrw_adapter"
