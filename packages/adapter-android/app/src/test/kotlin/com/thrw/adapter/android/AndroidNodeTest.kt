@@ -583,6 +583,32 @@ class AndroidNodeTest {
      * and it mirrors what the platform itself does on
      * AUDIO_BECOMING_NOISY when headphones are unplugged.
      */
+    /**
+     * #308. The notification's status line is about the route, and the
+     * only thing that refreshed it was a holder change - which happens
+     * *before* the route settles. This is the signal that lets it be
+     * re-read once the command has actually finished.
+     *
+     * Asserted on the node rather than on a notification because the
+     * service cannot be stood up in a unit test, and because the wiring
+     * is what rots: the service's collector is one line, and nothing
+     * else would notice if this stopped emitting.
+     */
+    @Test
+    fun `every finished command signals that the route may have settled`() = runTest {
+        val f = Fixture()
+        val before = f.node.commandCompletions().value
+        f.transport.commands.send("""{"type":"claim"}""")
+        f.transport.commands.send("""{"type":"release"}""")
+        f.transport.commands.close()
+
+        f.node.listenForCommands()
+
+        // Two commands, two signals - including the second success, which
+        // `commandFailures()` alone would not emit for.
+        assertEquals(before + 2, f.node.commandCompletions().value)
+    }
+
     @Test
     fun `a release silences and does not restore`() = runTest {
         val gate = RecordingAudioGate()
