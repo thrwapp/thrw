@@ -22,6 +22,7 @@
     "@thrw/relay-core": "workspace:*"
   },
   "devDependencies": {
+    "@thrw/testkit": "workspace:*",
     "mqtt": "^5.16.0"
   }
 }

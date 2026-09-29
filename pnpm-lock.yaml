@@ -53,7 +53,14 @@ importers:
         specifier: ^5.16.0
         version: 5.16.0
 
-  packages/testkit: {}
+  packages/testkit:
+    dependencies:
+      '@thrw/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@thrw/relay-core':
+        specifier: workspace:*
+        version: link:../relay-core
 
   services/accounts: {}
 
@@ -72,6 +79,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/relay-core
     devDependencies:
+      '@thrw/testkit':
+        specifier: workspace:*
+        version: link:../../packages/testkit
       mqtt:
         specifier: ^5.16.0
         version: 5.16.0
