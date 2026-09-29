@@ -300,6 +300,7 @@ class AdapterForegroundService : Service() {
             // collector, so nothing is missed by not racing it.
             observeHolderChanges(node)
             observeCommandFailures(node)
+            observeCommandCompletions(node)
             refreshNotification()
         }
 
@@ -407,6 +408,27 @@ class AdapterForegroundService : Service() {
     private fun observeCommandFailures(node: AndroidNode) {
         scope.launch {
             node.commandFailures().collect { refreshNotification() }
+        }
+    }
+
+    /**
+     * #308. Re-posts the notification once a command has finished, so the
+     * status line reads a route that has settled rather than one still
+     * moving.
+     *
+     * Separate from [observeHolderChanges] because the holder changes
+     * *before* the route does — the release that exposed this took 341ms
+     * to resolve after its holder change, and the stale line then stayed
+     * on screen indefinitely because no second holder change ever came.
+     *
+     * Separate from [observeCommandFailures] because that flow only
+     * changes value on failure→none and none→failure: two consecutive
+     * successes emit nothing, and a release following a claim is exactly
+     * two consecutive successes.
+     */
+    private fun observeCommandCompletions(node: AndroidNode) {
+        scope.launch {
+            node.commandCompletions().collect { refreshNotification() }
         }
     }
 

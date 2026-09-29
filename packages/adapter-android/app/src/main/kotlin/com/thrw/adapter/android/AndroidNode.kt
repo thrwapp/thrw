@@ -39,6 +39,7 @@ import com.thrw.adapter.android.triggers.bypassesSelfCooldown
 import com.thrw.adapter.android.triggers.SelfCooldown
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.Json
 
@@ -168,6 +169,26 @@ class AndroidNode(
     private val lastCommandFailure = LastCommandFailure()
 
     /**
+     * #308. Ticks once every time a command reaches a terminal outcome.
+     *
+     * The notification's status line is about the **route**, but the only
+     * thing that refreshed it was a **holder change** - and the route
+     * settles later than the holder does, measurably: 341ms for an
+     * observed release, up to 3340ms for a claim (#193 item 1). So the
+     * refresh read a route still in motion, rendered it, and nothing ever
+     * recomputed it.
+     *
+     * A command outcome is precisely when this adapter has finished
+     * acting, so it is the signal that means "the route has settled".
+     *
+     * Deliberately not [commandFailures]: that only changes value on
+     * failure→none and none→failure, so two consecutive successes emit
+     * nothing - and a release after a claim is exactly two consecutive
+     * successes, which is the case that produced the bug.
+     */
+    private val commandCompletions = MutableStateFlow(0L)
+
+    /**
      * Emits whenever the relay's holder changes (#234 criterion 4).
      *
      * This is what lets the notification be re-posted on a holder change
@@ -185,6 +206,15 @@ class AndroidNode(
      * from `adapter-mac`.
      */
     fun commandFailures(): StateFlow<CommandFailure?> = lastCommandFailure.failure
+
+    /**
+     * #308. Emits after every terminal command outcome, so a consumer can
+     * re-read state that only settles once the command has finished.
+     *
+     * The value is a counter with no meaning beyond being different from
+     * the last one; a `StateFlow` needs distinct values to emit.
+     */
+    fun commandCompletions(): StateFlow<Long> = commandCompletions
 
     /**
      * Whether the **relay** currently has this node as holder, or null if
@@ -616,6 +646,13 @@ class AndroidNode(
                     // leaving it open would make this node permanently
                     // deaf to its own triggers.
                     if (command != null) routeTransition.end()
+                    // #308. Here rather than beside each `reportOutcome`
+                    // for the same reason as the line above: one site on
+                    // every terminal path, so a `catch` added later
+                    // cannot silently stop the notification updating.
+                    // Emitting on the cancellation path too is harmless -
+                    // the scope collecting this is being torn down.
+                    if (command != null) commandCompletions.value += 1
                 }
             }
     }
