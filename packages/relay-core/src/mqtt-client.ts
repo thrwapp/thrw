@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
 import mqtt, {
   type IClientOptions,
   type ISubscriptionGrant,
   type MqttClient,
 } from "mqtt";
+import { CommandSequencer } from "./command-sequencer.js";
+import type { RelayTransport } from "./transport.js";
 import {
   commandsTopic,
   eventsTopic,
@@ -92,20 +93,14 @@ export type NodeEventListener = (payload: unknown, node: string, resource: Resou
 // goes through packages/protocol's topic builders and TopicQos constants
 // rather than a hand-rolled topic string or QoS number. No connection
 // state machine, no device registry - both out of scope for this issue.
-export class RelayMqttClient {
+export class RelayMqttClient implements RelayTransport {
   /**
-   * This relay process's epoch (#210). Generated once, here, because
-   * "once per process" is exactly what it has to mean: it is the signal
-   * that the in-memory sequence counters below have restarted.
-   *
-   * A reconnect does not change it, and must not - the counters survive
-   * a reconnect, so telling adapters to reset would be a lie. Only a new
-   * process is a new epoch.
+   * ADR 0018's epoch and per-node sequence numbers (#210), extracted to
+   * {@link CommandSequencer} in #320 so `@thrw/testkit`'s broker-less
+   * transport numbers commands through the same code rather than a second
+   * hand-written copy of the scheme.
    */
-  private readonly epoch = randomUUID();
-
-  /** (account, node) -> last issued sequence number. */
-  private readonly sequences = new Map<string, number>();
+  private readonly sequencer = new CommandSequencer();
 
   private constructor(private readonly client: MqttClient) {}
 
@@ -154,32 +149,15 @@ export class RelayMqttClient {
     resource: ResourceType,
     payload: CommandPayload,
   ): Promise<void> {
-    const sequenced: SequencedCommandPayload = {
-      ...payload,
-      seq: this.nextSequence(account, node, resource),
-      epoch: this.epoch,
-    };
+    const sequenced: SequencedCommandPayload = this.sequencer.stamp(
+      account,
+      node,
+      resource,
+      payload,
+    );
     return this.publish(commandsTopic(account, node, resource), sequenced, {
       qos: TopicQos.commands.qos,
     });
-  }
-
-  /**
-   * Next sequence number for this node (#210).
-   *
-   * In-memory, and correct that way: durability is what the epoch
-   * provides instead. Persisting these would mean giving the relay
-   * durable state it has nowhere to put, to solve a problem a single
-   * random string already solves.
-   */
-  private nextSequence(account: string, node: string, resource: ResourceType): number {
-    // "\u0000" rather than "/" or ":" - account ids and node ids are
-    // user- and platform-supplied, and a separator either could contain
-    // would let two different pairs collide on one counter.
-    const key = `${account}\u0000${node}\u0000${resource}`;
-    const next = (this.sequences.get(key) ?? 0) + 1;
-    this.sequences.set(key, next);
-    return next;
   }
 
   publishState(account: string, resource: ResourceType, payload: StatePayload): Promise<void> {

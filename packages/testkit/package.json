@@ -15,5 +15,9 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@thrw/protocol": "workspace:*",
+    "@thrw/relay-core": "workspace:*"
   }
 }

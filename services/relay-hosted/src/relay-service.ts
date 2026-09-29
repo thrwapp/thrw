@@ -6,7 +6,7 @@ import {
   type CoalescedCommand,
   type CommandKind,
   type EventPayload,
-  type RelayMqttClient,
+  type RelayTransport,
   type Scheduler,
 } from "@thrw/relay-core";
 import { PRIORITY_ORDER } from "@thrw/protocol";
@@ -342,8 +342,17 @@ const DEFAULT_NODE_DEPARTURE_TIMEOUT_MS = 300_000;
 const MAX_HOLDER_REASSERTS = 2;
 
 export interface RelayServiceOptions {
-  /** An already-connected client - this class never calls `RelayMqttClient.connect` itself. */
-  client: RelayMqttClient;
+  /**
+   * An already-connected transport - this class never connects or closes
+   * it, the caller owns its lifecycle.
+   *
+   * The interface rather than `RelayMqttClient` (#320) so the same service
+   * runs against `@thrw/testkit`'s broker-less `InMemoryBus` on a virtual
+   * clock. This service is the code under test in every scenario
+   * (`docs/spec/testing-framework.md`), so it must not know which of the
+   * two it is talking to.
+   */
+  client: RelayTransport;
   /**
    * Which accounts this process manages. Static, not discovered - see
    * docs/handoffs/118.md's "Known gaps" for why (no accounts/licensing
@@ -493,7 +502,7 @@ interface ResourceState {
  * one) and what's explicitly left as a known gap.
  */
 export class RelayService {
-  private readonly client: RelayMqttClient;
+  private readonly client: RelayTransport;
   private readonly accounts: readonly string[];
   private readonly now: () => number;
   private readonly onRouteDrift: (drift: RouteDrift) => void;

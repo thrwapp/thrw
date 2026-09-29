@@ -21,6 +21,8 @@ export {
   type CommandCoalescerOptions,
   type CommandKind,
 } from "./command-coalescer.js";
+export { CommandSequencer } from "./command-sequencer.js";
+export type { RelayTransport } from "./transport.js";
 export {
   RelayMqttClient,
   defaultMqttBrokerUrl,
@@ -28,6 +30,7 @@ export {
   type EventPayload,
   type HeartbeatListener,
   type NodeEventListener,
+  type SequencedCommandPayload,
   type StatePayload,
 } from "./mqtt-client.js";
 
