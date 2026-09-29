@@ -11,7 +11,7 @@ public typealias Priority = Int
 /// Note the *ranking* of these kinds is deliberately not mirrored here:
 /// architecture.md requires priority rules to live server-side in the
 /// relay, "never duplicated in adapters".
-public enum EventKind: String, Codable, Sendable {
+public enum EventKind: String, Codable, Sendable, CaseIterable {
     case call
     case manualClaim = "manual_claim"
     case voip
@@ -19,7 +19,7 @@ public enum EventKind: String, Codable, Sendable {
 }
 
 /// Mirror of `packages/protocol`'s `NodeManifest["platform"]` union.
-public enum Platform: String, Codable, Sendable {
+public enum Platform: String, Codable, Sendable, CaseIterable {
     case android
     case mac
     case ipad

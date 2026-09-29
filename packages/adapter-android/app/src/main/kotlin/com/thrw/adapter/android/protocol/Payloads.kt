@@ -1,5 +1,7 @@
 package com.thrw.adapter.android.protocol
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -167,14 +169,45 @@ const val COMMAND_OUTCOME_KIND: String = "command_outcome"
  * the same reason [CommandPayload]'s are: a command carrying neither is
  * still acted on, so an outcome for it must still be reportable.
  */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class CommandOutcomePayload(
     val kind: String = COMMAND_OUTCOME_KIND,
+    /**
+     * `@EncodeDefault(NEVER)` on this and the two fields below, because
+     * [ProtocolJson] sets `encodeDefaults = true` (which is what puts
+     * [kind] on the wire at all) and that would otherwise serialise these
+     * nulls **explicitly** (#317).
+     *
+     * Absent and `null` are not interchangeable here. `relay-service.ts`'s
+     * `isCommandOutcomePayload` accepts an absent `epoch` and **rejects a
+     * null one** - `p.epoch !== undefined && typeof p.epoch !== "string"`
+     * is true for `null` - so an outcome for an *unsequenced* command was
+     * discarded by the relay as malformed, the one case these fields are
+     * optional in order to support. ADR 0019's premise is that every
+     * command produces a recorded outcome; a silently dropped one is the
+     * exact gap it exists to close.
+     *
+     * `adapter-mac`'s Swift mirror omits them already, because a
+     * synthesised `Codable` encoder skips a nil `Optional`. This makes the
+     * two adapters agree, and `WireFixtureTest` is what now holds them
+     * there.
+     */
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
     val epoch: String? = null,
     /** `Long` to match [CommandPayload.seq], which is what it echoes. */
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
     val seq: Long? = null,
     val resourceType: String,
     val outcome: String,
+    /**
+     * Present when and only when [outcome] is `failed` - see the class
+     * kdoc and ADR 0019. Emitting `"reason": null` alongside a `succeeded`
+     * outcome, as this did before #317, put two shapes on the wire for one
+     * meaning and would have landed both in #207's persisted outcome data,
+     * which the v1 switch-success rate is computed from.
+     */
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
     val reason: String? = null,
     val durationMs: Long,
 )

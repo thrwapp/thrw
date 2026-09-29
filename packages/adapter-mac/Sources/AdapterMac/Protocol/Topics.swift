@@ -13,7 +13,7 @@ import Foundation
 /// ADR 0015's resource types. Mirrors `@thrw/protocol`'s `ResourceType`;
 /// the wire spellings are pinned by `packages/protocol/fixtures/topics.json`,
 /// which this package's own tests assert against.
-public enum ResourceType: String, Codable, Sendable {
+public enum ResourceType: String, Codable, Sendable, CaseIterable {
     case audio
     case hid
 }

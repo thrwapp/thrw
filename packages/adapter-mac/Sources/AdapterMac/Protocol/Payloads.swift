@@ -23,7 +23,7 @@ public struct EventPayload: Codable, Sendable, Equatable {
 }
 
 /// Mirror of relay-core's `CommandPayload["type"]` union.
-public enum CommandType: String, Codable, Sendable {
+public enum CommandType: String, Codable, Sendable, CaseIterable {
     case claim
     case release
 }
@@ -192,7 +192,7 @@ public struct CommandOutcomePayload: Codable, Sendable, Equatable {
 }
 
 /// Mirror of `packages/protocol`'s `CommandOutcome`.
-public enum CommandOutcome: String, Sendable {
+public enum CommandOutcome: String, Sendable, CaseIterable {
     case succeeded
     case failed
     case timedOut = "timed_out"
@@ -215,7 +215,7 @@ public enum CommandOutcome: String, Sendable {
 /// non-timeout failure until the gateways can tell these apart. Coarse
 /// and comparable beats precise and incomparable; typed gateway errors
 /// are the follow-up that unlocks the finer split.
-public enum CommandFailureReason: String, Sendable {
+public enum CommandFailureReason: String, Sendable, CaseIterable {
     case bluetoothUnavailable = "bluetooth_unavailable"
     case targetDeviceUnreachable = "target_device_unreachable"
     case supersededByNewerCommand = "superseded_by_newer_command"
