@@ -497,6 +497,39 @@ final class MacNodeTests: XCTestCase {
         XCTAssertEqual(decoded.reason, "target_device_unreachable")
     }
 
+    /// #309 / scenarios.md R3. The outcome above tells the *relay*. This
+    /// is what tells the person holding the Mac — and the wiring is what
+    /// rots silently, not the store: `LastCommandFailureTests` would keep
+    /// passing with nothing ever calling it.
+    func testAFailedCommandIsRecordedForTheUser() async throws {
+        let f = Fixture()
+        f.gateway.failNextConnect = true
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        let failure = try XCTUnwrap(f.node.recentCommandFailure())
+        XCTAssertEqual(failure.type, .claim)
+        XCTAssertEqual(failure.outcome, .failed)
+        XCTAssertEqual(failure.reason, .targetDeviceUnreachable)
+    }
+
+    /// Cleared by the next success rather than by a timer: a notice that
+    /// expired on a clock would claim things are fine while they are
+    /// still broken.
+    func testASucceedingCommandClearsTheRecordedFailure() async throws {
+        let f = Fixture()
+        f.gateway.failNextConnect = true
+        f.transport.sendCommand(#"{"type":"claim","seq":1,"epoch":"e1"}"#)
+        f.transport.sendCommand(#"{"type":"claim","seq":2,"epoch":"e1"}"#)
+        f.transport.finishCommands()
+
+        try await f.node.listenForCommands()
+
+        XCTAssertNil(f.node.recentCommandFailure())
+    }
+
     /// #264 criterion 4. A device macOS has never paired is a
     /// provisioning fault, not a headset that failed to answer - and
     /// unlike an unreachable headset it will never fix itself. Recording

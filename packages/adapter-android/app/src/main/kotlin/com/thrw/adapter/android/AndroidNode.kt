@@ -25,7 +25,9 @@ import com.thrw.adapter.android.protocol.ProtocolJson
 import com.thrw.adapter.android.protocol.RESOURCE_AUDIO
 import com.thrw.adapter.android.protocol.ResourceType
 import com.thrw.adapter.android.protocol.StatePayload
+import com.thrw.adapter.android.status.CommandFailure
 import com.thrw.adapter.android.status.HolderState
+import com.thrw.adapter.android.status.LastCommandFailure
 import com.thrw.adapter.android.status.NodeStatus
 import com.thrw.adapter.android.status.nodeStatus
 import com.thrw.adapter.android.protocol.RegistrationPayload
@@ -162,6 +164,9 @@ class AndroidNode(
      */
     private val holderState = HolderState()
 
+    /** #309 / R3. The last command this node could not carry out. */
+    private val lastCommandFailure = LastCommandFailure()
+
     /**
      * Emits whenever the relay's holder changes (#234 criterion 4).
      *
@@ -170,6 +175,16 @@ class AndroidNode(
      * so it costs nothing while nothing is happening.
      */
     fun holderChanges(): StateFlow<HolderState.Holder> = holderState.holder
+
+    /**
+     * #309 / scenarios.md R3. The last command this node could not carry
+     * out, or null since the most recent success.
+     *
+     * A flow rather than a getter because the notification is always on
+     * screen — see [LastCommandFailure]'s own note on why this differs
+     * from `adapter-mac`.
+     */
+    fun commandFailures(): StateFlow<CommandFailure?> = lastCommandFailure.failure
 
     /**
      * Whether the **relay** currently has this node as holder, or null if
@@ -550,6 +565,7 @@ class AndroidNode(
                     // where it is lets a redelivery retry it.
                     if (command != null) sequenceGate.record(command)
                     if (command?.type == CommandType.CLAIM) audioGate.restore()
+                    lastCommandFailure.clear()
                     reportOutcome(command, CommandOutcome.SUCCEEDED, null, elapsedMs(startedAt))
                 } catch (e: TimeoutCancellationException) {
                     // Caught ahead of CancellationException below: #244's
@@ -565,6 +581,13 @@ class AndroidNode(
                     // headset did not arrive, so the audio has nowhere
                     // to go but here.
                     if (command?.type == CommandType.CLAIM) audioGate.restore()
+                    // #309. The relay hears about this either way, below.
+                    // The person holding the phone did not, until now.
+                    command?.let {
+                        lastCommandFailure.record(
+                            CommandFailure(it.type, CommandOutcome.TIMED_OUT, null),
+                        )
+                    }
                     reportOutcome(command, CommandOutcome.TIMED_OUT, null, elapsedMs(startedAt))
                 } catch (e: CancellationException) {
                     // Restored before rethrowing: the runtime is shutting
@@ -576,6 +599,11 @@ class AndroidNode(
                 } catch (e: Exception) {
                     Log.e(TAG, "Command ${command?.type} failed - staying subscribed", e)
                     if (command?.type == CommandType.CLAIM) audioGate.restore()
+                    command?.let {
+                        lastCommandFailure.record(
+                            CommandFailure(it.type, CommandOutcome.FAILED, failureReasonFor(e)),
+                        )
+                    }
                     reportOutcome(
                         command,
                         CommandOutcome.FAILED,
