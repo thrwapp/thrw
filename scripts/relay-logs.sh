@@ -18,13 +18,19 @@
 #
 # Env overrides (defaults match deploy.yml's):
 #   GCP_RELAY_VM_NAME (thrw-relay), GCP_RELAY_ZONE (us-central1-a),
-#   GCP_PROJECT_PROD (gcloud's configured project),
+#   GCP_PROJECT_PROD (thrw-prod),
 #   THRW_LOG_ARCHIVE_DIR (/var/log/thrw)
 set -euo pipefail
 
 VM="${GCP_RELAY_VM_NAME:-thrw-relay}"
 ZONE="${GCP_RELAY_ZONE:-us-central1-a}"
-PROJECT="${GCP_PROJECT_PROD:-$(gcloud config get-value project 2>/dev/null)}"
+# thrw-prod, not gcloud's ambient project. The relay VM only ever lives
+# in thrw-prod, so inheriting whatever project gcloud happens to be
+# pointed at is wrong - and it fails confusingly, with a SERVICE_DISABLED
+# error naming an unrelated project rather than anything about thrw.
+# Seen twice: once silently killing a capture's relay stream mid-run.
+# Still overridable for a self-hosted or staging relay.
+PROJECT="${GCP_PROJECT_PROD:-thrw-prod}"
 ARCHIVE_DIR="${THRW_LOG_ARCHIVE_DIR:-/var/log/thrw}"
 TAIL_LINES="${THRW_LOG_TAIL:-200}"
 
