@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.PathSensitivity
 import java.util.Properties
 
 // Real Android Gradle Plugin module as of #96 - was previously a plain
@@ -364,4 +365,34 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+
+    // #325. `WireFixtureTest` and `TopicsFixtureTest` read shared fixtures
+    // from `packages/protocol/fixtures/` at runtime, by walking up from
+    // `user.dir` - deliberately, because copying them into this module's
+    // test resources would create the second source of truth the whole
+    // mechanism exists to prevent.
+    //
+    // The cost of reading them that way is that Gradle cannot see them.
+    // They are outside the module, so nothing in the task's input
+    // fingerprint changes when a fixture is edited, and the test task is
+    // reported UP-TO-DATE and **skipped** - printing success without
+    // running the assertion that would have failed.
+    //
+    // That was not hypothetical. It is exactly what happened while
+    // demonstrating #325's acceptance criterion 4: the fixture was edited
+    // to a wrong value, `./gradlew testDebugUnitTest --tests
+    // '*WireFixtureTest*'` reported 22 passed, and the test had not run at
+    // all. Swift has no equivalent hole because SwiftPM re-runs tests
+    // unconditionally.
+    //
+    // Declaring the directory as an input fixes it: a fixture edit now
+    // invalidates the task. This covers #171's topic fixture as well as
+    // #317's wire fixture, and any future one, since it tracks the whole
+    // directory rather than named files.
+    // One `..`, not two: this resolves against the Gradle root project
+    // (`packages/adapter-android`), whereas the tests' own walk-up starts
+    // from `user.dir`, which is `packages/adapter-android/app`.
+    inputs.dir(rootProject.layout.projectDirectory.dir("../protocol/fixtures"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("sharedProtocolFixtures")
 }

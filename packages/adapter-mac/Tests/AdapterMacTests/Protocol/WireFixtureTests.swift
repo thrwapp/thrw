@@ -136,6 +136,26 @@ final class WireFixtureTests: XCTestCase {
         XCTAssertEqual(defaultHeartbeatInterval, .milliseconds(expected ?? -1))
     }
 
+    /// #325. The third shared cadence, and the one #317 missed — the two
+    /// it caught had source comments complaining about drift and
+    /// `RegistrationPublisher` does not.
+    ///
+    /// This matters more than the heartbeat interval: the relay's 300s
+    /// `DEFAULT_NODE_DEPARTURE_TIMEOUT_MS` is the knee of the *observed*
+    /// gap distribution measured against this nominal, so a drift between
+    /// the two adapter declarations would leave that timer tuned against
+    /// a distribution describing neither device. The symptom would be a
+    /// healthy node reaped or a departed one lingering, with nothing
+    /// pointing at the cause.
+    ///
+    /// The fixture's own comment carries that distribution, and it is
+    /// nothing like 120s — see it before modelling anything on this
+    /// number.
+    func testRegistrationIntervalMatchesTheSharedFixture() throws {
+        let expected = try section("constants")["registrationIntervalMs"] as? Int
+        XCTAssertEqual(defaultRegistrationInterval, .milliseconds(expected ?? -1))
+    }
+
     // MARK: - Closed vocabularies
 
     /// Both directions, which is what `CaseIterable` buys: every wire

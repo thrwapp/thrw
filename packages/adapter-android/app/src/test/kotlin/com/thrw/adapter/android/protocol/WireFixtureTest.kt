@@ -2,6 +2,7 @@ package com.thrw.adapter.android.protocol
 
 import com.thrw.adapter.android.bluetooth.COMMAND_OUTCOME_TIMEOUT_MS
 import com.thrw.adapter.android.heartbeat.HeartbeatPublisher
+import com.thrw.adapter.android.registration.RegistrationPublisher
 import java.io.File
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
@@ -129,6 +130,27 @@ class WireFixtureTest {
     @Test
     fun `heartbeat interval matches the shared fixture`() {
         assertEquals(constant("heartbeatIntervalMs"), HeartbeatPublisher.DEFAULT_INTERVAL_MS)
+    }
+
+    /**
+     * #325. The third shared cadence, and the one #317 missed — the two it
+     * caught had source comments complaining about drift and
+     * [RegistrationPublisher] does not.
+     *
+     * This matters more than the heartbeat interval: the relay's 300s
+     * `DEFAULT_NODE_DEPARTURE_TIMEOUT_MS` is the knee of the *observed*
+     * gap distribution measured against this nominal, so a drift between
+     * the two adapter declarations would leave that timer tuned against a
+     * distribution describing neither device. The symptom would be a
+     * healthy node reaped or a departed one lingering, with nothing
+     * pointing at the cause.
+     *
+     * The fixture's own comment carries that distribution, and it is
+     * nothing like 120s — see it before modelling anything on this number.
+     */
+    @Test
+    fun `registration interval matches the shared fixture`() {
+        assertEquals(constant("registrationIntervalMs"), RegistrationPublisher.DEFAULT_INTERVAL_MS)
     }
 
     // ---- Closed vocabularies ----
