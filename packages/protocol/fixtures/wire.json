@@ -1,0 +1,299 @@
+{
+  "$comment": [
+    "The MQTT *payload* contract, as data (#317).",
+    "",
+    "Sibling to topics.json, which did this for topic strings in #171 and",
+    "stops there. The message bodies on those topics are hand-written three",
+    "times - TypeScript across packages/protocol and packages/relay-core,",
+    "Swift in adapter-mac's Payloads.swift, Kotlin in adapter-android's",
+    "Payloads.kt - and until this file, each asserted only against its own",
+    "literals. Three separate source files say so in their own comments:",
+    "Payloads.swift ('three hand-written implementations of one wire",
+    "format, and nothing else catches them drifting'), CommandTimeout.swift",
+    "and BluetoothConnectionManager.kt (both about one number).",
+    "",
+    "A drift here is invisible in CI and shows up on hardware as a node",
+    "that registers and is then ignored, or a command that is discarded as",
+    "stale - the #174/#175/#182 failure mode, one layer up from topics.",
+    "",
+    "#271 makes Rust the fourth mirror. Every copy added before this file",
+    "existed is one more to reconcile afterwards.",
+    "",
+    "This file PINS the shapes that already ship. It is not a change to",
+    "the frozen contract (AGENTS.md) and needs no ADR - it asserts, exactly",
+    "as topics.json does. If a conformance test disagrees with this file,",
+    "the finding is a bug in one implementation, not a licence to edit the",
+    "fixture until it passes."
+  ],
+
+  "constants": {
+    "$comment": [
+      "Numbers that MUST be identical in every implementation, because an",
+      "aggregate over them is only meaningful if they mean the same thing",
+      "in every row (ADR 0019, #206 criterion 2).",
+      "",
+      "commandOutcomeTimeoutMs guarantees TERMINATION, not latency - ADR",
+      "0007 owns latency with its own p95 SLO. A claim settles in 3.3-4.9s",
+      "on the reference hardware (#254, #310), so 8s is roughly 2x",
+      "headroom.",
+      "",
+      "heartbeatTimeoutMs is the relay's side: three missed beats at",
+      "heartbeatIntervalMs. It is deliberately a multiple, not an",
+      "independent number - see relay-service.ts."
+    ],
+    "commandOutcomeTimeoutMs": 8000,
+    "heartbeatIntervalMs": 30000,
+    "heartbeatTimeoutMs": 90000
+  },
+
+  "vocabularies": {
+    "$comment": [
+      "Closed sets, in wire spelling. Order matters for eventKinds only.",
+      "",
+      "eventKinds is PRIORITY ORDER, highest first - architecture.md's",
+      "'Priority rules'. packages/protocol exports it as PRIORITY_ORDER and",
+      "relay-core must import rather than re-derive. Rule 5 (last-claimed)",
+      "is a tiebreak, not an event kind, so it is not in this list.",
+      "",
+      "failureReasons: only target_device_unreachable and",
+      "superseded_by_newer_command are emitted today. bluetooth_unavailable",
+      "is defined and deliberately unused until the platform gateways can",
+      "surface comparable typed errors - see either Payloads file's kdoc.",
+      "The wire set is still all three, so a relay must accept all three."
+    ],
+    "eventKinds": ["call", "manual_claim", "voip", "media"],
+    "commandTypes": ["claim", "release"],
+    "resourceTypes": ["audio", "hid"],
+    "platforms": ["android", "mac", "ipad", "linux"],
+    "outcomes": ["succeeded", "failed", "timed_out"],
+    "failureReasons": [
+      "bluetooth_unavailable",
+      "target_device_unreachable",
+      "superseded_by_newer_command"
+    ]
+  },
+
+  "kinds": {
+    "$comment": [
+      "The `kind` discriminators that let several message shapes share the",
+      "frozen events topic (ADR 0001/0015 freeze the topic SET, so a new",
+      "message kind rides an existing topic rather than getting its own -",
+      "docs/handoffs/67.md).",
+      "",
+      "An ordinary event has NO `kind` at all, and its `type` is always an",
+      "eventKind, never one of these. That is what makes the discriminator",
+      "backward-compatible: adding a kind cannot change how an existing",
+      "event parses."
+    ],
+    "register": "register",
+    "eventEnd": "event_end",
+    "commandOutcome": "command_outcome"
+  },
+
+  "directions": {
+    "$comment": [
+      "Which way each message travels, because it decides what an",
+      "implementation must prove about it.",
+      "",
+      "An implementation must ENCODE the messages it sends to exactly the",
+      "object below (compared as parsed JSON - key order is not part of the",
+      "contract), and must DECODE the messages it receives without loss.",
+      "Encoding is the stronger assertion, so each side gets it for its own",
+      "half rather than both sides being held to both.",
+      "",
+      "This distinction is load-bearing, not bookkeeping. `stateNoHolder`",
+      "is `{\"holder\": null}`, and Swift's synthesised encoder OMITS a nil",
+      "Optional - so an adapter re-encoding it would produce `{}` and fail",
+      "a naive round-trip. That is not a defect: adapters never publish",
+      "state, only read it. Holding them to an encode they never perform",
+      "would have produced a false failure and, worse, an 'explicit null'",
+      "workaround in an adapter that has no reason to serialise this type",
+      "at all."
+    ],
+    "nodeToRelay": [
+      "event",
+      "eventEnd",
+      "registration",
+      "registrationNoRouteKnown",
+      "commandOutcomeSucceeded",
+      "commandOutcomeFailed",
+      "commandOutcomeSuperseded",
+      "commandOutcomeTimedOut",
+      "commandOutcomeUnsequenced"
+    ],
+    "relayToNode": ["command", "commandUnsequenced", "state", "stateNoHolder"]
+  },
+
+  "messages": {
+    "$comment": [
+      "Canonical wire objects, keyed by name. See `directions` above for",
+      "what each implementation must prove about which ones.",
+      "",
+      "Every value here is the complete object as it appears on the wire,",
+      "except for the `$comment` key, which is documentation for the reader",
+      "and must be stripped before any comparison."
+    ],
+
+    "event": {
+      "$comment": "Node -> relay on the events topic. No `kind`.",
+      "type": "media",
+      "priority": 3
+    },
+
+    "eventEnd": {
+      "$comment": "'the trigger I reported earlier stopped' (#68). No priority - ending a trigger needs only its kind.",
+      "kind": "event_end",
+      "type": "media"
+    },
+
+    "registration": {
+      "$comment": [
+        "Node -> relay, re-sent periodically and not only at startup, which",
+        "is what lets a restarted relay recover a correct picture (#178).",
+        "",
+        "observedRoutes (#191) is keyed by resource type, and ABSENCE is",
+        "meaningful: a missing key means 'cannot determine', which leaves",
+        "the relay's record alone. `false` positively asserts this node",
+        "does not hold the resource and is grounds for corrective action.",
+        "Reporting a guess as `false` hands the relay a fabricated",
+        "disagreement - see registrationNoRouteKnown below."
+      ],
+      "kind": "register",
+      "manifest": {
+        "nodeId": "node-1",
+        "platform": "mac",
+        "displayName": "Tom's MacBook Air",
+        "adapterVersion": "0.2.5",
+        "supportedEventKinds": ["manual_claim", "voip", "media"],
+        "supportedResourceTypes": ["audio"]
+      },
+      "activeEvents": ["media"],
+      "observedRoutes": { "audio": true }
+    },
+
+    "registrationNoRouteKnown": {
+      "$comment": [
+        "The absent-route case, pinned as its own message because it is a",
+        "distinct assertion and the one most easily 'simplified' into a",
+        "`false`. An empty observedRoutes is what a node sends while a",
+        "claim or release is still settling.",
+        "",
+        "Also the first-registration shape: activeEvents is empty, not",
+        "omitted. #303's signature was a node reporting {} repeatedly."
+      ],
+      "kind": "register",
+      "manifest": {
+        "nodeId": "node-2",
+        "platform": "android",
+        "displayName": "Pixel 10 Pro",
+        "adapterVersion": "0.2.5",
+        "supportedEventKinds": ["call", "manual_claim", "voip", "media"],
+        "supportedResourceTypes": ["audio"]
+      },
+      "activeEvents": [],
+      "observedRoutes": {}
+    },
+
+    "command": {
+      "$comment": "Relay -> node, stamped with ADR 0018's epoch and sequence number (#210).",
+      "type": "claim",
+      "seq": 7,
+      "epoch": "3f1b2c44-0000-4000-8000-000000000001"
+    },
+
+    "commandUnsequenced": {
+      "$comment": [
+        "A command carrying NEITHER epoch nor seq, which both adapters must",
+        "still decode and act on.",
+        "",
+        "Not defensive padding: the relay half of #210 shipped before the",
+        "adapter half, so builds exist that ran against a relay stamping",
+        "nothing. CommandSequenceGate treats an unsequenced command as",
+        "acceptable rather than stale. Making these required would brick",
+        "those builds, and an outcome for such a command must stay",
+        "reportable - see commandOutcomeUnsequenced."
+      ],
+      "type": "release"
+    },
+
+    "state": {
+      "$comment": "Relay -> everyone, RETAINED on the state topic (#229). The authoritative answer to 'who holds this resource'.",
+      "holder": "node-1"
+    },
+
+    "stateNoHolder": {
+      "$comment": [
+        "`holder: null` is a REAL answer - the relay genuinely publishes it",
+        "when nobody holds the resource - and must stay distinct from 'we",
+        "have never heard from the relay'. Both platforms keep that",
+        "distinction in a HolderState type, because storing both as a nil",
+        "String makes the UI state confidently that nobody holds the",
+        "headset when the truth is it has no idea (#308's family of bug)."
+      ],
+      "holder": null
+    },
+
+    "commandOutcomeSucceeded": {
+      "$comment": "ADR 0019. Reported for EVERY command, not only failures - a success rate needs its denominator.",
+      "kind": "command_outcome",
+      "epoch": "3f1b2c44-0000-4000-8000-000000000001",
+      "seq": 7,
+      "resourceType": "audio",
+      "outcome": "succeeded",
+      "durationMs": 3340
+    },
+
+    "commandOutcomeFailed": {
+      "$comment": "`reason` is present when and only when outcome is `failed`. Headset in its case is unreachable, not a timeout (#264).",
+      "kind": "command_outcome",
+      "epoch": "3f1b2c44-0000-4000-8000-000000000001",
+      "seq": 8,
+      "resourceType": "audio",
+      "outcome": "failed",
+      "reason": "target_device_unreachable",
+      "durationMs": 3012
+    },
+
+    "commandOutcomeSuperseded": {
+      "$comment": [
+        "ADR 0020's coalescing, reported as a failure reason but tracked",
+        "separately from real failures: a superseded command is the",
+        "debouncer working correctly, not a switch that went wrong (#206",
+        "criterion 5). Counting it against the success rate would make the",
+        "rate drop every time coalescing did its job."
+      ],
+      "kind": "command_outcome",
+      "epoch": "3f1b2c44-0000-4000-8000-000000000001",
+      "seq": 9,
+      "resourceType": "audio",
+      "outcome": "failed",
+      "reason": "superseded_by_newer_command",
+      "durationMs": 12
+    },
+
+    "commandOutcomeTimedOut": {
+      "$comment": [
+        "The constants.commandOutcomeTimeoutMs bound, reached. `reason` is",
+        "absent: timed_out is its own outcome, not a failure with a reason.",
+        "",
+        "#303 is the case where this was never published at all - a bound",
+        "that could not fire left a claim wedged for seventeen minutes with",
+        "no outcome on the wire. A missing outcome is not a passing switch."
+      ],
+      "kind": "command_outcome",
+      "epoch": "3f1b2c44-0000-4000-8000-000000000001",
+      "seq": 10,
+      "resourceType": "audio",
+      "outcome": "timed_out",
+      "durationMs": 8000
+    },
+
+    "commandOutcomeUnsequenced": {
+      "$comment": "The outcome for commandUnsequenced. Must stay reportable, or acting on an unsequenced command becomes an unmeasurable switch - the exact gap ADR 0019 exists to close.",
+      "kind": "command_outcome",
+      "resourceType": "audio",
+      "outcome": "succeeded",
+      "durationMs": 2210
+    }
+  }
+}
