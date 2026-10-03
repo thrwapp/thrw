@@ -1,0 +1,13 @@
+{
+  "id": "M5",
+  "title": "Media starts on one device while neither is playing",
+  "initial": { "holder": null },
+  "timeline": [{ "at": "0s", "device": "mac", "event": "audio_started" }],
+  "expect": [
+    { "at": "10s", "holderIs": "mac" },
+    { "at": "10s", "routeIs": "mac" },
+    { "during": ["10s", "60s"], "holderChangesAtMost": 0 }
+  ],
+  "runFor": "60s",
+  "seed": 1
+}

@@ -1,0 +1,15 @@
+{
+  "id": "N5",
+  "title": "Media playing on both devices: stays where it last moved, no bouncing",
+  "initial": { "holder": null },
+  "timeline": [
+    { "at": "0s", "device": "mac", "event": "audio_started" },
+    { "at": "20s", "device": "pixel", "event": "audio_started" }
+  ],
+  "expect": [
+    { "during": ["30s", "300s"], "holderChangesAtMost": 0 },
+    { "at": "300s", "routeIs": "pixel" }
+  ],
+  "runFor": "300s",
+  "seed": 1
+}

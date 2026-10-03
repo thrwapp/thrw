@@ -1,0 +1,16 @@
+{
+  "id": "N2",
+  "title": "The holder's media buffers or changes track briefly: stays",
+  "initial": { "holder": "pixel", "playing": ["pixel"] },
+  "timeline": [
+    { "at": "30s", "device": "pixel", "event": "audio_blip", "forMs": 800 },
+    { "at": "60s", "device": "pixel", "event": "audio_blip", "forMs": 800 },
+    { "at": "90s", "device": "pixel", "event": "audio_blip", "forMs": 800 }
+  ],
+  "expect": [
+    { "during": ["10s", "180s"], "holderChangesAtMost": 0 },
+    { "at": "180s", "routeIs": "pixel" }
+  ],
+  "runFor": "180s",
+  "seed": 1
+}

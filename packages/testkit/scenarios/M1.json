@@ -1,0 +1,12 @@
+{
+  "id": "M1",
+  "title": "Incoming call on the Pixel, headset on the Mac",
+  "initial": { "holder": "mac", "playing": ["mac"] },
+  "timeline": [{ "at": "30s", "device": "pixel", "event": "call_started" }],
+  "expect": [
+    { "at": "40s", "holderIs": "pixel" },
+    { "at": "40s", "routeIs": "pixel" }
+  ],
+  "runFor": "60s",
+  "seed": 1
+}
