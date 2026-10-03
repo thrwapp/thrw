@@ -1,0 +1,14 @@
+{
+  "id": "R298",
+  "title": "Regression #298: thrw's own handover must not read as the user stopping their music",
+  "initial": { "playing": ["mac"] },
+  "timeline": [{ "at": "30s", "device": "pixel", "event": "audio_started" }],
+  "expect": [
+    { "at": "20s", "holderIs": "mac" },
+    { "at": "40s", "holderIs": "pixel" },
+    { "during": ["40s", "300s"], "holderChangesAtMost": 0 },
+    { "at": "300s", "routeIs": "pixel" }
+  ],
+  "runFor": "300s",
+  "seed": 3
+}
